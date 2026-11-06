@@ -1,0 +1,8 @@
+#pragma once
+// Generated from the CMake project version. Identifies this running build,
+// including older executables still open after an in-place upgrade.
+namespace app {
+inline constexpr wchar_t version[] = L"@PROJECT_VERSION@";
+inline constexpr wchar_t versionLabel[] = L"版本 @PROJECT_VERSION@ · x64";
+inline constexpr wchar_t settingsWindowTag[] = L"FolderNote.Settings.Build.@PROJECT_VERSION@";
+}

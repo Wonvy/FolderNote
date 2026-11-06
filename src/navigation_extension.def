@@ -1,0 +1,4 @@
+LIBRARY FolderNoteNavigation
+EXPORTS
+ DllGetClassObject PRIVATE
+ DllCanUnloadNow PRIVATE

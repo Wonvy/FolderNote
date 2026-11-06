@@ -1,0 +1,519 @@
+#include "navigation.h"
+#include "core.h"
+#include "window_position.h"
+#include "resource.h"
+#include "quick_folders.h"
+#include "theme_scroll.h"
+#include "app_version.h"
+#include <dwmapi.h>
+#include <shlobj.h>
+#include <array>
+#include <cstring>
+#include <vector>
+#include <memory>
+#include <windowsx.h>
+#define MessageBoxW ui::message
+namespace navigation {
+static constexpr wchar_t configKey[] = L"Software\\FolderNote";
+static constexpr wchar_t listenerClass[] = L"FolderNote.Navigation.Listener.v1";
+struct Notification { DWORD process; UINT message; };
+static BOOL CALLBACK notifyTab(HWND window, LPARAM message) {
+  const auto &notification = *reinterpret_cast<const Notification *>(message);
+  DWORD process = 0;
+  GetWindowThreadProcessId(window, &process);
+  if (process == notification.process && GetPropW(window, L"FolderNote.Navigation.Controller.v3"))
+    PostMessageW(window, notification.message, 0, 0);
+  return TRUE;
+}
+
+// Migration only: a 1.2.x listener may still be running during an upgrade.
+// This version never creates a mouse hook or a background listener process.
+void stopLegacy() {
+  HWND h = FindWindowExW(HWND_MESSAGE, nullptr, listenerClass, nullptr);
+  if (!h)
+    return;
+  DWORD pid = 0;
+  GetWindowThreadProcessId(h, &pid);
+  HANDLE process = OpenProcess(SYNCHRONIZE, FALSE, pid);
+  PostMessageW(h, WM_CLOSE, 0, 0);
+  if (process) {
+    WaitForSingleObject(process, 3000);
+    CloseHandle(process);
+  }
+}
+static BOOL CALLBACK notifyWindow(HWND window, LPARAM message) {
+  wchar_t cls[128]{};
+  GetClassNameW(window, cls, 128);
+  if (wcscmp(cls, L"CabinetWClass") && wcscmp(cls, L"ExploreWClass"))
+    return TRUE;
+  DWORD pid = 0;
+  GetWindowThreadProcessId(window, &pid);
+  HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+  if (!process)
+    return TRUE;
+  wchar_t image[32768]{}, windows[MAX_PATH]{};
+  DWORD length = ARRAYSIZE(image);
+  BOOL ok = QueryFullProcessImageNameW(process, 0, image, &length);
+  CloseHandle(process);
+  if (ok && GetWindowsDirectoryW(windows, ARRAYSIZE(windows)) &&
+      _wcsicmp(image, (std::wstring(windows) + L"\\explorer.exe").c_str()) == 0) {
+    PostMessageW(window, static_cast<UINT>(message), 0, 0);
+    const Notification notification{pid, static_cast<UINT>(message)};
+    EnumChildWindows(window, notifyTab, reinterpret_cast<LPARAM>(&notification));
+  }
+  return TRUE;
+}
+static void notifyExplorer(const wchar_t *name) {
+  UINT message = RegisterWindowMessageW(name);
+  if (message)
+    EnumWindows(notifyWindow, static_cast<LPARAM>(message));
+}
+void stop() {
+  stopLegacy();
+  notifyExplorer(L"FolderNote.Navigation.Shutdown.v2");
+}
+void reload() {
+  stopLegacy();
+  notifyExplorer(L"FolderNote.Navigation.SettingsChanged.v2");
+  SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
+}
+namespace {
+struct SettingValue {
+  HKEY key = nullptr;
+  const wchar_t *name = nullptr;
+  DWORD type = 0;
+  std::vector<BYTE> bytes;
+  bool existed = false;
+  bool changed = false;
+
+  void read(HKEY source, const wchar_t *valueName) {
+    key = source;
+    name = valueName;
+    DWORD count = 0;
+    auto error = RegQueryValueExW(key, name, nullptr, &type, nullptr, &count);
+    if (error == ERROR_FILE_NOT_FOUND)
+      return;
+    if (error != ERROR_SUCCESS)
+      fn::fail(L"无法读取现有设置", error);
+    existed = true;
+    bytes.resize(count);
+    error = RegQueryValueExW(key, name, nullptr, &type, bytes.data(), &count);
+    if (error != ERROR_SUCCESS)
+      fn::fail(L"无法读取现有设置", error);
+    bytes.resize(count);
+  }
+  LSTATUS restore() const {
+    if (!changed)
+      return ERROR_SUCCESS;
+    const auto error = existed ? RegSetValueExW(key, name, 0, type, bytes.data(),
+                                               static_cast<DWORD>(bytes.size()))
+                               : RegDeleteValueW(key, name);
+    return error == ERROR_FILE_NOT_FOUND ? ERROR_SUCCESS : error;
+  }
+};
+struct SettingKeys {
+  std::array<HKEY, 4> values{};
+  ~SettingKeys() {
+    for (auto key : values)
+      if (key)
+        RegCloseKey(key);
+  }
+};
+} // namespace
+
+static void applySettings(bool notes, Action action, Action preferred, bool quick, bool dialogs, ui::ThemeMode theme, bool tabs, bool saveConfiguration) {
+  if (action != Action::Off && action != Action::Parent && action != Action::Back)
+    throw fn::Error{L"请选择有效的双击操作。"};
+  if (preferred != Action::Parent && preferred != Action::Back)
+    throw fn::Error{L"请选择有效的双击操作。"};
+  if (DWORD(theme) > 2) throw fn::Error{L"请选择有效的主题。"};
+  SettingKeys keys;
+  LSTATUS error = ERROR_SUCCESS;
+  std::array<SettingValue, 10> saved;
+  if (saveConfiguration) {
+    error = RegCreateKeyExW(HKEY_CURRENT_USER, configKey, 0, nullptr, 0,
+                               KEY_QUERY_VALUE | KEY_SET_VALUE, nullptr, &keys.values[0], nullptr);
+    if (error)
+      fn::fail(L"无法保存设置", error);
+    saved[0].read(keys.values[0], L"NotesEnabled");
+    saved[1].read(keys.values[0], L"BlankDoubleClick");
+    saved[2].read(keys.values[0], L"NavigationPreference");
+    saved[3].read(keys.values[0], L"QuickFoldersEnabled");
+    saved[4].read(keys.values[0], L"QuickFoldersInDialogs");
+    saved[5].read(keys.values[0], L"Theme");
+    saved[6].read(keys.values[0], L"ExplorerTabsEnabled");
+  }
+  // Only alter menus already installed by FolderNote. A modern-only or portable
+  // installation must not gain incomplete legacy menu entries when saving.
+  for (size_t index = 0; index < 3; ++index) {
+    const auto path = std::wstring(L"Software\\Classes\\Directory\\shell\\") + fn::verbs[index];
+    error = RegOpenKeyExW(HKEY_CURRENT_USER, path.c_str(), 0, KEY_QUERY_VALUE | KEY_SET_VALUE,
+                          &keys.values[index + 1]);
+    if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND)
+      continue;
+    if (error)
+      fn::fail(L"无法更新备注菜单开关", error);
+    saved[index + 7].read(keys.values[index + 1], L"LegacyDisable");
+  }
+  const std::array<DWORD, 7> values{notes ? 1UL : 0UL, DWORD(action), DWORD(preferred), quick ? 1UL : 0UL, dialogs ? 1UL : 0UL, DWORD(theme), tabs ? 1UL : 0UL};
+  for (size_t index = 0; index < saved.size(); ++index) {
+    auto &value = saved[index];
+    if (!value.key)
+      continue;
+    if (index < values.size())
+      error = RegSetValueExW(value.key, value.name, 0, REG_DWORD,
+                             reinterpret_cast<const BYTE *>(&values[index]), sizeof(DWORD));
+    else if (notes) {
+      error = RegDeleteValueW(value.key, value.name);
+      if (error == ERROR_FILE_NOT_FOUND)
+        error = ERROR_SUCCESS;
+    } else {
+      const wchar_t empty[] = L"";
+      error = RegSetValueExW(value.key, value.name, 0, REG_SZ,
+                             reinterpret_cast<const BYTE *>(empty), sizeof(empty));
+    }
+    if (error != ERROR_SUCCESS) {
+      bool restored = true;
+      for (const auto &previous : saved)
+        restored = previous.restore() == ERROR_SUCCESS && restored;
+      if (!restored)
+        throw fn::Error{L"设置未能完整保存或恢复，请重新打开设置检查功能开关。"};
+      fn::fail(L"设置未保存，已恢复原有开关", error);
+    }
+    value.changed = true;
+  }
+}
+void saveSettings(bool notes, Action action, Action preferred) {
+  saveSettings(notes, action, preferred, quickEnabled(), dialogQuickEnabled());
+}
+void saveSettings(bool notes, Action action, Action preferred, bool quick, bool dialogs) {
+  saveSettings(notes, action, preferred, quick, dialogs, ui::configuredTheme());
+}
+void saveSettings(bool notes, Action action, Action preferred, bool quick, bool dialogs, ui::ThemeMode theme) {
+  saveSettings(notes, action, preferred, quick, dialogs, theme, tabsEnabled());
+}
+void saveSettings(bool notes, Action action, Action preferred, bool quick, bool dialogs, ui::ThemeMode theme, bool tabs) {
+  applySettings(notes, action, preferred, quick, dialogs, theme, tabs, true);
+}
+void syncNoteMenus() {
+  applySettings(notesEnabled(), configuredAction(), preferredAction(), quickEnabled(), dialogQuickEnabled(), ui::configuredTheme(), tabsEnabled(), false);
+}
+static HWND choice;
+static HWND notesCheck;
+static HWND navigationCheck;
+static HWND quickCheck;
+static HWND dialogCheck;
+static HWND tabsCheck;
+static HFONT font, headingFont;
+static HWND body, themeChoice, settingsWindow, managerPage;
+static SettingsPage activePage = SettingsPage::Features;
+static UINT selectPageMessage() { return RegisterWindowMessageW(L"FolderNote.Settings.SelectPage.v1"); }
+static std::unique_ptr<ui::Theme> appearance;
+static int scrollPosition = 0;
+static ui::ScrollBar settingsScroll;
+struct Placement { HWND window; int x, y, width, height; };
+static std::vector<Placement> placements;
+static UINT dpi;
+static int scale(int n) { return MulDiv(n, dpi, 96); }
+static int contentHeight() { return scale(tabsSupported() ? 500 : 390); }
+static void copyDiagnostics(HWND owner) {
+  const auto text = diagnostics();
+  auto memory = GlobalAlloc(GMEM_MOVEABLE, (text.size() + 1) * sizeof(wchar_t));
+  if (!memory)
+    fn::fail(L"无法复制诊断信息");
+  auto destination = GlobalLock(memory);
+  if (!destination) {
+    GlobalFree(memory);
+    fn::fail(L"无法复制诊断信息");
+  }
+  memcpy(destination, text.c_str(), (text.size() + 1) * sizeof(wchar_t));
+  GlobalUnlock(memory);
+  if (!OpenClipboard(owner)) {
+    GlobalFree(memory);
+    fn::fail(L"剪贴板暂时不可用，请重试");
+  }
+  const bool copied = EmptyClipboard() && SetClipboardData(CF_UNICODETEXT, memory);
+  CloseClipboard();
+  if (!copied) {
+    GlobalFree(memory);
+    fn::fail(L"无法复制诊断信息");
+  }
+  MessageBoxW(owner, L"诊断信息已复制，可粘贴给开发者排查。", L"FolderNote", MB_OK | MB_ICONINFORMATION);
+}
+static void layoutBody() {
+  if (!body) return;
+  RECT client{}; GetClientRect(body, &client);
+  scrollPosition = std::clamp(scrollPosition, 0, std::max(0, contentHeight() - int(client.bottom)));
+  settingsScroll.configure(contentHeight(), client.bottom, scrollPosition, dpi, scale(16));
+  if (activePage != SettingsPage::Features) ShowWindow(settingsScroll.window(), SW_HIDE);
+  for (const auto &item : placements) MoveWindow(item.window, scale(item.x), scale(item.y) - scrollPosition,
+      item.width < 0 ? client.right - scale(item.x - item.width) : scale(item.width), scale(item.height), TRUE);
+  InvalidateRect(body, nullptr, TRUE);
+}
+static void layoutSettings() {
+  RECT client{}; GetClientRect(settingsWindow, &client);
+  int width = client.right, height = client.bottom;
+  constexpr int sidebar = 208;
+  MoveWindow(GetDlgItem(settingsWindow, 35), scale(20), scale(20), scale(172), scale(32), TRUE);
+  MoveWindow(GetDlgItem(settingsWindow, 36), scale(20), scale(57), scale(172), scale(22), TRUE);
+  MoveWindow(GetDlgItem(settingsWindow, 30), scale(sidebar + 24), scale(27), width - scale(sidebar + 254), scale(32), TRUE);
+  MoveWindow(GetDlgItem(settingsWindow, 31), scale(20), height - scale(45), scale(176), scale(22), TRUE);
+  for (int id : {40, 41}) MoveWindow(GetDlgItem(settingsWindow, id), scale(12), scale(103 + (id - 40) * 48), scale(184), scale(40), TRUE);
+  MoveWindow(GetDlgItem(settingsWindow, 32), width - scale(210), scale(15), scale(186), scale(20), TRUE);
+  MoveWindow(themeChoice, width - scale(210), scale(40), scale(186), scale(160), TRUE);
+  int bodyHeight = std::max(scale(40), height - scale(166));
+  bool overflow = bodyHeight < contentHeight();
+  MoveWindow(body, scale(sidebar), scale(88), width - scale(sidebar) - (overflow ? scale(20) : 0), bodyHeight, TRUE);
+  MoveWindow(managerPage, scale(sidebar), scale(88), width - scale(sidebar), bodyHeight, TRUE);
+  settingsScroll.move(width - scale(18), scale(88), scale(12), bodyHeight);
+  MoveWindow(GetDlgItem(settingsWindow, 33), scale(sidebar + 24), height - scale(70), width - scale(sidebar + 48), scale(18), TRUE);
+  MoveWindow(GetDlgItem(settingsWindow, 13), scale(sidebar + 24), height - scale(44), scale(140), scale(32), TRUE);
+  MoveWindow(GetDlgItem(settingsWindow, IDOK), width - scale(212), height - scale(44), scale(88), scale(32), TRUE);
+  MoveWindow(GetDlgItem(settingsWindow, IDCANCEL), width - scale(112), height - scale(44), scale(88), scale(32), TRUE);
+  layoutBody();
+  ShowWindow(settingsScroll.window(), activePage == SettingsPage::Features && overflow ? SW_SHOWNA : SW_HIDE);
+}
+static void showPage(SettingsPage page) {
+  activePage = page;
+  if (page == SettingsPage::QuickFolders) quick::refreshManagerPage(managerPage);
+  ShowWindow(body, page == SettingsPage::Features ? SW_SHOWNA : SW_HIDE);
+  ShowWindow(managerPage, page == SettingsPage::QuickFolders ? SW_SHOWNA : SW_HIDE);
+  SetWindowTextW(GetDlgItem(settingsWindow, 30), page == SettingsPage::Features ? L"功能设置" : L"置顶与历史");
+  for (int id : {40, 41}) InvalidateRect(GetDlgItem(settingsWindow, id), nullptr, TRUE);
+  layoutSettings();
+}
+static LRESULT CALLBACK sidebarProc(HWND h, UINT message, WPARAM w, LPARAM l, UINT_PTR id, DWORD_PTR) {
+  if (message == WM_KEYDOWN && (w == VK_UP || w == VK_DOWN || w == VK_HOME || w == VK_END)) {
+    auto page = w == VK_HOME || (w != VK_END && GetDlgCtrlID(h) == 41) ? SettingsPage::Features : SettingsPage::QuickFolders;
+    showPage(page); SetFocus(GetDlgItem(settingsWindow, page == SettingsPage::Features ? 40 : 41)); return 0;
+  }
+  if (message == WM_NCDESTROY) RemoveWindowSubclass(h, sidebarProc, id);
+  return DefSubclassProc(h, message, w, l);
+}
+static LRESULT CALLBACK contentProc(HWND h, UINT message, WPARAM w, LPARAM l) {
+  LRESULT result = 0;
+  if (appearance && appearance->handle(h, message, w, l, result)) return result;
+  switch (message) {
+  case WM_PAINT: {
+    PAINTSTRUCT paint{}; HDC dc = BeginPaint(h, &paint); RECT client{}; GetClientRect(h, &client);
+    FillRect(dc, &client, appearance->background);
+    for (auto pair : {std::pair{0, 88}, std::pair{100, 122}, std::pair{234, 154}, std::pair{400, 98}}) {
+      if (pair.first == 400 && !tabsSupported()) continue;
+      RECT card{scale(20), scale(pair.first) - scrollPosition, client.right - scale(20), scale(pair.first + pair.second) - scrollPosition};
+      ui::rounded(dc, card, appearance->colors.surface, appearance->colors.border, scale(9));
+    }
+    EndPaint(h, &paint); return 0;
+  }
+  case WM_COMMAND: {
+    HWND control = reinterpret_cast<HWND>(l);
+    if (control && GetFocus() == control) {
+      auto found = std::find_if(placements.begin(), placements.end(), [&](const auto &p) { return p.window == control; });
+      if (found != placements.end()) {
+        RECT client{}; GetClientRect(h, &client);
+        if (scale(found->y) - scrollPosition < 0) scrollPosition = scale(found->y) - scale(8);
+        else if (scale(found->y + 32) - scrollPosition > client.bottom) scrollPosition = scale(found->y + 40) - client.bottom;
+        layoutBody();
+      }
+    }
+    return SendMessageW(GetParent(h), message, w, l);
+  }
+  case WM_MEASUREITEM: reinterpret_cast<MEASUREITEMSTRUCT *>(l)->itemHeight = scale(26); return TRUE;
+  case WM_VSCROLL: {
+    settingsScroll.command(w); return 0;
+  }
+  case WM_MOUSEWHEEL: if (activePage == SettingsPage::Features) settingsScroll.wheel(GET_WHEEL_DELTA_WPARAM(w)); return 0;
+  }
+  return DefWindowProcW(h, message, w, l);
+}
+static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
+  if (m == selectPageMessage()) { showPage(w == 1 ? SettingsPage::QuickFolders : SettingsPage::Features); return 0; }
+  if (m == ui::themeChangedMessage() && appearance) {
+    appearance->reset(ui::configuredTheme());
+    SendMessageW(themeChoice, CB_SETCURSEL, DWORD(appearance->mode), 0); appearance->apply(h); quick::setManagerTheme(managerPage, appearance->mode); return 0;
+  }
+  if (m == WM_DRAWITEM && appearance) {
+    auto *item = reinterpret_cast<DRAWITEMSTRUCT *>(l);
+    if (item->CtlType == ODT_BUTTON && (item->CtlID == 40 || item->CtlID == 41)) {
+      const auto &p = appearance->colors;
+      bool selected = (item->CtlID == 40) == (activePage == SettingsPage::Features);
+      FillRect(item->hDC, &item->rcItem, appearance->background);
+      RECT rect = item->rcItem; InflateRect(&rect, -scale(2), -scale(2));
+      if (selected || (item->itemState & (ODS_SELECTED | ODS_FOCUS | ODS_HOTLIGHT))) ui::rounded(item->hDC, rect, p.hover, p.hover, scale(6));
+      if (selected) { RECT marker{rect.left, rect.top + scale(10), rect.left + scale(3), rect.bottom - scale(10)}; ui::rounded(item->hDC, marker, p.accent, p.accent, scale(1)); }
+      rect.left += scale(16); auto old = SelectObject(item->hDC, font);
+      ui::text(item->hDC, item->CtlID == 40 ? L"功能设置" : L"置顶与历史", rect, selected && p.highContrast ? p.onAccent : p.text);
+      SelectObject(item->hDC, old);
+      if ((item->itemState & ODS_FOCUS) && !(item->itemState & ODS_NOFOCUSRECT)) DrawFocusRect(item->hDC, &rect);
+      return TRUE;
+    }
+  }
+  LRESULT result = 0;
+  if (appearance && appearance->handle(h, m, w, l, result)) return result;
+  switch (m) {
+  case WM_CREATE: {
+    SetPropW(h, app::settingsWindowTag, reinterpret_cast<HANDLE>(1));
+    settingsWindow = h; dpi = GetDpiForWindow(h); scrollPosition = 0; placements.clear();
+    font = ui::makeFont(dpi); headingFont = ui::makeFont(dpi, 23, FW_SEMIBOLD);
+    auto add = [&](HWND parent, LPCWSTR cls, LPCWSTR text, DWORD style, int id) {
+      HWND control = CreateWindowW(cls, text, WS_CHILD | WS_VISIBLE | style, 0, 0, 0, 0,
+          parent, reinterpret_cast<HMENU>(INT_PTR(id)), GetModuleHandleW(nullptr), nullptr);
+      SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE); return control;
+    };
+    HWND logo = add(h, L"STATIC", L"FolderNote", 0, 35);
+    SendMessageW(logo, WM_SETFONT, reinterpret_cast<WPARAM>(headingFont), TRUE);
+    ui::muted(add(h, L"STATIC", L"系统工具", 0, 36));
+    for (int id : {40, 41}) {
+      auto button = add(h, L"BUTTON", id == 40 ? L"功能设置" : L"置顶与历史", BS_OWNERDRAW | WS_TABSTOP, id);
+      SetWindowSubclass(button, sidebarProc, 1, 0);
+    }
+    HWND title = add(h, L"STATIC", L"功能设置", 0, 30);
+    SendMessageW(title, WM_SETFONT, reinterpret_cast<WPARAM>(headingFont), TRUE);
+    ui::muted(add(h, L"STATIC", app::versionLabel, SS_LEFT | SS_NOPREFIX, 31));
+    ui::muted(add(h, L"STATIC", L"外观主题", 0, 32));
+    constexpr DWORD comboStyle = CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS | WS_TABSTOP;
+    themeChoice = add(h, L"COMBOBOX", L"", comboStyle, 17);
+    for (auto titleText : {L"跟随系统", L"浅色", L"深色"}) SendMessageW(themeChoice, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(titleText));
+    SendMessageW(themeChoice, CB_SETCURSEL, DWORD(appearance->mode), 0);
+    SendMessageW(themeChoice, CB_SETITEMHEIGHT, WPARAM(-1), scale(26));
+    body = CreateWindowExW(WS_EX_CONTROLPARENT, L"FolderNote.Settings.Content", L"功能设置",
+        WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN, 0, 0, 0, 0, h, nullptr, GetModuleHandleW(nullptr), nullptr);
+    settingsScroll.create(h, 34, *appearance, [](int position) { scrollPosition = position; layoutBody(); });
+    managerPage = quick::createManagerPage(GetModuleHandleW(nullptr), h, appearance->mode);
+    if (!managerPage) return -1;
+    auto field = [&](LPCWSTR cls, LPCWSTR text, DWORD style, int x, int y, int width, int height, int id, bool quiet = false) {
+      HWND c = add(body, cls, text, style, id); placements.push_back({c, x, y, width, height});
+      ui::surface(c); if (quiet) ui::muted(c); return c;
+    };
+    constexpr DWORD checkStyle = BS_AUTOCHECKBOX | BS_NOTIFY | WS_TABSTOP;
+    notesCheck = field(L"BUTTON", L"文件夹备注", checkStyle, 40, 14, -40, 26, 11);
+    SendMessageW(notesCheck, BM_SETCHECK, notesEnabled() ? BST_CHECKED : BST_UNCHECKED, 0);
+    field(L"STATIC", L"开启后在文件夹右键菜单中添加、编辑和修复备注。\n关闭只隐藏入口，已有备注会保留。", 0, 68, 45, -40, 38, 0, true);
+    navigationCheck = field(L"BUTTON", L"双击空白处导航", checkStyle, 40, 112, -40, 26, 12);
+    const auto action = configuredAction();
+    SendMessageW(navigationCheck, BM_SETCHECK, action != Action::Off ? BST_CHECKED : BST_UNCHECKED, 0);
+    choice = field(L"COMBOBOX", L"", comboStyle, 68, 146, -40, 180, 10);
+    for (auto titleText : {L"返回上一级文件夹", L"后退到上一次浏览的位置"}) SendMessageW(choice, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(titleText));
+    SendMessageW(choice, CB_SETCURSEL, preferredAction() == Action::Back ? 1 : 0, 0);
+    SendMessageW(choice, CB_SETITEMHEIGHT, WPARAM(-1), scale(26));
+    EnableWindow(choice, action != Action::Off);
+    field(L"STATIC", L"在资源管理器文件列表的空白处双击。", 0, 68, 190, -40, 22, 0, true);
+    quickCheck = field(L"BUTTON", L"中键快速定位", checkStyle, 40, 246, -40, 26, 14);
+    SendMessageW(quickCheck, BM_SETCHECK, quickEnabled() ? BST_CHECKED : BST_UNCHECKED, 0);
+    dialogCheck = field(L"BUTTON", L"同时支持打开 / 保存文件对话框", checkStyle, 68, 278, -40, 26, 15);
+    SendMessageW(dialogCheck, BM_SETCHECK, dialogQuickEnabled() ? BST_CHECKED : BST_UNCHECKED, 0); EnableWindow(dialogCheck, quickEnabled());
+    field(L"STATIC", L"单击跳转文件夹，悬停展开子目录，失去焦点自动关闭。\n对话框支持需运行后台组件；仅资源管理器模式无需常驻。", 0, 68, 309, -40, 38, 0, true);
+    field(L"BUTTON", L"置顶与历史 →", WS_TABSTOP, 68, 352, 170, 28, 16);
+    tabsCheck = nullptr;
+    if (tabsSupported()) {
+      tabsCheck = field(L"BUTTON", L"资源管理器多标签（Windows 10）", checkStyle, 40, 412, -40, 26, 18);
+      SendMessageW(tabsCheck, BM_SETCHECK, tabsEnabled() ? BST_CHECKED : BST_UNCHECKED, 0);
+      field(L"STATIC", L"悬停标签：滚轮切换，中键关闭；右键可新建和设置。\n保存后显示或隐藏标签栏；升级后请重新打开文件夹窗口。", 0, 68, 444, -40, 40, 0, true);
+    }
+    ui::muted(add(h, L"STATIC", L"功能设置保存后应用 · 置顶与历史修改立即保存", 0, 33));
+    add(h, L"BUTTON", L"复制诊断信息", WS_TABSTOP, 13);
+    add(h, L"BUTTON", L"保存", WS_TABSTOP | BS_DEFPUSHBUTTON, IDOK);
+    add(h, L"BUTTON", L"取消", WS_TABSTOP, IDCANCEL);
+    appearance->apply(h); quick::setManagerTheme(managerPage, appearance->mode); showPage(activePage); return 0;
+  }
+  case WM_COMMAND:
+    if (LOWORD(w) == IDOK) {
+      try {
+        const auto selection = SendMessageW(choice, CB_GETCURSEL, 0, 0);
+        if (selection != 0 && selection != 1) throw fn::Error{L"请选择有效的双击操作。"};
+        const auto preferred = selection == 1 ? Action::Back : Action::Parent;
+        const auto action = SendMessageW(navigationCheck, BM_GETCHECK, 0, 0) == BST_CHECKED ? preferred : Action::Off;
+        saveSettings(SendMessageW(notesCheck, BM_GETCHECK, 0, 0) == BST_CHECKED, action, preferred,
+            SendMessageW(quickCheck, BM_GETCHECK, 0, 0) == BST_CHECKED,
+            SendMessageW(dialogCheck, BM_GETCHECK, 0, 0) == BST_CHECKED, appearance->mode,
+            tabsCheck ? SendMessageW(tabsCheck, BM_GETCHECK, 0, 0) == BST_CHECKED : tabsEnabled());
+        ui::notifyThemeChanged(); reload(); auto tabsStatus = syncTabs(); quick::syncHelper(quick::executable());
+        if (tabsSupported() && tabsEnabled() && tabsStatus.windows && tabsStatus.visible == 0) {
+          MessageBoxW(h, L"设置已保存，已打开的文件夹窗口尚未显示标签栏。\n请关闭后重新打开文件夹窗口。标签栏由这里的开关控制，无需在资源管理器菜单中勾选。\n仍未显示时，可复制诊断信息查看加载状态。", L"FolderNote 多标签", MB_OK | MB_ICONINFORMATION);
+        } else DestroyWindow(h);
+      } catch (const fn::Error &e) { MessageBoxW(h, e.message.c_str(), L"FolderNote", MB_OK | MB_ICONERROR); }
+    } else if (LOWORD(w) == 17 && HIWORD(w) == CBN_SELCHANGE) {
+      auto selected = SendMessageW(themeChoice, CB_GETCURSEL, 0, 0);
+      if (selected >= 0 && selected <= 2) { appearance->reset(ui::ThemeMode(selected)); appearance->apply(h); quick::setManagerTheme(managerPage, appearance->mode); }
+    } else if (LOWORD(w) == 12 && HIWORD(w) == BN_CLICKED) {
+      EnableWindow(choice, SendMessageW(navigationCheck, BM_GETCHECK, 0, 0) == BST_CHECKED);
+    } else if (LOWORD(w) == 14 && HIWORD(w) == BN_CLICKED) {
+      EnableWindow(dialogCheck, SendMessageW(quickCheck, BM_GETCHECK, 0, 0) == BST_CHECKED);
+    } else if (LOWORD(w) == 16 && HIWORD(w) == BN_CLICKED) {
+      showPage(SettingsPage::QuickFolders); SetFocus(GetDlgItem(h, 41));
+    } else if ((LOWORD(w) == 40 || LOWORD(w) == 41) && HIWORD(w) == BN_CLICKED) {
+      showPage(LOWORD(w) == 40 ? SettingsPage::Features : SettingsPage::QuickFolders);
+    } else if (LOWORD(w) == 13 && HIWORD(w) == BN_CLICKED) {
+      try { copyDiagnostics(h); } catch (const fn::Error &e) { MessageBoxW(h, e.message.c_str(), L"FolderNote", MB_OK | MB_ICONERROR); }
+    } else if (LOWORD(w) == IDCANCEL) DestroyWindow(h);
+    return 0;
+  case WM_MEASUREITEM: reinterpret_cast<MEASUREITEMSTRUCT *>(l)->itemHeight = scale(26); return TRUE;
+  case WM_VSCROLL: if (reinterpret_cast<HWND>(l) == settingsScroll.window()) settingsScroll.command(w); return 0;
+  case WM_MOUSEWHEEL: if (activePage == SettingsPage::Features) settingsScroll.wheel(GET_WHEEL_DELTA_WPARAM(w)); return 0;
+  case WM_SIZE: if (body) layoutSettings(); return 0;
+  case WM_GETMINMAXINFO: {
+    auto *limits = reinterpret_cast<MINMAXINFO *>(l); limits->ptMinTrackSize = {scale(900), scale(500)}; return 0;
+  }
+  case WM_SETTINGCHANGE: case WM_THEMECHANGED:
+    appearance->reset(appearance->mode); appearance->apply(h); quick::setManagerTheme(managerPage, appearance->mode); return 0;
+  case WM_DPICHANGED: {
+    UINT oldDpi = dpi; dpi = HIWORD(w); scrollPosition = MulDiv(scrollPosition, dpi, oldDpi);
+    auto oldFont = font, oldHeading = headingFont; font = ui::makeFont(dpi); headingFont = ui::makeFont(dpi, 23, FW_SEMIBOLD);
+    EnumChildWindows(h, [](HWND child, LPARAM value) -> BOOL { SendMessageW(child, WM_SETFONT, value, TRUE); return TRUE; }, reinterpret_cast<LPARAM>(font));
+    SendMessageW(GetDlgItem(h, 30), WM_SETFONT, reinterpret_cast<WPARAM>(headingFont), TRUE);
+    SendMessageW(GetDlgItem(h, 35), WM_SETFONT, reinterpret_cast<WPARAM>(headingFont), TRUE);
+    for (auto combo : {themeChoice, choice}) {
+      SendMessageW(combo, CB_SETITEMHEIGHT, WPARAM(-1), scale(26));
+      for (int i = 0; i < SendMessageW(combo, CB_GETCOUNT, 0, 0); ++i) SendMessageW(combo, CB_SETITEMHEIGHT, i, scale(26));
+    }
+    DeleteObject(oldFont); DeleteObject(oldHeading);
+    auto *rect = reinterpret_cast<RECT *>(l);
+    SetWindowPos(h, nullptr, rect->left, rect->top, rect->right - rect->left, rect->bottom - rect->top, SWP_NOZORDER);
+    SendMessageW(managerPage, WM_DPICHANGED_AFTERPARENT, 0, 0);
+    layoutSettings(); return 0;
+  }
+  case WM_DESTROY: PostQuitMessage(0); return 0;
+  case WM_NCDESTROY: RemovePropW(h, app::settingsWindowTag); DeleteObject(font); DeleteObject(headingFont); body = managerPage = settingsWindow = nullptr; placements.clear(); break;
+  }
+  return DefWindowProcW(h, m, w, l);
+}
+int settings(HINSTANCE instance, SettingsPage page) {
+  HWND existing = nullptr;
+  EnumWindows([](HWND window, LPARAM data) -> BOOL {
+    if (!GetPropW(window, app::settingsWindowTag)) return TRUE;
+    *reinterpret_cast<HWND *>(data) = window; return FALSE;
+  }, reinterpret_cast<LPARAM>(&existing));
+  if (existing) {
+    PostMessageW(existing, selectPageMessage(), page == SettingsPage::QuickFolders ? 1 : 0, 0);
+    ShowWindow(existing, IsIconic(existing) ? SW_RESTORE : SW_SHOW); SetForegroundWindow(existing); return 0;
+  }
+  activePage = page;
+  WNDCLASSW cls{}; cls.lpfnWndProc = contentProc; cls.hInstance = instance;
+  cls.hCursor = LoadCursorW(nullptr, IDC_ARROW); cls.lpszClassName = L"FolderNote.Settings.Content"; RegisterClassW(&cls);
+  cls.lpfnWndProc = settingsProc; cls.hIcon = LoadIconW(instance, MAKEINTRESOURCEW(IDI_FOLDERNOTE));
+  cls.lpszClassName = L"FolderNote.Settings"; RegisterClassW(&cls);
+  appearance = std::make_unique<ui::Theme>(); dpi = GetDpiForSystem();
+  const RECT work = ui::mouseWorkArea();
+  HWND window = CreateWindowExW(WS_EX_CONTROLPARENT, cls.lpszClassName, L"FolderNote 系统工具设置",
+      WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_MAXIMIZEBOX | WS_CLIPCHILDREN,
+      work.left, work.top, scale(980), scale(660), nullptr, nullptr, instance, nullptr);
+  if (!window) { appearance.reset(); return 1; }
+  ui::centerLogical(window, work, 980, 660); ShowWindow(window, SW_SHOW); SetFocus(GetDlgItem(window, page == SettingsPage::Features ? 40 : 41));
+  MSG message{};
+  while (GetMessageW(&message, nullptr, 0, 0) > 0) {
+    if (message.message == WM_KEYDOWN && (message.wParam == VK_ESCAPE || message.wParam == VK_RETURN)) {
+      HWND dropped = nullptr;
+      for (auto combo : {themeChoice, choice}) if (SendMessageW(combo, CB_GETDROPPEDSTATE, 0, 0)) dropped = combo;
+      if (dropped) { SendMessageW(dropped, CB_SHOWDROPDOWN, FALSE, 0); continue; }
+      if (message.wParam == VK_ESCAPE) DestroyWindow(window);
+      else {
+        HWND focused = GetFocus(); wchar_t clsName[32]{}; GetClassNameW(focused, clsName, ARRAYSIZE(clsName));
+        if (!_wcsicmp(clsName, L"BUTTON")) SendMessageW(focused, BM_CLICK, 0, 0);
+        else if (activePage == SettingsPage::Features) SendMessageW(window, WM_COMMAND, MAKEWPARAM(IDOK, BN_CLICKED), 0);
+      }
+      continue;
+    }
+    if (!IsDialogMessageW(window, &message)) { TranslateMessage(&message); DispatchMessageW(&message); }
+  }
+  appearance.reset(); return 0;
+}
+} // namespace navigation

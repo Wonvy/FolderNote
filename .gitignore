@@ -1,0 +1,19 @@
+/build/
+/build-*/
+/dist/
+/out/
+/.vs/
+/CMakeUserPresets.json
+
+# Local Explorer metadata and IDE state
+desktop.ini
+Thumbs.db
+*.user
+
+# Local credentials and signing keys
+.env
+.env.*
+!.env.example
+*.pfx
+*.p12
+*.key
