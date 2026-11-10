@@ -128,21 +128,29 @@ int main() {
       check(preferredAction() == Action::Parent);
       check(!quickEnabled() && dialogQuickEnabled());
       check(!tabsEnabled());
-      saveSettings(false, Action::Parent, Action::Parent, false, true, ui::ThemeMode::System, true);
-      check(tabsEnabled());
-      saveSettings(false, Action::Parent, Action::Parent); check(tabsEnabled());
-      saveSettings(false, Action::Parent, Action::Parent, false, true, ui::ThemeMode::System, false); check(!tabsEnabled());
+      check(!preferNewTabEnabled());
+      saveSettings(false, Action::Parent, Action::Parent, false, true, ui::ThemeMode::System, true, true);
+      check(tabsEnabled() && preferNewTabEnabled());
+      saveSettings(false, Action::Parent, Action::Parent); check(tabsEnabled() && preferNewTabEnabled());
+      // Disabling tabs and legacy saves must retain the user's subordinate choice.
+      saveSettings(false, Action::Parent, Action::Parent, false, true, ui::ThemeMode::System, false);
+      check(!tabsEnabled() && preferNewTabEnabled());
+      syncNoteMenus(); check(preferNewTabEnabled());
       check(ui::configuredTheme() == ui::ThemeMode::System);
       for (auto theme : {ui::ThemeMode::Light, ui::ThemeMode::Dark, ui::ThemeMode::System}) {
         saveSettings(false, Action::Parent, Action::Parent, false, true, theme);
-        check(ui::configuredTheme() == theme);
+        check(ui::configuredTheme() == theme && preferNewTabEnabled());
         saveSettings(true, Action::Back, Action::Parent); // Old callers and upgrades preserve appearance.
-        check(ui::configuredTheme() == theme);
+        check(ui::configuredTheme() == theme && preferNewTabEnabled());
       }
       bool badTheme = false;
-      try { saveSettings(false, Action::Off, Action::Back, true, false, ui::ThemeMode(9)); }
+      try { saveSettings(false, Action::Off, Action::Back, true, false, ui::ThemeMode(9), true, false); }
       catch (const fn::Error &) { badTheme = true; }
-      check(badTheme && ui::configuredTheme() == ui::ThemeMode::System && configuredAction() == Action::Back);
+      check(badTheme && ui::configuredTheme() == ui::ThemeMode::System && configuredAction() == Action::Back &&
+            !tabsEnabled() && preferNewTabEnabled());
+      saveSettings(false, Action::Parent, Action::Parent, false, true, ui::ThemeMode::System, true, false);
+      check(tabsEnabled() && !preferNewTabEnabled());
+      saveSettings(false, Action::Parent, Action::Parent, false, true, ui::ThemeMode::System, false, false);
       DWORD invalidTheme = 99;
       check(RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"Theme", REG_DWORD, &invalidTheme, sizeof(invalidTheme)) == ERROR_SUCCESS);
       check(ui::configuredTheme() == ui::ThemeMode::System);
@@ -223,6 +231,13 @@ int main() {
       check(RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"NotesEnabled",
                             REG_SZ, invalid, sizeof(invalid)) == ERROR_SUCCESS);
       check(!notesEnabled());
+      check(RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"ExplorerOpenInNewTab",
+                            REG_SZ, invalid, sizeof(invalid)) == ERROR_SUCCESS);
+      check(!preferNewTabEnabled());
+      DWORD invalidNewTab = 2;
+      check(RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"ExplorerOpenInNewTab",
+                            REG_DWORD, &invalidNewTab, sizeof(invalidNewTab)) == ERROR_SUCCESS);
+      check(!preferNewTabEnabled());
       DWORD invalidPreference = 17;
       check(RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"NavigationPreference",
                             REG_DWORD, &invalidPreference, sizeof(invalidPreference)) == ERROR_SUCCESS);

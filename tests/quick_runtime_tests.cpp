@@ -61,6 +61,25 @@ static void enable(bool value, bool withDialogs = true) {
         RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"QuickFoldersInDialogs", REG_DWORD, &dialogs, sizeof(dialogs)) == ERROR_SUCCESS,
         "write isolated runtime switches");
 }
+static void helperLifetimeTests() {
+  auto routing = [](DWORD tabs, DWORD prefer) {
+    check(RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"ExplorerTabsEnabled", REG_DWORD, &tabs, sizeof(tabs)) == ERROR_SUCCESS &&
+          RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"ExplorerOpenInNewTab", REG_DWORD, &prefer, sizeof(prefer)) == ERROR_SUCCESS,
+          "write isolated routing switches");
+  };
+  enable(false); routing(0, 0);
+  check(!quick::helperEnabled(), "disabled features do not require the helper");
+  enable(true);
+  check(quick::helperEnabled(), "middle menu alone keeps the helper active");
+  enable(false); routing(1, 1);
+  check(quick::helperEnabled() == navigation::tabsSupported(), "supported routing keeps helper active without middle menu");
+  check(!quick::eligibleTarget(GetDesktopWindow()), "routing alone never enables the middle menu");
+  routing(0, 1);
+  check(!quick::helperEnabled(), "routing preference requires enabled custom tabs");
+  routing(1, 0);
+  check(!quick::helperEnabled(), "custom tabs without routing do not require helper");
+  routing(0, 0); enable(true);
+}
 static LRESULT mouse(UINT message, POINT point = {20, 20}) {
   MSLLHOOKSTRUCT data{}; data.pt = point;
   return quick::mouseHook(HC_ACTION, message, reinterpret_cast<LPARAM>(&data));
@@ -260,7 +279,7 @@ int main() {
   CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
   int result = 0;
   try {
-    Isolated settings; enable(true);
+    Isolated settings; helperLifetimeTests();
     WNDCLASSW shell{}; shell.hInstance = GetModuleHandleW(nullptr); shell.lpfnWndProc = DefWindowProcW; shell.lpszClassName = L"SHELLDLL_DefView";
     check(RegisterClassW(&shell) != 0, "register disposable file-dialog view");
     auto dialog = [&] {

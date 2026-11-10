@@ -15,6 +15,11 @@ bool tabsEnabled() {
   return RegGetValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"ExplorerTabsEnabled", RRF_RT_REG_DWORD,
       nullptr, &value, &size) == ERROR_SUCCESS && value == 1;
 }
+bool preferNewTabEnabled() {
+  DWORD value = 0, size = sizeof(value);
+  return RegGetValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"ExplorerOpenInNewTab", RRF_RT_REG_DWORD,
+      nullptr, &value, &size) == ERROR_SUCCESS && value == 1;
+}
 bool isDoubleClick(const Click &a, const Click &b, UINT interval, int width, int height) {
   return width >= 0 && height >= 0 && a.blank && b.blank && a.root && a.root == b.root &&
          a.view && a.view == b.view && DWORD(b.time - a.time) <= interval &&

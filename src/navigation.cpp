@@ -121,7 +121,7 @@ struct SettingKeys {
 };
 } // namespace
 
-static void applySettings(bool notes, Action action, Action preferred, bool quick, bool dialogs, ui::ThemeMode theme, bool tabs, bool saveConfiguration) {
+static void applySettings(bool notes, Action action, Action preferred, bool quick, bool dialogs, ui::ThemeMode theme, bool tabs, bool preferNewTab, bool saveConfiguration) {
   if (action != Action::Off && action != Action::Parent && action != Action::Back)
     throw fn::Error{L"请选择有效的双击操作。"};
   if (preferred != Action::Parent && preferred != Action::Back)
@@ -129,7 +129,7 @@ static void applySettings(bool notes, Action action, Action preferred, bool quic
   if (DWORD(theme) > 2) throw fn::Error{L"请选择有效的主题。"};
   SettingKeys keys;
   LSTATUS error = ERROR_SUCCESS;
-  std::array<SettingValue, 10> saved;
+  std::array<SettingValue, 11> saved;
   if (saveConfiguration) {
     error = RegCreateKeyExW(HKEY_CURRENT_USER, configKey, 0, nullptr, 0,
                                KEY_QUERY_VALUE | KEY_SET_VALUE, nullptr, &keys.values[0], nullptr);
@@ -142,6 +142,7 @@ static void applySettings(bool notes, Action action, Action preferred, bool quic
     saved[4].read(keys.values[0], L"QuickFoldersInDialogs");
     saved[5].read(keys.values[0], L"Theme");
     saved[6].read(keys.values[0], L"ExplorerTabsEnabled");
+    saved[7].read(keys.values[0], L"ExplorerOpenInNewTab");
   }
   // Only alter menus already installed by FolderNote. A modern-only or portable
   // installation must not gain incomplete legacy menu entries when saving.
@@ -153,10 +154,10 @@ static void applySettings(bool notes, Action action, Action preferred, bool quic
       continue;
     if (error)
       fn::fail(L"无法更新备注菜单开关", error);
-    saved[index + 7].read(keys.values[index + 1], L"LegacyDisable");
+    saved[index + 8].read(keys.values[index + 1], L"LegacyDisable");
   }
-  const std::array<DWORD, 7> values{notes ? 1UL : 0UL, DWORD(action), DWORD(preferred), quick ? 1UL : 0UL, dialogs ? 1UL : 0UL,
-                                    DWORD(theme), tabs ? 1UL : 0UL};
+  const std::array<DWORD, 8> values{notes ? 1UL : 0UL, DWORD(action), DWORD(preferred), quick ? 1UL : 0UL, dialogs ? 1UL : 0UL,
+                                    DWORD(theme), tabs ? 1UL : 0UL, preferNewTab ? 1UL : 0UL};
   for (size_t index = 0; index < saved.size(); ++index) {
     auto &value = saved[index];
     if (!value.key)
@@ -194,10 +195,13 @@ void saveSettings(bool notes, Action action, Action preferred, bool quick, bool 
   saveSettings(notes, action, preferred, quick, dialogs, theme, tabsEnabled());
 }
 void saveSettings(bool notes, Action action, Action preferred, bool quick, bool dialogs, ui::ThemeMode theme, bool tabs) {
-  applySettings(notes, action, preferred, quick, dialogs, theme, tabs, true);
+  saveSettings(notes, action, preferred, quick, dialogs, theme, tabs, preferNewTabEnabled());
+}
+void saveSettings(bool notes, Action action, Action preferred, bool quick, bool dialogs, ui::ThemeMode theme, bool tabs, bool preferNewTab) {
+  applySettings(notes, action, preferred, quick, dialogs, theme, tabs, preferNewTab, true);
 }
 void syncNoteMenus() {
-  applySettings(notesEnabled(), configuredAction(), preferredAction(), quickEnabled(), dialogQuickEnabled(), ui::configuredTheme(), tabsEnabled(), false);
+  applySettings(notesEnabled(), configuredAction(), preferredAction(), quickEnabled(), dialogQuickEnabled(), ui::configuredTheme(), tabsEnabled(), preferNewTabEnabled(), false);
 }
 static HWND choice;
 static HWND notesCheck;
@@ -205,6 +209,7 @@ static HWND navigationCheck;
 static HWND quickCheck;
 static HWND dialogCheck;
 static HWND tabsCheck;
+static HWND preferNewTabCheck;
 static HFONT font, headingFont;
 static HWND body, themeChoice, settingsWindow, managerPage;
 static SettingsPage activePage = SettingsPage::Features;
@@ -216,7 +221,7 @@ struct Placement { HWND window; int x, y, width, height; };
 static std::vector<Placement> placements;
 static UINT dpi;
 static int scale(int n) { return MulDiv(n, dpi, 96); }
-static int contentHeight() { return scale(tabsSupported() ? 550 : 440); }
+static int contentHeight() { return scale(tabsSupported() ? 634 : 440); }
 static void copyDiagnostics(HWND owner) {
   const auto text = diagnostics();
   auto memory = GlobalAlloc(GMEM_MOVEABLE, (text.size() + 1) * sizeof(wchar_t));
@@ -298,8 +303,8 @@ static LRESULT CALLBACK contentProc(HWND h, UINT message, WPARAM w, LPARAM l) {
   case WM_PAINT: {
     PAINTSTRUCT paint{}; HDC dc = BeginPaint(h, &paint); RECT client{}; GetClientRect(h, &client);
     FillRect(dc, &client, appearance->background);
-    for (auto pair : {std::pair{0, 88}, std::pair{100, 122}, std::pair{234, 154}, std::pair{400, 98}}) {
-      if (pair.first == 400 && !tabsSupported()) continue;
+    for (auto pair : {std::pair{0, 88}, std::pair{100, 122}, std::pair{234, 206}, std::pair{450, 180}}) {
+      if (pair.first == 450 && !tabsSupported()) continue;
       RECT card{scale(20), scale(pair.first) - scrollPosition, client.right - scale(20), scale(pair.first + pair.second) - scrollPosition};
       ui::rounded(dc, card, appearance->colors.surface, appearance->colors.border, scale(9));
     }
@@ -402,14 +407,18 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     SendMessageW(quickCheck, BM_SETCHECK, quickEnabled() ? BST_CHECKED : BST_UNCHECKED, 0);
     dialogCheck = field(L"BUTTON", L"同时支持文件与文件夹选择对话框", checkStyle, 68, 278, -40, 26, 15);
     SendMessageW(dialogCheck, BM_SETCHECK, dialogQuickEnabled() ? BST_CHECKED : BST_UNCHECKED, 0); EnableWindow(dialogCheck, quickEnabled());
-    field(L"STATIC", L"桌面和资源管理器中均可使用，悬停展开子目录。\n启用后运行后台组件；桌面菜单中的文件夹会在新窗口打开。", 0, 68, 309, -40, 38, 0, true);
+    field(L"STATIC", L"桌面和资源管理器中均可使用，悬停展开子目录。\n启用后运行后台组件，快速访问常用和最近打开的文件夹。", 0, 68, 309, -40, 38, 0, true);
     field(L"STATIC", L"选中项目后按中键，点击“复制”或“移动”，\n再选择目标文件夹；在空白处按中键也可使用。", 0, 68, 352, -40, 38, 0, true);
     field(L"BUTTON", L"置顶与历史 →", WS_TABSTOP, 68, 402, 170, 28, 16);
-    tabsCheck = nullptr;
+    tabsCheck = preferNewTabCheck = nullptr;
     if (tabsSupported()) {
       tabsCheck = field(L"BUTTON", L"资源管理器多标签（Windows 10）", checkStyle, 40, 462, -40, 26, 18);
       SendMessageW(tabsCheck, BM_SETCHECK, tabsEnabled() ? BST_CHECKED : BST_UNCHECKED, 0);
       field(L"STATIC", L"悬停标签：滚轮切换，中键关闭；右键可新建和设置。\n保存后显示或隐藏标签栏；升级后请重新打开文件夹窗口。", 0, 68, 494, -40, 40, 0, true);
+      preferNewTabCheck = field(L"BUTTON", L"始终在新标签中打开文件夹", checkStyle, 68, 548, -40, 26, 21);
+      SendMessageW(preferNewTabCheck, BM_SETCHECK, preferNewTabEnabled() ? BST_CHECKED : BST_UNCHECKED, 0);
+      EnableWindow(preferNewTabCheck, tabsEnabled());
+      field(L"STATIC", L"首个窗口正常打开；桌面或其他软件另开文件夹时\n优先使用新标签；标签右键仍可开新窗口。", 0, 96, 580, -40, 40, 0, true);
     }
     ui::muted(add(h, L"STATIC", L"功能设置保存后应用 · 置顶与历史修改立即保存", 0, 33));
     add(h, L"BUTTON", L"复制诊断信息", WS_TABSTOP, 13);
@@ -427,7 +436,8 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         saveSettings(SendMessageW(notesCheck, BM_GETCHECK, 0, 0) == BST_CHECKED, action, preferred,
             SendMessageW(quickCheck, BM_GETCHECK, 0, 0) == BST_CHECKED,
             SendMessageW(dialogCheck, BM_GETCHECK, 0, 0) == BST_CHECKED, appearance->mode,
-            tabsCheck ? SendMessageW(tabsCheck, BM_GETCHECK, 0, 0) == BST_CHECKED : tabsEnabled());
+            tabsCheck ? SendMessageW(tabsCheck, BM_GETCHECK, 0, 0) == BST_CHECKED : tabsEnabled(),
+            preferNewTabCheck ? SendMessageW(preferNewTabCheck, BM_GETCHECK, 0, 0) == BST_CHECKED : preferNewTabEnabled());
         ui::notifyThemeChanged(); reload(); auto tabsStatus = syncTabs(); quick::syncHelper(quick::executable());
         if (tabsSupported() && tabsEnabled() && tabsStatus.windows && tabsStatus.visible == 0) {
           MessageBoxW(h, L"设置已保存，已打开的文件夹窗口尚未显示标签栏。\n请关闭后重新打开文件夹窗口。标签栏由这里的开关控制，无需在资源管理器菜单中勾选。\n仍未显示时，可复制诊断信息查看加载状态。", L"FolderNote 多标签", MB_OK | MB_ICONINFORMATION);
@@ -440,6 +450,8 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
       EnableWindow(choice, SendMessageW(navigationCheck, BM_GETCHECK, 0, 0) == BST_CHECKED);
     } else if (LOWORD(w) == 14 && HIWORD(w) == BN_CLICKED) {
       EnableWindow(dialogCheck, SendMessageW(quickCheck, BM_GETCHECK, 0, 0) == BST_CHECKED);
+    } else if (LOWORD(w) == 18 && HIWORD(w) == BN_CLICKED && preferNewTabCheck) {
+      EnableWindow(preferNewTabCheck, SendMessageW(tabsCheck, BM_GETCHECK, 0, 0) == BST_CHECKED);
     } else if (LOWORD(w) == 16 && HIWORD(w) == BN_CLICKED) {
       showPage(SettingsPage::QuickFolders); SetFocus(GetDlgItem(h, 41));
     } else if ((LOWORD(w) == 40 || LOWORD(w) == 41) && HIWORD(w) == BN_CLICKED) {

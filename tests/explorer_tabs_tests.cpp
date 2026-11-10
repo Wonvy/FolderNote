@@ -1,5 +1,6 @@
 #include "../src/explorer_tabs.h"
 #include <shlobj.h>
+#include <shellapi.h>
 #include <functional>
 #include <iostream>
 #include <thread>
@@ -39,6 +40,23 @@ static SHORT testKeyState(int key) {
     return key == simulatedModifier ? SHORT(-32768) : 0;
   return GetKeyState(key);
 }
+struct RecordedLaunch { DWORD mask = 0; std::wstring verb; std::vector<BYTE> folder; };
+static std::vector<RecordedLaunch> recordedLaunches;
+static BOOL testShellExecuteExW(SHELLEXECUTEINFOW *launch) {
+  RecordedLaunch recorded; recorded.mask = launch->fMask;
+  if (launch->lpVerb) recorded.verb = launch->lpVerb;
+  if ((launch->fMask & SEE_MASK_IDLIST) && launch->lpIDList) {
+    auto id = static_cast<PCIDLIST_ABSOLUTE>(launch->lpIDList);
+    auto bytes = reinterpret_cast<const BYTE *>(id); recorded.folder.assign(bytes, bytes + ILGetSize(id));
+  }
+  recordedLaunches.push_back(std::move(recorded)); return TRUE;
+}
+static HWND testOwnedHelper = nullptr;
+static HWND testFindWindowExW(HWND parent, HWND after, LPCWSTR className, LPCWSTR title) {
+  if (parent == HWND_MESSAGE && reinterpret_cast<ULONG_PTR>(className) > 0xffff &&
+      !wcscmp(className, L"FolderNote.QuickFolders.Helper.v1")) return testOwnedHelper;
+  return FindWindowExW(parent, after, className, title);
+}
 #define GetModuleFileNameW testExplorerPath
 #define GetDpiForWindow testWindowDpi
 #define ShowWindow testShowWindow
@@ -46,7 +64,11 @@ static SHORT testKeyState(int key) {
 #define GetAsyncKeyState testKeyState
 #define SetTimer testSetTimer
 #define GetTickCount64 testTickCount64
+#define ShellExecuteExW testShellExecuteExW
+#define FindWindowExW testFindWindowExW
 #include "../src/explorer_tabs.cpp"
+#undef FindWindowExW
+#undef ShellExecuteExW
 #undef GetTickCount64
 #undef SetTimer
 #undef GetAsyncKeyState
@@ -85,10 +107,41 @@ static void models() {
   require(model.closed.size() == tabs::Model::closedLimit, "closed history bounded");
   require(separate.items.size() == 1 && separate.items[0] == c, "different windows isolated");
 }
+struct SelectedItems final : IEnumIDList {
+  ULONG refs = 1; size_t at = 0;
+  std::vector<std::vector<BYTE>> items;
+  explicit SelectedItems(std::vector<std::vector<BYTE>> value) : items(std::move(value)) {}
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void **out) override {
+    if (!out) return E_POINTER; *out = nullptr;
+    if (iid != IID_IUnknown && iid != IID_IEnumIDList) return E_NOINTERFACE;
+    *out = static_cast<IEnumIDList *>(this); AddRef(); return S_OK;
+  }
+  ULONG STDMETHODCALLTYPE AddRef() override { return ++refs; }
+  ULONG STDMETHODCALLTYPE Release() override { auto count = --refs; if (!count) delete this; return count; }
+  HRESULT STDMETHODCALLTYPE Next(ULONG count, PITEMID_CHILD *out, ULONG *fetched) override {
+    if (!out || (count != 1 && !fetched)) return E_POINTER;
+    ULONG copied = 0;
+    while (copied < count && at < items.size()) {
+      out[copied] = static_cast<PITEMID_CHILD>(CoTaskMemAlloc(items[at].size()));
+      if (!out[copied]) return E_OUTOFMEMORY;
+      memcpy(out[copied], items[at].data(), items[at].size()); ++copied; ++at;
+    }
+    if (fetched) *fetched = copied; return copied == count ? S_OK : S_FALSE;
+  }
+  HRESULT STDMETHODCALLTYPE Skip(ULONG count) override { auto before = at; at = std::min(items.size(), at + count); return at - before == count ? S_OK : S_FALSE; }
+  HRESULT STDMETHODCALLTYPE Reset() override { at = 0; return S_OK; }
+  HRESULT STDMETHODCALLTYPE Clone(IEnumIDList **out) override {
+    if (!out) return E_POINTER; auto copy = new SelectedItems(items); copy->at = at; *out = copy; return S_OK;
+  }
+};
 struct View final : IShellView, IFolderView, IPersistFolder2 {
   ULONG refs = 1;
   tabs::Location folder = known(FOLDERID_Windows);
   std::function<void()> onGetFolder;
+  std::function<void()> onSelectItem;
+  std::vector<std::vector<BYTE>> selected;
+  std::vector<SVSIF> selectionFlags;
+  HRESULT selectOutcome = S_OK;
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void **out) override {
     if (!out) return E_POINTER; *out = nullptr;
     if (iid == IID_IUnknown || iid == IID_IShellView || iid == IID_IOleWindow) *out = static_cast<IShellView *>(this);
@@ -110,14 +163,30 @@ struct View final : IShellView, IFolderView, IPersistFolder2 {
   HRESULT STDMETHODCALLTYPE GetCurrentInfo(LPFOLDERSETTINGS) override { return E_NOTIMPL; }
   HRESULT STDMETHODCALLTYPE AddPropertySheetPages(DWORD, LPFNSVADDPROPSHEETPAGE, LPARAM) override { return E_NOTIMPL; }
   HRESULT STDMETHODCALLTYPE SaveViewState() override { return E_NOTIMPL; }
-  HRESULT STDMETHODCALLTYPE SelectItem(PCUITEMID_CHILD, SVSIF) override { return E_NOTIMPL; }
+  HRESULT STDMETHODCALLTYPE SelectItem(PCUITEMID_CHILD id, SVSIF flags) override {
+    if (onSelectItem) { auto callback = std::move(onSelectItem); callback(); }
+    if (FAILED(selectOutcome)) return selectOutcome;
+    if (flags & SVSI_DESELECTOTHERS) selected.clear();
+    if (!id) {
+      if (!(flags & SVSI_DESELECTOTHERS)) return E_INVALIDARG;
+      selectionFlags.push_back(flags); return S_OK;
+    }
+    auto bytes = reinterpret_cast<const BYTE *>(id); selected.emplace_back(bytes, bytes + ILGetSize(id));
+    selectionFlags.push_back(flags); return S_OK;
+  }
   HRESULT STDMETHODCALLTYPE GetItemObject(UINT, REFIID, void **) override { return E_NOTIMPL; }
   HRESULT STDMETHODCALLTYPE GetCurrentViewMode(UINT *) override { return E_NOTIMPL; }
   HRESULT STDMETHODCALLTYPE SetCurrentViewMode(UINT) override { return E_NOTIMPL; }
   HRESULT STDMETHODCALLTYPE GetFolder(REFIID iid, void **out) override { return QueryInterface(iid, out); }
   HRESULT STDMETHODCALLTYPE Item(int, PITEMID_CHILD *) override { return E_NOTIMPL; }
-  HRESULT STDMETHODCALLTYPE ItemCount(UINT, int *) override { return E_NOTIMPL; }
-  HRESULT STDMETHODCALLTYPE Items(UINT, REFIID, void **) override { return E_NOTIMPL; }
+  HRESULT STDMETHODCALLTYPE ItemCount(UINT flags, int *out) override {
+    if (!out) return E_POINTER; if (flags != SVGIO_SELECTION) return E_NOTIMPL;
+    *out = static_cast<int>(selected.size()); return S_OK;
+  }
+  HRESULT STDMETHODCALLTYPE Items(UINT flags, REFIID iid, void **out) override {
+    if (!out) return E_POINTER; *out = nullptr; if (flags != SVGIO_SELECTION) return E_NOTIMPL;
+    auto list = new SelectedItems(selected); auto result = list->QueryInterface(iid, out); list->Release(); return result;
+  }
   HRESULT STDMETHODCALLTYPE GetSelectionMarkedItem(int *) override { return E_NOTIMPL; }
   HRESULT STDMETHODCALLTYPE GetFocusedItem(int *) override { return E_NOTIMPL; }
   HRESULT STDMETHODCALLTYPE GetItemPosition(PCUITEMID_CHILD, POINT *) override { return E_NOTIMPL; }
@@ -1028,6 +1097,261 @@ static void directHostTests() {
   UnregisterClassW(cls.lpszClassName, cls.hInstance);
   UnregisterClassW(addressClass.lpszClassName, cls.hInstance); UnregisterClassW(travelClass.lpszClassName, cls.hInstance);
 }
+static void packetTests() {
+  using namespace tabs::routing;
+  Packet original{73, known(FOLDERID_Profile).id, {{4, 0, 1, 2, 0, 0}, {4, 0, 3, 4, 0, 0}}};
+  auto bytes = encode(original);
+  COPYDATASTRUCT data{importData, DWORD(bytes.size()), bytes.data()}; Packet decoded;
+  require(!bytes.empty() && decode(&data, decoded) && decoded.token == original.token &&
+          decoded.folder == original.folder && decoded.selected == original.selected, "routing packet round trips folder and selected child PIDLs");
+  for (DWORD length = 0; length < bytes.size(); ++length) {
+    data.cbData = length; require(!decode(&data, decoded), "every truncated routing packet is rejected");
+  }
+  data.cbData = DWORD(bytes.size()); data.dwData = 0;
+  require(!decode(&data, decoded), "wrong copy-data protocol is rejected");
+  data.dwData = importData;
+  auto invalid = bytes; PacketHeader header{}; memcpy(&header, invalid.data(), sizeof(header));
+  header.selectedCount = DWORD(maxSelection + 1); memcpy(invalid.data(), &header, sizeof(header)); data.lpData = invalid.data();
+  require(!decode(&data, decoded), "packet cannot exceed bounded selection count");
+  invalid = bytes; invalid[sizeof(PacketHeader)] = 1; invalid[sizeof(PacketHeader) + 1] = 0; data.lpData = invalid.data();
+  require(!decode(&data, decoded), "malformed folder item length is rejected");
+  invalid = bytes; invalid.back() = 1; data.lpData = invalid.data();
+  require(!decode(&data, decoded), "unterminated selected child PIDL is rejected");
+  invalid = bytes; invalid.push_back(0); data.lpData = invalid.data(); data.cbData = DWORD(invalid.size());
+  require(!decode(&data, decoded), "trailing packet data is rejected");
+  require(decoded.token == original.token && decoded.selected == original.selected, "rejected packet never replaces the last decoded value");
+  original.token = 0; require(encode(original).empty(), "zero transfer token is rejected"); original.token = 73;
+  original.selected.resize(maxSelection + 1); require(encode(original).empty(), "encoder bounds selection allocation");
+}
+struct RoutingHost {
+  Browser browser;
+  ComPtr<IObjectWithSite> site;
+  ComPtr<IDeskBand2> band;
+  HWND frame = nullptr, window = nullptr, control = nullptr;
+  unsigned closeRequests = 0;
+  ULONG_PTR receivedToken = 0;
+  static LRESULT CALLBACK frameProc(HWND h, UINT message, WPARAM w, LPARAM l) {
+    if (message == WM_NCCREATE) SetWindowLongPtrW(h, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(reinterpret_cast<CREATESTRUCTW *>(l)->lpCreateParams));
+    auto self = reinterpret_cast<RoutingHost *>(GetWindowLongPtrW(h, GWLP_USERDATA));
+    if (self && message == WM_CLOSE) { ++self->closeRequests; return 0; }
+    return DefWindowProcW(h, message, w, l);
+  }
+  static LRESULT CALLBACK observe(HWND h, UINT message, WPARAM w, LPARAM l, UINT_PTR, DWORD_PTR value) {
+    auto self = reinterpret_cast<RoutingHost *>(value);
+    if (message == WM_COPYDATA) {
+      tabs::routing::Packet packet;
+      if (tabs::routing::decode(reinterpret_cast<const COPYDATASTRUCT *>(l), packet)) self->receivedToken = packet.token;
+    }
+    return DefSubclassProc(h, message, w, l);
+  }
+  explicit RoutingHost(tabs::Location folder) {
+    frame = CreateWindowW(L"CabinetWClass", L"Hidden tab routing fixture", WS_OVERLAPPED,
+        0, 0, 1100, 200, nullptr, nullptr, GetModuleHandleW(nullptr), this);
+    require(frame != nullptr, "create isolated routing frame");
+    browser.parent = frame; browser.view.folder = std::move(folder);
+    require(SUCCEEDED(tabs::create(IID_PPV_ARGS(&site))) && SUCCEEDED(site->SetSite(&browser)) &&
+            SUCCEEDED(site.As(&band)) && SUCCEEDED(band->GetWindow(&window)), "attach routing fixture band");
+    MoveWindow(window, 0, 0, 1100, 40, FALSE); control = GetDlgItem(window, 1);
+    require(SetWindowSubclass(window, observe, 81, reinterpret_cast<DWORD_PTR>(this)) != FALSE, "observe copied routing token");
+    pump();
+  }
+  ~RoutingHost() {
+    if (IsWindow(window)) RemoveWindowSubclass(window, observe, 81);
+    if (site) site->SetSite(nullptr); band.Reset(); site.Reset();
+    if (IsWindow(frame)) DestroyWindow(frame); pump();
+  }
+  int count() const { return TabCtrl_GetItemCount(control); }
+  LRESULT route(RoutingHost &destination, HWND helper) {
+    return SendMessageW(window, tabs::routing::routeMessage, reinterpret_cast<WPARAM>(destination.window), reinterpret_cast<LPARAM>(helper));
+  }
+  void finish(tabs::Location folder) {
+    browser.view.folder = std::move(folder); SendMessageW(window, tabs::changedMessage, 0, 0); pump();
+  }
+};
+static void routingTests() {
+  if (!navigation::tabsSupported()) return;
+  auto preference = [](bool enabled) {
+    DWORD value = enabled ? 1 : 0;
+    require(RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"ExplorerOpenInNewTab", REG_DWORD, &value, sizeof(value)) == ERROR_SUCCESS,
+            "set isolated new-tab routing preference");
+  };
+  DWORD enabled = 1;
+  require(RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"ExplorerTabsEnabled", REG_DWORD, &enabled, sizeof(enabled)) == ERROR_SUCCESS,
+          "enable isolated tab fixture");
+  WNDCLASSW cls{}; cls.hInstance = GetModuleHandleW(nullptr); cls.lpszClassName = L"CabinetWClass"; cls.lpfnWndProc = RoutingHost::frameProc;
+  require(RegisterClassW(&cls) != 0, "register routing fixture class");
+  cls.lpszClassName = tabs::routing::helperClass; cls.lpfnWndProc = DefWindowProcW;
+  require(RegisterClassW(&cls) != 0, "register inert helper fixture class");
+  HWND helper = CreateWindowW(cls.lpszClassName, L"", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, cls.hInstance, nullptr);
+  testOwnedHelper = helper;
+  require(helper && tabs::routing::helperWindow() == helper, "routing requests use only the test-owned inert helper");
+  auto first = known(FOLDERID_Windows), second = known(FOLDERID_Profile), third = known(FOLDERID_ComputerFolder);
+  preference(false);
+  {
+    RoutingHost host(first);
+    SendMessageW(host.window, tabs::actionMessage, tabs::Duplicate, 0); pump();
+    host.finish(second); const auto before = recordedLaunches.size(); const auto navigations = host.browser.navigations;
+    SendMessageW(host.window, tabs::actionMessage, tabs::NewWindow, 0); pump();
+    require(recordedLaunches.size() == before + 1 && recordedLaunches.back().verb == L"opennewwindow" &&
+            (recordedLaunches.back().mask & SEE_MASK_IDLIST) && recordedLaunches.back().folder == first.id,
+            "new-window command launches the clicked inactive tab through its absolute PIDL");
+    require(host.count() == 2 && host.browser.view.folder == second && host.browser.navigations == navigations && !host.closeRequests,
+            "explicit new window preserves original tabs, active folder and source window");
+  }
+  preference(true);
+  {
+    RoutingHost source(first), destination(second);
+    source.browser.view.onGetFolder = [&] { SendMessageW(source.window, tabs::changedMessage, 0, 0); };
+    require(source.route(destination, helper) == 0 && !source.closeRequests && destination.count() == 1,
+            "startup completion during capture keeps a held window eligible for retry");
+    require(source.route(destination, helper) == 1, "settled capture accepts the existing pending source"); pump();
+    require(source.closeRequests == 1 && destination.count() == 2,
+            "capture retry completes once without revealing or duplicating the source");
+  }
+  {
+    RoutingHost source(first), destination(first);
+    destination.browser.view.selected = {{4, 0, 1, 2, 0, 0}};
+    require(source.route(destination, helper) == 1, "accept same-folder new tab with empty source selection"); pump();
+    require(destination.count() == 2 && destination.browser.navigations == 0 &&
+            destination.browser.view.selected.empty() && source.closeRequests == 1,
+            "same-folder import clears destination selection without redundant navigation before closing source");
+  }
+  {
+    RoutingHost source(first), destination(second); destination.browser.complete = false;
+    source.browser.view.selected = {{4, 0, 1, 2, 0, 0}, {4, 0, 3, 4, 0, 0}};
+    require(source.route(destination, helper) == 1 && !source.closeRequests && destination.browser.navigations == 0,
+            "accepting copied request neither navigates nor closes a source synchronously");
+    pump(); require(destination.count() == 2 && destination.browser.navigations == 1 && !source.closeRequests,
+                    "queued import starts a new tab but source remains until the directory loads");
+    SendMessageW(source.window, tabs::routing::completedMessage, reinterpret_cast<WPARAM>(source.window), LPARAM(destination.receivedToken));
+    SendMessageW(source.window, tabs::routing::completedMessage, reinterpret_cast<WPARAM>(destination.window), LPARAM(destination.receivedToken + 1));
+    require(!source.closeRequests, "wrong sender and wrong token cannot close a source window");
+    destination.finish(first);
+    require(source.closeRequests == 1 && destination.browser.view.selected == source.browser.view.selected &&
+            destination.browser.view.selectionFlags.size() == 2 &&
+            (destination.browser.view.selectionFlags[0] & SVSI_DESELECTOTHERS) &&
+            !(destination.browser.view.selectionFlags[1] & SVSI_DESELECTOTHERS),
+            "confirmed folder and restored selection acknowledge exactly one source close");
+    SendMessageW(source.window, tabs::routing::completedMessage, reinterpret_cast<WPARAM>(destination.window), LPARAM(destination.receivedToken));
+    require(source.closeRequests == 1, "duplicate completion never closes twice");
+  }
+  {
+    RoutingHost source(first), destination(second); destination.browser.outcome = E_ACCESSDENIED;
+    require(source.route(destination, helper) == 1, "navigation failure occurs after request acceptance"); pump();
+    require(!source.closeRequests && destination.count() == 1 && destination.browser.view.folder == second,
+            "failed destination navigation preserves source and original destination tab");
+  }
+  {
+    RoutingHost source(first), destination(second); destination.browser.complete = false;
+    SendMessageW(destination.window, tabs::actionMessage, tabs::New, 0); pump();
+    require(source.route(destination, helper) == 0 && !source.closeRequests, "busy destination requests retry without closing source");
+    require(source.route(destination, nullptr) == 2, "non-helper route requests are rejected");
+  }
+  {
+    RoutingHost source(first), destination(second);
+    BYTE invalid[] = {1, 2, 3}; COPYDATASTRUCT data{tabs::routing::importData, sizeof(invalid), invalid};
+    require(!SendMessageW(destination.window, WM_COPYDATA, reinterpret_cast<WPARAM>(source.window), reinterpret_cast<LPARAM>(&data)),
+            "malformed transfer cannot create a destination tab");
+    preference(false);
+    require(source.route(destination, helper) == 2 && destination.count() == 1 && !source.closeRequests,
+            "disabled global preference rejects transfer and preserves windows"); preference(true);
+  }
+  for (int change = 0; change < 4; ++change) {
+    RoutingHost source(first), destination(second); destination.browser.complete = false;
+    if (change == 3) source.browser.view.selected = {{4, 0, 1, 2, 0, 0}};
+    require(source.route(destination, helper) == 1, "prepare source-preservation transfer"); pump();
+    if (change == 0) source.finish(third);
+    if (change == 1) source.browser.view.selected = {{4, 0, 5, 6, 0, 0}};
+    if (change == 2) preference(false);
+    if (change == 3) destination.browser.view.selectOutcome = E_ACCESSDENIED;
+    destination.finish(first);
+    require(!source.closeRequests, "changed source folder, changed selection, disabled setting or failed selection restoration preserves source");
+    if (change == 2) preference(true);
+  }
+  {
+    RoutingHost source(first), destination(second); destination.browser.complete = false;
+    require(source.route(destination, helper) == 1, "prepare asynchronous failure transfer"); pump();
+    SendMessageW(destination.window, tabs::failedMessage, 0, 0); pump();
+    require(!source.closeRequests && destination.count() == 1, "asynchronous failed directory load rolls back destination and preserves source");
+  }
+  {
+    RoutingHost source(first), destination(second); destination.browser.complete = false;
+    require(source.route(destination, helper) == 1, "prepare expiring outbound transfer"); pump();
+    const auto token = destination.receivedToken;
+    simulatedElapsed += 20001; SendMessageW(source.window, WM_TIMER, 2, 0);
+    SendMessageW(source.window, tabs::routing::completedMessage, reinterpret_cast<WPARAM>(destination.window), LPARAM(token));
+    require(!source.closeRequests && source.route(destination, helper) == 0,
+            "outbound expiry ignores late acknowledgment and releases source for a busy-destination retry");
+  }
+  {
+    RoutingHost source(first), destination(second); destination.browser.complete = false;
+    require(source.route(destination, helper) == 1, "prepare destination-detach transfer"); pump();
+    const auto token = destination.receivedToken; const auto oldDestination = destination.window;
+    destination.site->SetSite(nullptr);
+    SendMessageW(source.window, tabs::routing::completedMessage, reinterpret_cast<WPARAM>(oldDestination), LPARAM(token));
+    require(!source.closeRequests, "detaching pending destination preserves source even if stale acknowledgment arrives");
+  }
+  {
+    RoutingHost source(first), destination(second); destination.browser.complete = false;
+    require(source.route(destination, helper) == 1, "prepare reentrant source-query transfer"); pump();
+    source.browser.view.onGetFolder = [&] {
+      source.browser.view.folder = third; SendMessageW(source.window, tabs::changedMessage, 0, 0);
+    };
+    destination.finish(first);
+    SendMessageW(source.window, WM_TIMER, 4, 0); pump();
+    require(!source.closeRequests && source.browser.view.folder == third,
+            "source navigation pumped by final folder query invalidates stale close authorization");
+  }
+  {
+    RoutingHost source(first), destination(second); destination.browser.complete = false;
+    source.browser.view.selected = {{4, 0, 1, 2, 0, 0}};
+    require(source.route(destination, helper) == 1, "prepare reentrant selection-restore transfer"); pump();
+    destination.browser.view.onSelectItem = [&] {
+      destination.browser.view.folder = third; SendMessageW(destination.window, tabs::changedMessage, 0, 0);
+    };
+    destination.finish(first);
+    SendMessageW(destination.window, WM_TIMER, 3, 0); pump();
+    require(!source.closeRequests && destination.browser.view.folder == third,
+            "destination navigation pumped by selection restoration prevents success acknowledgment");
+  }
+  {
+    RoutingHost source(first), destination(second); destination.browser.complete = false;
+    require(source.route(destination, helper) == 1, "prepare benign source completion reentrancy"); pump();
+    source.browser.view.onGetFolder = [&] { SendMessageW(source.window, tabs::changedMessage, 0, 0); };
+    destination.finish(first);
+    require(!source.closeRequests, "source defers close when a completion pumps its final snapshot");
+    SendMessageW(source.window, WM_TIMER, 4, 0); pump();
+    require(source.closeRequests == 1 && destination.count() == 2 && destination.browser.navigations == 1,
+            "same-folder completion retry closes source without creating a duplicate tab");
+  }
+  {
+    RoutingHost source(first), destination(second); destination.browser.complete = false;
+    source.browser.view.selected = {{4, 0, 1, 2, 0, 0}};
+    require(source.route(destination, helper) == 1, "prepare benign destination completion reentrancy"); pump();
+    destination.browser.view.onSelectItem = [&] { SendMessageW(destination.window, tabs::changedMessage, 0, 0); };
+    destination.finish(first);
+    require(!source.closeRequests, "destination defers acknowledgment during nested completion");
+    SendMessageW(destination.window, WM_TIMER, 3, 0); pump();
+    require(source.closeRequests == 1 && destination.count() == 2 && destination.browser.navigations == 1 &&
+            destination.browser.view.selected == source.browser.view.selected,
+            "same-folder completion retry restores selection then acknowledges once");
+  }
+  {
+    RoutingHost source(first), destination(second); destination.browser.complete = false;
+    source.browser.view.selected = {{4, 0, 1, 2, 0, 0}};
+    require(source.route(destination, helper) == 1, "prepare transient selection readiness failure"); pump();
+    destination.browser.view.selectOutcome = E_FAIL;
+    destination.finish(first);
+    require(!source.closeRequests, "unready selection does not close source");
+    destination.browser.view.selectOutcome = S_OK;
+    SendMessageW(destination.window, WM_TIMER, 3, 0); pump();
+    require(source.closeRequests == 1 && destination.count() == 2 && destination.browser.navigations == 1,
+            "selection readiness retry completes existing import without opening another tab");
+  }
+  preference(false); testOwnedHelper = nullptr; DestroyWindow(helper);
+  UnregisterClassW(tabs::routing::helperClass, cls.hInstance); UnregisterClassW(L"CabinetWClass", cls.hInstance);
+  require(tabs::activeObjects() == 0, "routing fixtures release all bands without touching Explorer");
+}
 int main() {
   CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
   GUID token{}; CoCreateGuid(&token); wchar_t text[40]{}; StringFromGUID2(token, text, ARRAYSIZE(text));
@@ -1035,7 +1359,7 @@ int main() {
   HKEY root = nullptr;
   if (RegCreateKeyExW(HKEY_CURRENT_USER, key.c_str(), 0, nullptr, 0, KEY_ALL_ACCESS, nullptr, &root, nullptr) || RegOverridePredefKey(HKEY_CURRENT_USER, root)) return 2;
   int result = 0;
-  try { models(); bandTests(); stableLayoutTests(); rollbackViewportTests(); tabInputTests(); directHostTests(); std::cout << "PASS " << checks << " tab assertions: independent folders, stable DPI layout, blank-area duplication, navigation rollback, reentrant detach, direct rebar hosting\n"; }
+  try { models(); bandTests(); stableLayoutTests(); rollbackViewportTests(); tabInputTests(); directHostTests(); packetTests(); routingTests(); std::cout << "PASS " << checks << " tab assertions: independent folders, stable DPI layout, blank-area duplication, navigation rollback, reentrant detach, direct rebar hosting, confirmed new-tab routing\n"; }
   catch (const char *message) { std::cerr << "FAIL " << checks << ": " << message << "\n"; result = 1; }
   catch (...) { std::cerr << "FAIL unexpected exception\n"; result = 1; }
   RegOverridePredefKey(HKEY_CURRENT_USER, nullptr); RegCloseKey(root); RegDeleteTreeW(HKEY_CURRENT_USER, key.c_str());

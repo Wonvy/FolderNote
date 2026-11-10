@@ -1,5 +1,6 @@
 #include "explorer_tabs.h"
 #include "tabs_model.h"
+#include "tabs_routing.h"
 #include "navigation.h"
 #include "quick_icons.h"
 #include "quick_folders.h"
@@ -25,7 +26,8 @@ constexpr UINT changedMessage = WM_APP + 121, actionMessage = WM_APP + 122, icon
 constexpr UINT failedMessage = WM_APP + 124;
 constexpr UINT wheelMessage = WM_APP + 125;
 std::atomic<long> objects{0}, bands{0};
-enum Command : unsigned { New = 1, Duplicate, CopyPath, Close, CloseOthers, Restore, Settings, Select = 100 };
+enum Command : unsigned { New = 1, Duplicate, CopyPath, Close, CloseOthers, Restore, Settings, NewWindow, Select = 100 };
+std::atomic<ULONG_PTR> transferSerial{static_cast<ULONG_PTR>(GetTickCount64())};
 HMODULE codeModule() {
   HMODULE module = nullptr;
   GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
@@ -76,6 +78,22 @@ Location computer() {
   PIDLIST_ABSOLUTE id = nullptr; Location value;
   if (SUCCEEDED(SHGetKnownFolderIDList(FOLDERID_ComputerFolder, 0, nullptr, &id))) { value = location(id); CoTaskMemFree(id); }
   return value;
+}
+bool selection(IShellBrowser *browser, std::vector<std::vector<BYTE>> &items) {
+  ComPtr<IShellView> view; ComPtr<IFolderView> folder; ComPtr<IEnumIDList> list;
+  if (!browser || FAILED(browser->QueryActiveShellView(&view)) || FAILED(view.As(&folder))) return false;
+  int count = 0;
+  if (FAILED(folder->ItemCount(SVGIO_SELECTION, &count)) || count < 0 || size_t(count) > routing::maxSelection) return false;
+  items.clear(); if (!count) return true;
+  if (FAILED(folder->Items(SVGIO_SELECTION, IID_PPV_ARGS(&list))) || !list) return false;
+  for (int index = 0; index < count; ++index) {
+    PITEMID_CHILD id = nullptr;
+    if (list->Next(1, &id, nullptr) != S_OK || !id) { CoTaskMemFree(id); return false; }
+    const auto size = ILGetSize(id); auto bytes = reinterpret_cast<const BYTE *>(id);
+    if (size > routing::maxPidlBytes) { CoTaskMemFree(id); return false; }
+    items.emplace_back(bytes, bytes + size); CoTaskMemFree(id);
+  }
+  return true;
 }
 class Band;
 class Events final : public IDispatch {
@@ -138,9 +156,23 @@ class Band final : public IDeskBand2, public IObjectWithSite, public IPersistStr
   bool changing = false, waiting = false, composited = false;
   bool earlyNavigationError = false;
   ULONGLONG pendingDeadline = 0;
+  struct Transfer {
+    HWND peer = nullptr;
+    routing::Packet packet;
+    unsigned long long generation = 0, navigation = 0;
+    ULONGLONG deadline = 0;
+  } incoming, outgoing;
+  bool importStarted = false;
+  bool finishingImport = false, finishingExport = false;
+  struct Finishing {
+    bool &flag;
+    explicit Finishing(bool &value) : flag(value) { flag = true; }
+    ~Finishing() { flag = false; }
+  };
   int px(int value) const { return MulDiv(value, dpi, 96); }
   struct Guard { Band *band; explicit Guard(Band *value):band(value){band->AddRef();} ~Guard(){band->Release();} };
   void detach() {
+    incoming = {}; outgoing = {}; importStarted = false;
     ++epoch; ++viewRevision; ++navigationRevision; changing = waiting = earlyNavigationError = false; pendingDeadline = 0;
     auto oldEvents = std::move(events); auto oldConnection = std::move(connection); auto oldCookie = std::exchange(cookie, 0);
     auto oldSite = std::move(site); auto oldBrowser = std::move(browser); auto oldWeb = std::move(web); auto oldInput = std::move(input);
@@ -199,6 +231,175 @@ class Band final : public IDeskBand2, public IObjectWithSite, public IPersistStr
     if (EqualRect(&before, &after)) return false;
     SetWindowPos(control, nullptr, x, y, width, height, SWP_NOACTIVATE | SWP_NOZORDER);
     return true;
+  }
+  LRESULT route(HWND destination, HWND requester) {
+    if (requester != routing::helperWindow() || !requester || !routing::enabled()) return 2;
+    if (outgoing.peer) return 1;
+    if (changing || waiting || incoming.peer || model.items.empty()) return 0;
+    if (model.items.size() != 1 || destination == window || !routing::bandWindow(destination) ||
+        GetAncestor(destination, GA_ROOT) == frame) return 2;
+    const auto generation = epoch, revision = navigationRevision, viewVersion = viewRevision;
+    auto active = browser; auto value = current(active.Get());
+    if (epoch != generation || !window || revision != navigationRevision) return 2;
+    if (changing || waiting || viewVersion != viewRevision) return 0;
+    if (value.id.empty() || !(value == model.items[model.active])) return 0;
+    routing::Packet packet; packet.token = ++transferSerial; packet.folder = value.id;
+    const bool selected = selection(active.Get(), packet.selected);
+    if (epoch != generation || revision != navigationRevision) return 2;
+    if (!selected || viewVersion != viewRevision) return 0;
+    // A tab's explicit "new window" command grants one short-lived exemption
+    // for precisely this folder, instead of disabling global routing.
+    if (routing::bypass(window, routing::bypassCheck, reinterpret_cast<PCIDLIST_ABSOLUTE>(packet.folder.data()))) return 2;
+    if (epoch != generation || !window || revision != navigationRevision) return 2;
+    if (viewVersion != viewRevision) return 0;
+    auto bytes = routing::encode(packet); if (bytes.empty()) return 2;
+    outgoing = {destination, packet, generation, revision, GetTickCount64() + 20000};
+    SetTimer(window, 2, 20000, nullptr);
+    COPYDATASTRUCT data{routing::importData, DWORD(bytes.size()), bytes.data()}; DWORD_PTR accepted = 0;
+    // The receiver copies and queues the request. No COM navigation or closing
+    // happens while either side is synchronously processing WM_COPYDATA.
+    if (!SendMessageTimeoutW(destination, WM_COPYDATA, reinterpret_cast<WPARAM>(window), reinterpret_cast<LPARAM>(&data),
+        SMTO_ABORTIFHUNG, 500, &accepted) || !accepted) {
+      if (epoch == generation) outgoing = {};
+      return accepted == 2 ? 0 : 2;
+    }
+    if (accepted == 2) { if (epoch == generation) outgoing = {}; return 0; }
+    return 1;
+  }
+  LRESULT receive(HWND source, const COPYDATASTRUCT *data) {
+    if (!routing::enabled() || source == window || !routing::bandWindow(source) ||
+        GetAncestor(source, GA_ROOT) == frame) return FALSE;
+    if (changing || waiting || incoming.peer || outgoing.peer || model.items.empty()) return 2;
+    if (model.items.size() >= Model::limit) return FALSE;
+    routing::Packet packet; if (!routing::decode(data, packet)) return FALSE;
+    incoming = {source, std::move(packet), epoch, navigationRevision, GetTickCount64() + 20000};
+    importStarted = false;
+    if (!PostMessageW(window, routing::importMessage, 0, 0)) { incoming = {}; return FALSE; }
+    return TRUE;
+  }
+  void beginImport() {
+    if (!incoming.peer || importStarted) return;
+    if (!routing::enabled() || incoming.generation != epoch || incoming.navigation != navigationRevision ||
+        changing || waiting || !routing::bandWindow(incoming.peer)) { incoming = {}; return; }
+    const auto request = incoming;
+    auto destination = location(reinterpret_cast<PCIDLIST_ABSOLUTE>(request.packet.folder.data()));
+    if (request.generation != epoch || request.navigation != navigationRevision ||
+        incoming.packet.token != request.packet.token || !window || changing || waiting) return;
+    auto next = model;
+    if (!next.add(std::move(destination))) { incoming = {}; return; }
+    importStarted = true;
+    if (!go(std::move(next))) { incoming = {}; importStarted = false; }
+    else if (incoming.peer == request.peer && incoming.packet.token == request.packet.token && epoch == request.generation)
+      incoming.navigation = navigationRevision;
+  }
+  void finishImport(bool success) {
+    if (!incoming.peer || !importStarted || finishingImport) return;
+    Finishing finishing(finishingImport);
+    const auto request = incoming;
+    auto cancel = [&] {
+      if (incoming.peer == request.peer && incoming.packet.token == request.packet.token) {
+        incoming = {}; importStarted = false; if (window) KillTimer(window, 3);
+      }
+    };
+    auto retry = [&] {
+      if (window && request.generation == epoch && incoming.peer == request.peer && incoming.packet.token == request.packet.token)
+        SetTimer(window, 3, 100, nullptr);
+    };
+    if (!success || request.generation != epoch || !window || !routing::enabled() ||
+        GetTickCount64() > request.deadline || request.navigation != navigationRevision ||
+        !routing::bandWindow(request.peer)) { cancel(); return; }
+    const auto generation = epoch, revision = navigationRevision, viewVersion = viewRevision;
+    auto active = browser; ComPtr<IShellView> view;
+    const auto value = current(active.Get());
+    if (epoch != generation || revision != navigationRevision) { cancel(); return; }
+    if (value.id.empty() || viewVersion != viewRevision) { retry(); return; }
+    if (!ILIsEqual(reinterpret_cast<PCIDLIST_ABSOLUTE>(value.id.data()), reinterpret_cast<PCIDLIST_ABSOLUTE>(request.packet.folder.data()))) {
+      cancel(); return;
+    }
+    if (!active || FAILED(active->QueryActiveShellView(&view)) || !view || viewVersion != viewRevision) { retry(); return; }
+    if (epoch != generation || revision != navigationRevision) { cancel(); return; }
+    if (request.packet.selected.empty()) {
+      // Adding the current folder creates a tab without BrowseObject. Clear
+      // that existing view's selection to match the newly opened window.
+      std::vector<std::vector<BYTE>> selected;
+      if (!selection(active.Get(), selected) || !selected.empty()) {
+        if (FAILED(view->SelectItem(nullptr, SVSI_DESELECTOTHERS))) { retry(); return; }
+      }
+    } else {
+      for (size_t i = 0; i < request.packet.selected.size(); ++i) {
+        auto id = reinterpret_cast<PCUITEMID_CHILD>(request.packet.selected[i].data());
+        const auto flags = SVSI_SELECT | (i == 0 ? SVSI_DESELECTOTHERS | SVSI_ENSUREVISIBLE | SVSI_FOCUSED : 0);
+        if (FAILED(view->SelectItem(id, SVSIF(flags)))) { retry(); return; }
+        if (epoch != generation || revision != navigationRevision) { cancel(); return; }
+        if (viewVersion != viewRevision) { retry(); return; }
+      }
+    }
+    if (epoch != generation || revision != navigationRevision) { cancel(); return; }
+    if (viewVersion != viewRevision) { retry(); return; }
+    std::vector<std::vector<BYTE>> restored;
+    if (!selection(active.Get(), restored) || restored != request.packet.selected || viewVersion != viewRevision) { retry(); return; }
+    if (epoch != generation || revision != navigationRevision) { cancel(); return; }
+    if (!PostMessageW(request.peer, routing::completedMessage, reinterpret_cast<WPARAM>(window), static_cast<LPARAM>(request.packet.token))) {
+      retry(); return;
+    }
+    cancel();
+  }
+  void completeExport(HWND destination, ULONG_PTR token) {
+    if (!outgoing.peer || outgoing.peer != destination || outgoing.packet.token != token || finishingExport) return;
+    Finishing finishing(finishingExport);
+    const auto request = outgoing;
+    auto cancel = [&] {
+      if (outgoing.peer == request.peer && outgoing.packet.token == request.packet.token) {
+        outgoing = {}; if (window) KillTimer(window, 4);
+      }
+    };
+    auto retry = [&] {
+      if (window && request.generation == epoch && outgoing.peer == request.peer && outgoing.packet.token == request.packet.token)
+        SetTimer(window, 4, 100, nullptr);
+    };
+    if (!routing::enabled() || request.generation != epoch || request.navigation != navigationRevision ||
+        GetTickCount64() > request.deadline || changing || waiting || model.items.size() != 1 ||
+        !routing::bandWindow(destination)) { cancel(); return; }
+    const auto viewVersion = viewRevision;
+    auto active = browser; auto value = current(active.Get());
+    if (request.generation != epoch || request.navigation != navigationRevision || !outgoing.peer) { cancel(); return; }
+    if (value.id.empty() || viewVersion != viewRevision) { retry(); return; }
+    if (!ILIsEqual(reinterpret_cast<PCIDLIST_ABSOLUTE>(value.id.data()),
+        reinterpret_cast<PCIDLIST_ABSOLUTE>(request.packet.folder.data()))) { cancel(); return; }
+    std::vector<std::vector<BYTE>> selected;
+    if (!selection(active.Get(), selected) || viewVersion != viewRevision) { retry(); return; }
+    if (selected != request.packet.selected || request.generation != epoch || request.navigation != navigationRevision ||
+        !window || changing || waiting || model.items.size() != 1 || !(model.items[0] == value) ||
+        !routing::bandWindow(destination) || !outgoing.peer) { cancel(); return; }
+    auto targetFrame = GetAncestor(destination, GA_ROOT), sourceFrame = frame;
+    const auto foreground = GetForegroundWindow();
+    const bool activate = foreground == sourceFrame ||
+        (GetPropW(sourceFrame, routing::gateProperty) && foreground &&
+         GetPropW(sourceFrame, routing::gateOriginProperty) == foreground);
+    cancel();
+    // Execute on the source UI thread immediately after the final validation.
+    // Keep this Band alive via proc's Guard while Explorer disconnects its site.
+    SendMessageW(sourceFrame, WM_CLOSE, 0, 0);
+    if (activate && IsWindow(targetFrame)) {
+      if (IsIconic(targetFrame)) ShowWindowAsync(targetFrame, SW_RESTORE);
+      SetForegroundWindow(targetFrame);
+    }
+  }
+  void newWindow(size_t index) {
+    const auto destination = model.items[index];
+    auto id = reinterpret_cast<PCIDLIST_ABSOLUTE>(destination.id.data());
+    const auto sender = window;
+    const auto exemption = routing::enabled() ? routing::bypass(sender, routing::bypassAdd, id) : 0;
+    if (routing::enabled() && routing::helperWindow() && !exemption) {
+      ui::message(frame, L"无法创建独立窗口，请稍后重试。", L"FolderNote", MB_OK | MB_ICONERROR); return;
+    }
+    SHELLEXECUTEINFOW launch{sizeof(launch)};
+    launch.hwnd = frame; launch.fMask = SEE_MASK_IDLIST | SEE_MASK_FLAG_NO_UI;
+    launch.lpVerb = L"opennewwindow"; launch.lpIDList = const_cast<ITEMIDLIST *>(id); launch.nShow = SW_SHOWNORMAL;
+    if (!ShellExecuteExW(&launch)) {
+      if (exemption) routing::bypass(sender, routing::bypassCancel, nullptr, exemption);
+      ui::message(frame, L"无法在新窗口打开此文件夹。", L"FolderNote", MB_OK | MB_ICONERROR);
+    }
   }
   void layout(bool repaint = false) {
     if (!window || !tabs) return;
@@ -259,7 +460,7 @@ class Band final : public IDeskBand2, public IObjectWithSite, public IPersistStr
     const auto mode = ui::configuredTheme();
     const bool themeChanged = mode != theme.mode || !(ui::palette(mode) == theme.colors);
     if (themeChanged) { theme.reset(mode); styleTooltip(); }
-    layout(themeChanged); queueWheel();
+    layout(themeChanged); finishImport(true); queueWheel();
   }
   void resolvePending() {
     if (!waiting || !browser || !window) return;
@@ -274,9 +475,10 @@ class Band final : public IDeskBand2, public IObjectWithSite, public IPersistStr
     // destination tab only if its folder is actually displayed; otherwise
     // restore the previous selection before remembering the current view.
     // Query once so a reentrant navigation cannot overwrite the other tab.
-    if (value.id.empty() || !(value == expected)) { model = std::move(beforeNavigate); first = beforeFirst; clearWheel(); }
+    const bool success = !value.id.empty() && value == expected;
+    if (!success) { model = std::move(beforeNavigate); first = beforeFirst; clearWheel(); }
     beforeNavigate = {}; expected = {}; beforeFirst = 0;
-    model.remember(std::move(value)); layout(); queueWheel();
+    model.remember(std::move(value)); layout(); finishImport(success); queueWheel();
   }
   bool go(Model next) {
     if (!browser || changing || next.items.empty()) return false;
@@ -326,12 +528,14 @@ class Band final : public IDeskBand2, public IObjectWithSite, public IPersistStr
       return;
     }
     if (changing || model.items.empty() || !navigation::tabsEnabled()) return;
+    if (command != CopyPath) outgoing = {};
     if (command != CopyPath) clearWheel();
     auto next = model;
     if (command == New) { if (next.add(computer())) go(std::move(next)); }
     else if (command == Restore) { if (next.restore()) go(std::move(next)); }
     else if (index < model.items.size()) {
-      if (command == Duplicate) { next.select(index); if (next.add(next.items[index])) go(std::move(next)); }
+      if (command == NewWindow) newWindow(index);
+      else if (command == Duplicate) { next.select(index); if (next.add(next.items[index])) go(std::move(next)); }
       else if (command == Close) { if (next.close(index)) go(std::move(next)); }
       else if (command == CloseOthers) { if (next.closeOthers(index)) go(std::move(next)); }
       else if (command == Select) { if (next.select(index)) go(std::move(next)); }
@@ -355,6 +559,7 @@ class Band final : public IDeskBand2, public IObjectWithSite, public IPersistStr
       AppendMenuW(menu, MF_STRING | (model.items.size() >= Model::limit ? MF_GRAYED : 0), New, L"新建标签");
       bool valid = selected >= 0 && size_t(selected) < model.items.size();
       AppendMenuW(menu, MF_STRING | (!valid || model.items.size() >= Model::limit ? MF_GRAYED : 0), Duplicate, L"复制标签");
+      AppendMenuW(menu, MF_STRING | (valid ? 0 : MF_GRAYED), NewWindow, L"在新窗口打开");
       AppendMenuW(menu, MF_STRING | (!valid || model.items[selected].path.empty() ? MF_GRAYED : 0), CopyPath, L"复制文件夹路径");
       AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
       bool closable = valid && model.items.size() > 1;
@@ -610,6 +815,21 @@ class Band final : public IDeskBand2, public IObjectWithSite, public IPersistStr
     if (!self) return DefWindowProcW(h, message, w, l);
     Guard guard(self);
     try {
+      if (message == routing::routeMessage) return self->route(reinterpret_cast<HWND>(w), reinterpret_cast<HWND>(l));
+      if (message == WM_COPYDATA) return self->receive(reinterpret_cast<HWND>(w), reinterpret_cast<const COPYDATASTRUCT *>(l));
+      if (message == routing::importMessage) { self->beginImport(); return 0; }
+      if (message == routing::completedMessage) { self->completeExport(reinterpret_cast<HWND>(w), static_cast<ULONG_PTR>(l)); return 0; }
+      if (message == routing::capabilityMessage) return 2;
+      if (message == WM_TIMER && w == 2) {
+        KillTimer(h, 2); KillTimer(h, 4); self->outgoing = {};
+        if (self->frame) PostMessageW(self->frame, routing::releaseGateMessage, 0, 0);
+        return 0;
+      }
+      if (message == WM_TIMER && w == 3) { KillTimer(h, 3); self->finishImport(true); return 0; }
+      if (message == WM_TIMER && w == 4) {
+        KillTimer(h, 4); const auto request = self->outgoing;
+        self->completeExport(request.peer, request.packet.token); return 0;
+      }
       if (message == wheelInputMessage) return self->wheelInput(w, l) ? TRUE : FALSE;
       if (message == wheelMessage) {
         if (w == static_cast<WPARAM>(self->epoch)) self->drainWheel();
@@ -704,6 +924,7 @@ public:
   Band() { ++objects; ++bands; }
   ~Band() { detach(); --objects; if (--bands == 0) UnregisterClassW(bandClass, codeModule()); }
   void event(DISPID id) {
+    if (id == DISPID_BEFORENAVIGATE2) { ++viewRevision; outgoing = {}; }
     if (window && (id == DISPID_NAVIGATECOMPLETE2 || id == DISPID_DOCUMENTCOMPLETE)) {
       ++viewRevision; PostMessageW(window, changedMessage, 0, 0);
     }

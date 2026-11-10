@@ -1,5 +1,6 @@
 #include "quick_folders.h"
 #include "quick_legacy.h"
+#include "tabs_routing.h"
 #include "navigation.h"
 #include "core.h"
 #include <atomic>
@@ -22,6 +23,9 @@ struct MiddleGesture {
   POINT down{};
   bool swallowed = false, dragged = false, suppressUp = false;
 } middle;
+bool helperEnabled() {
+  return navigation::quickEnabled() || tabs::routing::enabled();
+}
 bool classIs(HWND window, const wchar_t *name) {
   wchar_t cls[128]{}; GetClassNameW(window, cls, ARRAYSIZE(cls));
   return wcscmp(cls, name) == 0;
@@ -131,9 +135,11 @@ DWORD WINAPI hookThread(void *argument) {
   return 0;
 }
 LRESULT CALLBACK helperProc(HWND window, UINT message, WPARAM w, LPARAM l) {
+  LRESULT routingResult = 0;
+  if (tabs::routing::message(window, message, w, l, routingResult)) return routingResult;
   if (message == WM_CLOSE) { DestroyWindow(window); return 0; }
   if (message == WM_DESTROY) {
-    KillTimer(window, 1); legacy::shutdown();
+    tabs::routing::stop(); KillTimer(window, 1); legacy::shutdown();
     MSG pending{};
     while (PeekMessageW(&pending, window, showMessage, showMessage, PM_REMOVE))
       delete reinterpret_cast<MenuRequest *>(pending.lParam);
@@ -251,39 +257,42 @@ void stopHelper(bool removeStartup) {
 }
 void syncHelper(const std::wstring &exe) {
   stopHelper();
-  if (!navigation::quickEnabled()) return;
+  if (!helperEnabled()) return;
   auto command = L"\"" + exe + L"\" --quick-helper";
   configureStartup(exe, true);
   STARTUPINFOW startup{sizeof(startup)}; PROCESS_INFORMATION process{};
   if (!CreateProcessW(exe.c_str(), command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process))
-    fn::fail(L"选项已保存，但无法启动中键快速定位组件");
+    fn::fail(L"选项已保存，但无法启动文件夹后台组件");
   CloseHandle(process.hThread); CloseHandle(process.hProcess);
 }
 int helper(HINSTANCE instance) {
-  if (!navigation::quickEnabled()) return 0;
+  if (!helperEnabled()) return 0;
   HANDLE mutex = CreateMutexW(nullptr, FALSE, L"Local\\FolderNote.QuickFolders.Helper.v1");
   if (!mutex) return 1;
   // A settings/upgrade restart may outlive stopHelper's short UI wait. Wait in
   // this new background process, so it can take over once the old owner exits.
   if (!acquireHelperMutex(mutex)) { CloseHandle(mutex); return 0; }
-  if (!navigation::quickEnabled()) { ReleaseMutex(mutex); CloseHandle(mutex); return 0; }
+  if (!helperEnabled()) { ReleaseMutex(mutex); CloseHandle(mutex); return 0; }
   if (FindWindowExW(HWND_MESSAGE, nullptr, helperClass, nullptr)) { ReleaseMutex(mutex); CloseHandle(mutex); return 0; }
   WNDCLASSW cls{}; cls.lpfnWndProc = helperProc; cls.hInstance = instance; cls.lpszClassName = helperClass;
   RegisterClassW(&cls);
   receiver = CreateWindowExW(0, helperClass, L"", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, instance, nullptr);
   if (!receiver) { ReleaseMutex(mutex); CloseHandle(mutex); return 1; }
-  auto event = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, nullptr, foregroundEvent, 0, 0, WINEVENT_OUTOFCONTEXT);
-  auto shown = SetWinEventHook(EVENT_OBJECT_SHOW, EVENT_OBJECT_SHOW, nullptr, foregroundEvent, 0, 0, WINEVENT_OUTOFCONTEXT);
-  updateTarget();
-  HookStart hook{CreateEventW(nullptr, TRUE, FALSE, nullptr)};
+  const bool quickMode = navigation::quickEnabled(), routeMode = tabs::routing::enabled();
+  const bool router = routeMode && tabs::routing::start(receiver);
+  auto event = quickMode ? SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, nullptr, foregroundEvent, 0, 0, WINEVENT_OUTOFCONTEXT) : nullptr;
+  auto shown = quickMode ? SetWinEventHook(EVENT_OBJECT_SHOW, EVENT_OBJECT_SHOW, nullptr, foregroundEvent, 0, 0, WINEVENT_OUTOFCONTEXT) : nullptr;
+  if (quickMode) updateTarget();
+  HookStart hook{quickMode ? CreateEventW(nullptr, TRUE, FALSE, nullptr) : nullptr};
   DWORD threadId = 0;
   HANDLE thread = hook.ready ? CreateThread(nullptr, 0, hookThread, &hook, 0, &threadId) : nullptr;
   if (thread) WaitForSingleObject(hook.ready, INFINITE);
-  if (thread && hook.hook) {
+  if ((thread && hook.hook) || router) {
     MSG message;
     while (GetMessageW(&message, nullptr, 0, 0) > 0) { TranslateMessage(&message); DispatchMessageW(&message); }
   }
   eligible = nullptr;
+  tabs::routing::stop();
   if (thread) { PostThreadMessageW(threadId, WM_QUIT, 0, 0); WaitForSingleObject(thread, INFINITE); CloseHandle(thread); }
   if (hook.ready) CloseHandle(hook.ready);
   if (event) UnhookWinEvent(event);
@@ -291,6 +300,6 @@ int helper(HINSTANCE instance) {
   if (IsWindow(receiver)) DestroyWindow(receiver);
   receiver = nullptr;
   ReleaseMutex(mutex); CloseHandle(mutex);
-  return hook.hook ? 0 : 1;
+  return (quickMode && !hook.hook) || (routeMode && !router) ? 1 : 0;
 }
 }

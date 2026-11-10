@@ -13,6 +13,7 @@
 #include <utility>
 #include "navigation_view.h"
 #include "explorer_tabs.h"
+#include "tabs_window_gate.h"
 
 // The browser creates this apartment-threaded COM object on its UI thread. No
 // global hooks, remote thread injection or separate listener process are used.
@@ -220,6 +221,19 @@ class BrowserHost final : public IObjectWithSite {
     cookie = newCookie;
   }
 
+  void gateHiddenFrame(IShellBrowser *browser, IWebBrowser2 *currentWeb, unsigned long long expected) {
+    HWND candidate = nullptr;
+    if (browser) browser->GetWindow(&candidate);
+    if (generation != expected) return;
+    if (!candidate && currentWeb) {
+      SHANDLE_PTR handle = 0;
+      if (SUCCEEDED(currentWeb->get_HWND(&handle))) candidate = reinterpret_cast<HWND>(handle);
+    }
+    if (generation != expected || !candidate) return;
+    candidate = GetAncestor(candidate, GA_ROOT);
+    if (isFolderFrame(candidate) && !IsWindowVisible(candidate)) tabs::gate::arm(candidate, &generation, expected);
+  }
+
   bool updateView() {
     const auto expected = generation;
     auto currentSite = site;
@@ -249,6 +263,10 @@ class BrowserHost final : public IObjectWithSite {
     candidate = GetAncestor(candidate, GA_ROOT);
     if (!isFolderFrame(candidate))
       return false;
+    if (!tabsStopped && !IsWindowVisible(candidate)) {
+      tabs::gate::arm(candidate, &generation, expected);
+      if (generation != expected) return false;
+    }
     if (navigation::tabsSupported() && !tabsFrame &&
         GetWindowThreadProcessId(candidate, nullptr) == ownerThread &&
         SetWindowSubclass(candidate, tabsFrameProc, reinterpret_cast<UINT_PTR>(this), reinterpret_cast<DWORD_PTR>(this))) tabsFrame = candidate;
@@ -414,11 +432,17 @@ public:
         return S_OK;
       // A context-menu site can provide IShellBrowser without IWebBrowser2.
       // The same host can attach there; automatic window loading uses the BHO site.
-      auto browser = newWeb ? ComPtr<IShellBrowser>() : shellBrowser(newSite.Get());
+      auto browser = shellBrowser(newSite.Get());
+      if (generation != expected)
+        return S_OK;
+      if (!browser && newWeb) browser = shellBrowser(newWeb.Get());
       if (generation != expected)
         return S_OK;
       if (!newWeb && !browser)
         return E_NOINTERFACE;
+      gateHiddenFrame(browser.Get(), newWeb.Get(), expected);
+      if (generation != expected)
+        return S_OK;
       site = std::move(newSite);
       web = std::move(newWeb);
       helper = CreateWindowExW(0, L"STATIC", L"FolderNote Navigation Host", 0, 0, 0, 0, 0,
@@ -564,7 +588,8 @@ extern "C" HRESULT __stdcall DllGetClassObject(REFCLSID clsid, REFIID iid, void 
 }
 
 extern "C" HRESULT __stdcall DllCanUnloadNow() {
-  return objects == 0 && serverLocks == 0 && viewnav::activeControllers() == 0 && tabs::activeObjects() == 0 ? S_OK : S_FALSE;
+  return objects == 0 && serverLocks == 0 && viewnav::activeControllers() == 0 && tabs::activeObjects() == 0 &&
+         tabs::gate::activeObjects() == 0 ? S_OK : S_FALSE;
 }
 
 BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID) {

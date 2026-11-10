@@ -82,6 +82,7 @@ std::wstring diagnostics() {
                               configuredAction() == Action::Back ? L"后退" : L"关闭") << L"\r\n"
        << L"自动加载入口：" << (keyExists(HKEY_LOCAL_MACHINE, navreg::machineKey) ? L"存在" : L"缺失/不可读") << L"\r\n";
   text << L"Win10 多标签：" << (tabsSupported() ? (tabsEnabled() ? L"开启" : L"关闭") : L"此系统不加载")
+       << L"；始终在新标签打开：" << (preferNewTabEnabled() ? L"开启" : L"关闭")
        << L"；上次激活窗口/请求/显示：" << tabValue(L"TabsActivationWindows") << L"/" << tabValue(L"TabsActivationRequested") << L"/" << tabValue(L"TabsActivationVisible")
        << L"；结果：0x" << std::hex << tabValue(L"TabsLastActivationResult") << std::dec << L"\r\n"
        << L"标签栏加载阶段：" << stringValue(HKEY_CURRENT_USER, L"Software\\FolderNote", L"TabsLastBandStage")

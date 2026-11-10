@@ -77,6 +77,27 @@ void inspectVersion(HWND window) {
   check(extent.cx <= bounds.right - bounds.left && extent.cy <= bounds.bottom - bounds.top,
         "version text is not clipped at current scale");
 }
+void inspectNewTabOption() {
+  if (!navigation::tabsSupported()) return;
+  navigation::showPage(navigation::SettingsPage::Features);
+  navigation::scrollPosition = navigation::contentHeight();
+  navigation::layoutBody();
+  RECT client{}; GetClientRect(navigation::body, &client);
+  auto bounds = childBounds(navigation::preferNewTabCheck, navigation::body);
+  check(bounds.left >= 0 && bounds.top >= 0 && bounds.right <= client.right && bounds.bottom <= client.bottom,
+        "new-tab option is reachable within the feature scroller at every scale");
+  auto description = childBounds(navigation::placements.back().window, navigation::body);
+  check(description.top >= bounds.bottom && description.bottom <= client.bottom,
+        "new-tab description stays below its control and inside scrollable content");
+  HDC dc = GetDC(navigation::preferNewTabCheck);
+  auto oldFont = SelectObject(dc, reinterpret_cast<HFONT>(SendMessageW(navigation::preferNewTabCheck, WM_GETFONT, 0, 0)));
+  SIZE extent{}; auto text = windowText(navigation::preferNewTabCheck);
+  GetTextExtentPoint32W(dc, text.c_str(), int(text.size()), &extent);
+  SelectObject(dc, oldFont); ReleaseDC(navigation::preferNewTabCheck, dc);
+  check(extent.cx + navigation::scale(28) <= bounds.right - bounds.left && extent.cy <= bounds.bottom - bounds.top,
+        "new-tab checkbox text fits at current scale");
+  navigation::showPage(navigation::SettingsPage::QuickFolders);
+}
 void scenarios() {
   Hub hub;
   navigation::showPage(navigation::SettingsPage::Features);
@@ -84,6 +105,27 @@ void scenarios() {
   check(!navigation::notesEnabled(), "isolated notes default remains off");
   check(!GetDlgItem(navigation::body, 19) && !GetDlgItem(navigation::body, 20),
         "copy and move no longer require separate settings controls");
+  check(!navigation::preferNewTabEnabled(), "new-tab preference defaults off");
+  if (navigation::tabsSupported()) {
+    check(GetDlgItem(navigation::body, 21) == navigation::preferNewTabCheck &&
+          !IsWindowEnabled(navigation::preferNewTabCheck), "new-tab option starts disabled when tabs are off");
+    SendMessageW(navigation::tabsCheck, BM_SETCHECK, BST_CHECKED, 0);
+    SendMessageW(hub.window, WM_COMMAND, MAKEWPARAM(18, BN_CLICKED), 0);
+    check(IsWindowEnabled(navigation::preferNewTabCheck), "enabling tabs enables new-tab preference");
+    SendMessageW(navigation::preferNewTabCheck, BM_SETCHECK, BST_CHECKED, 0);
+    SendMessageW(navigation::tabsCheck, BM_SETCHECK, BST_UNCHECKED, 0);
+    SendMessageW(hub.window, WM_COMMAND, MAKEWPARAM(18, BN_CLICKED), 0);
+    check(!IsWindowEnabled(navigation::preferNewTabCheck) &&
+          SendMessageW(navigation::preferNewTabCheck, BM_GETCHECK, 0, 0) == BST_CHECKED,
+          "disabling tabs retains the subordinate draft choice");
+    SendMessageW(navigation::tabsCheck, BM_SETCHECK, BST_CHECKED, 0);
+    SendMessageW(hub.window, WM_COMMAND, MAKEWPARAM(18, BN_CLICKED), 0);
+    check(IsWindowEnabled(navigation::preferNewTabCheck) &&
+          SendMessageW(navigation::preferNewTabCheck, BM_GETCHECK, 0, 0) == BST_CHECKED,
+          "reenabling tabs restores the checked subordinate option");
+  } else {
+    check(!navigation::tabsCheck && !navigation::preferNewTabCheck, "unsupported systems do not show Win10-only options");
+  }
   SendMessageW(navigation::quickCheck, BM_SETCHECK, BST_CHECKED, 0);
   SendMessageW(hub.window, WM_COMMAND, MAKEWPARAM(14, BN_CLICKED), 0);
   check(IsWindowEnabled(navigation::dialogCheck), "enabling quick folders still enables dialog support");
@@ -111,8 +153,10 @@ void scenarios() {
     RECT target{0, 0, MulDiv(980, dpi, 96), MulDiv(660, dpi, 96)};
     SendMessageW(hub.window, WM_DPICHANGED, MAKEWPARAM(dpi, dpi), reinterpret_cast<LPARAM>(&target));
     inspectVersion(hub.window);
+    inspectNewTabOption();
     MoveWindow(hub.window, 0, 0, MulDiv(900, dpi, 96), MulDiv(500, dpi, 96), FALSE);
     inspectVersion(hub.window);
+    inspectNewTabOption();
     check(visibleStyle(manager) && !visibleStyle(navigation::body), "resize preserves selected page");
     SendMessageW(hub.window, WM_MOUSEWHEEL, MAKEWPARAM(0, -WHEEL_DELTA), 0);
     check(!visibleStyle(navigation::settingsScroll.window()), "wheel over hub does not resurrect the hidden feature scrollbar");
@@ -123,6 +167,9 @@ void scenarios() {
     check(SendMessageW(navigation::notesCheck, BM_GETCHECK, 0, 0) == BST_CHECKED &&
           SendMessageW(navigation::themeChoice, CB_GETCURSEL, 0, 0) == DWORD(ui::ThemeMode::Dark),
           "repeated switches keep all draft controls");
+    if (navigation::preferNewTabCheck)
+      check(SendMessageW(navigation::preferNewTabCheck, BM_GETCHECK, 0, 0) == BST_CHECKED,
+            "switching settings pages preserves new-tab draft");
     SendMessageW(hub.window, WM_COMMAND, MAKEWPARAM(41, BN_CLICKED), reinterpret_cast<LPARAM>(GetDlgItem(hub.window, 41)));
     check(navigation::managerPage == manager, "switches reuse the embedded manager instance");
   }
@@ -130,8 +177,18 @@ void scenarios() {
   SendMessageW(hub.window, WM_COMMAND, MAKEWPARAM(IDCANCEL, BN_CLICKED), 0);
   check(!IsWindow(hub.window) && !IsWindow(manager) && !IsWindow(features) && !IsWindow(version),
         "closing the hub destroys both pages and fixed controls");
-  check(!navigation::notesEnabled() && ui::configuredTheme() == ui::ThemeMode::System,
-        "cancel does not commit feature or theme drafts");
+  check(!navigation::notesEnabled() && ui::configuredTheme() == ui::ThemeMode::System && !navigation::preferNewTabEnabled(),
+        "cancel does not commit feature, theme, or new-tab drafts");
+  navigation::saveSettings(false, navigation::Action::Parent, navigation::Action::Parent,
+                          false, true, ui::ThemeMode::System, false, true);
+  Hub reopened;
+  if (navigation::tabsSupported()) {
+    check(!IsWindowEnabled(navigation::preferNewTabCheck) &&
+          SendMessageW(navigation::preferNewTabCheck, BM_GETCHECK, 0, 0) == BST_CHECKED,
+          "reopening settings retains saved new-tab choice while tabs are disabled");
+  }
+  SendMessageW(reopened.window, WM_COMMAND, MAKEWPARAM(IDCANCEL, BN_CLICKED), 0);
+  check(navigation::preferNewTabEnabled(), "cancel leaves previously saved new-tab choice untouched");
 }
 }
 int main() {
