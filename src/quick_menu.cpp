@@ -1,6 +1,7 @@
 #include "quick_folders.h"
 #include "quick_popup.h"
 #include "quick_menu_gate.h"
+#include "quick_dialog.h"
 #include "quick_legacy.h"
 #include "quick_transfer.h"
 #include "quick_hit.h"
@@ -89,39 +90,6 @@ std::wstring dialogPath(HWND target) {
     }
   }
   return {};
-}
-bool navigateDialog(HWND target, const std::wstring &path, const detail::MenuRequest &request) {
-  if (!request.current() || !isFileDialog(target)) return false;
-  if (legacy::isDialog(target)) return legacy::navigate(target, path, request);
-  SetForegroundWindow(target);
-  if (!request.current() || GetForegroundWindow() != target ||
-      ((GetAsyncKeyState(VK_CONTROL) | GetAsyncKeyState(VK_SHIFT) | GetAsyncKeyState(VK_MENU)) & 0x8000)) return false;
-  INPUT keys[4]{};
-  for (auto &key : keys) key.type = INPUT_KEYBOARD;
-  keys[0].ki.wVk = VK_MENU; keys[1].ki.wVk = L'D';
-  keys[2].ki.wVk = L'D'; keys[2].ki.dwFlags = KEYEVENTF_KEYUP;
-  keys[3].ki.wVk = VK_MENU; keys[3].ki.dwFlags = KEYEVENTF_KEYUP;
-  if (SendInput(4, keys, sizeof(INPUT)) != 4) { SendInput(2, keys + 2, sizeof(INPUT)); return false; }
-  DWORD pid = 0; const auto thread = GetWindowThreadProcessId(target, &pid);
-  HWND edit = nullptr;
-  for (int i = 0; i < 50; ++i) {
-    if (!request.current() || GetForegroundWindow() != target || !isFileDialog(target)) return false;
-    GUITHREADINFO info{sizeof(info)};
-    if (GetGUIThreadInfo(thread, &info) && addressEdit(info.hwndFocus, target)) { edit = info.hwndFocus; break; }
-    Sleep(10);
-  }
-  if (!edit || !request.current()) return false;
-  DWORD_PTR result = 0;
-  if (!SendMessageTimeoutW(edit, WM_SETTEXT, 0, reinterpret_cast<LPARAM>(path.c_str()), SMTO_ABORTIFHUNG | SMTO_BLOCK, 1000, &result) || !result)
-    return false;
-  GUITHREADINFO info{sizeof(info)}; DWORD currentPid = 0;
-  if (!request.current() || GetForegroundWindow() != target || !GetGUIThreadInfo(thread, &info) || info.hwndFocus != edit ||
-      !addressEdit(edit, target) || !GetWindowThreadProcessId(target, &currentPid) || currentPid != pid) return false;
-  // Deliver Enter directly to the verified address edit, never the filename
-  // control, dialog default button, or whatever application gains focus next.
-  if (!SendMessageTimeoutW(edit, WM_KEYDOWN, VK_RETURN, 1, SMTO_ABORTIFHUNG | SMTO_BLOCK, 1000, &result)) return false;
-  SendMessageTimeoutW(edit, WM_KEYUP, VK_RETURN, 0xc0000001, SMTO_ABORTIFHUNG | SMTO_BLOCK, 1000, &result);
-  return true;
 }
 struct Scan {
   std::mutex mutex; std::condition_variable ready;
@@ -424,7 +392,13 @@ int menu(HINSTANCE instance, HWND target, HWND view, POINT point) {
             if (!currentRequest()) break;
             ok = SUCCEEDED(browser->BrowseObject(id.get(), SBSP_ABSOLUTE | SBSP_SAMEBROWSER));
           }
-        } else ok = navigateDialog(target, command.path, request);
+        } else if (legacy::isDialog(target)) ok = legacy::navigate(target, command.path, request);
+        else {
+          const auto navigated = dialog::navigate(target, command.path, request);
+          if (!currentRequest()) break;
+          if (navigated != dialog::NavigateResult::Success) throw fn::Error{dialog::failureMessage(navigated)};
+          ok = true;
+        }
         if (!currentRequest()) break;
         if (!ok) throw fn::Error{L"未能在原窗口定位文件夹。请确认窗口或标签页未切换，且程序未以管理员权限运行。\n不支持的自定义文件对话框可使用“在新窗口打开”。"};
         visit(command.path);
