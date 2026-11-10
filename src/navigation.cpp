@@ -155,7 +155,8 @@ static void applySettings(bool notes, Action action, Action preferred, bool quic
       fn::fail(L"无法更新备注菜单开关", error);
     saved[index + 7].read(keys.values[index + 1], L"LegacyDisable");
   }
-  const std::array<DWORD, 7> values{notes ? 1UL : 0UL, DWORD(action), DWORD(preferred), quick ? 1UL : 0UL, dialogs ? 1UL : 0UL, DWORD(theme), tabs ? 1UL : 0UL};
+  const std::array<DWORD, 7> values{notes ? 1UL : 0UL, DWORD(action), DWORD(preferred), quick ? 1UL : 0UL, dialogs ? 1UL : 0UL,
+                                    DWORD(theme), tabs ? 1UL : 0UL};
   for (size_t index = 0; index < saved.size(); ++index) {
     auto &value = saved[index];
     if (!value.key)
@@ -215,7 +216,7 @@ struct Placement { HWND window; int x, y, width, height; };
 static std::vector<Placement> placements;
 static UINT dpi;
 static int scale(int n) { return MulDiv(n, dpi, 96); }
-static int contentHeight() { return scale(tabsSupported() ? 500 : 390); }
+static int contentHeight() { return scale(tabsSupported() ? 550 : 440); }
 static void copyDiagnostics(HWND owner) {
   const auto text = diagnostics();
   auto memory = GlobalAlloc(GMEM_MOVEABLE, (text.size() + 1) * sizeof(wchar_t));
@@ -399,15 +400,16 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     field(L"STATIC", L"在资源管理器文件列表的空白处双击。", 0, 68, 190, -40, 22, 0, true);
     quickCheck = field(L"BUTTON", L"中键快速定位", checkStyle, 40, 246, -40, 26, 14);
     SendMessageW(quickCheck, BM_SETCHECK, quickEnabled() ? BST_CHECKED : BST_UNCHECKED, 0);
-    dialogCheck = field(L"BUTTON", L"同时支持打开 / 保存文件对话框", checkStyle, 68, 278, -40, 26, 15);
+    dialogCheck = field(L"BUTTON", L"同时支持文件与文件夹选择对话框", checkStyle, 68, 278, -40, 26, 15);
     SendMessageW(dialogCheck, BM_SETCHECK, dialogQuickEnabled() ? BST_CHECKED : BST_UNCHECKED, 0); EnableWindow(dialogCheck, quickEnabled());
-    field(L"STATIC", L"单击跳转文件夹，悬停展开子目录，失去焦点自动关闭。\n对话框支持需运行后台组件；仅资源管理器模式无需常驻。", 0, 68, 309, -40, 38, 0, true);
-    field(L"BUTTON", L"置顶与历史 →", WS_TABSTOP, 68, 352, 170, 28, 16);
+    field(L"STATIC", L"桌面和资源管理器中均可使用，悬停展开子目录。\n启用后运行后台组件；桌面菜单中的文件夹会在新窗口打开。", 0, 68, 309, -40, 38, 0, true);
+    field(L"STATIC", L"选中项目后按中键，点击“复制”或“移动”，\n再选择目标文件夹；在空白处按中键也可使用。", 0, 68, 352, -40, 38, 0, true);
+    field(L"BUTTON", L"置顶与历史 →", WS_TABSTOP, 68, 402, 170, 28, 16);
     tabsCheck = nullptr;
     if (tabsSupported()) {
-      tabsCheck = field(L"BUTTON", L"资源管理器多标签（Windows 10）", checkStyle, 40, 412, -40, 26, 18);
+      tabsCheck = field(L"BUTTON", L"资源管理器多标签（Windows 10）", checkStyle, 40, 462, -40, 26, 18);
       SendMessageW(tabsCheck, BM_SETCHECK, tabsEnabled() ? BST_CHECKED : BST_UNCHECKED, 0);
-      field(L"STATIC", L"悬停标签：滚轮切换，中键关闭；右键可新建和设置。\n保存后显示或隐藏标签栏；升级后请重新打开文件夹窗口。", 0, 68, 444, -40, 40, 0, true);
+      field(L"STATIC", L"悬停标签：滚轮切换，中键关闭；右键可新建和设置。\n保存后显示或隐藏标签栏；升级后请重新打开文件夹窗口。", 0, 68, 494, -40, 40, 0, true);
     }
     ui::muted(add(h, L"STATIC", L"功能设置保存后应用 · 置顶与历史修改立即保存", 0, 33));
     add(h, L"BUTTON", L"复制诊断信息", WS_TABSTOP, 13);

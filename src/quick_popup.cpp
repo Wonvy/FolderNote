@@ -23,6 +23,8 @@ wchar_t actionGlyph(Symbol symbol) {
   case Symbol::Settings: return L'\xE713';
   case Symbol::Trash: return L'\xE74D';
   case Symbol::Window: return L'\xE78B';
+  case Symbol::Copy: return L'\xE8C8';
+  case Symbol::Move: return L'\xE8DE';
   default: return 0;
   }
 }
@@ -142,19 +144,35 @@ struct Session {
     active = std::min(active, panels.size() - 1);
   }
   int height(const Item &item) const { return px(item.row == Row::Separator ? 9 : item.row == Row::Toolbar ? 34 : 28); }
-  bool actionable(const Item &item) const { return !item.actions.empty() || (item.row == Row::Action && (item.command || item.children)); }
+  bool actionable(const Item &item) const {
+    if (!item.actions.empty()) return std::any_of(item.actions.begin(), item.actions.end(), [](const auto &action) { return action.enabled; });
+    return item.row == Row::Action && (item.command || item.children);
+  }
+  int actionWidth(const IconAction &action) const { return px(action.text.empty() ? 28 : 52); }
+  int actionsWidth(const Item &item, int first, int last) const {
+    int width = 0;
+    for (int i = first; i < last; ++i) width += actionWidth(item.actions[i]) + px(4);
+    return width;
+  }
   RECT actionRect(const Item &item, RECT row, int action) const {
-    int size = px(28), spacing = px(32);
-    int left = row.right - px(5) - spacing * static_cast<int>(item.actions.size()) + action * spacing;
+    int size = px(28);
+    int leading = static_cast<int>(std::min<size_t>(item.leadingActions, item.actions.size()));
+    int left = action < leading ? row.left + px(5) + actionsWidth(item, 0, action) :
+        row.right - px(5) - actionsWidth(item, leading, static_cast<int>(item.actions.size())) + actionsWidth(item, leading, action);
     int top = row.top + (row.bottom - row.top - size) / 2;
-    return {left, top, left + size, top + size};
+    return {left, top, left + actionWidth(item.actions[action]), top + size};
   }
   void populate(Panel &panel) {
     SendMessageW(panel.list, WM_SETREDRAW, FALSE, 0);
     SendMessageW(panel.list, LB_RESETCONTENT, 0, 0);
     for (const auto &item : panel.branch->items) {
       std::wstring accessible = item.title;
-      for (const auto &action : item.actions) { if (!accessible.empty()) accessible += L"；"; accessible += action.title; }
+      for (const auto &action : item.actions) {
+        if (!accessible.empty()) accessible += L"；";
+        accessible += action.title;
+        if (!action.enabled) accessible += L"（不可用）";
+        else if (action.checked) accessible += L"（已选）";
+      }
       int row = static_cast<int>(SendMessageW(panel.list, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(accessible.c_str())));
       SendMessageW(panel.list, LB_SETITEMHEIGHT, row, height(item));
     }
@@ -163,7 +181,11 @@ struct Session {
   }
   void select(Panel &panel, int row, int action = -1) {
     if (row < 0 || size_t(row) >= panel.branch->items.size() || !actionable(panel.branch->items[row])) row = -1;
-    if (row >= 0 && !panel.branch->items[row].actions.empty()) action = std::clamp(action, 0, int(panel.branch->items[row].actions.size()) - 1);
+    if (row >= 0 && !panel.branch->items[row].actions.empty()) {
+      const auto &actions = panel.branch->items[row].actions;
+      if (action < 0) action = int(std::find_if(actions.begin(), actions.end(), [](const auto &value) { return value.enabled; }) - actions.begin());
+      if (size_t(action) >= actions.size() || !actions[action].enabled) { row = -1; action = -1; }
+    }
     else action = -1;
     if (panel.selected == row && panel.selectedAction == action) return;
     panel.selected = row; panel.selectedAction = action; SendMessageW(panel.list, LB_SETCURSEL, row, 0);
@@ -188,6 +210,18 @@ struct Session {
     if (!SetWindowRgn(panel.window, region, FALSE)) DeleteObject(region);
   }
   Panel &create(std::shared_ptr<Branch> branch, POINT point, bool child, RECT parent = {});
+  void dispatch(unsigned command) {
+    // Copy the handler: rebuilding the model may replace its own callback.
+    auto invoke = panels.front()->branch->invoke;
+    if (!invoke || !invoke(command)) { finish(command); return; }
+    hideTip(); KillTimer(root(), hoverTimer); KillTimer(root(), loadingTimer);
+    pendingRow = downRow = downAction = -1; lastMouse = {LONG_MIN, LONG_MIN};
+    trim(1); active = 0;
+    auto &panel = *panels.front();
+    const int row = panel.selected, action = panel.selectedAction;
+    RECT bounds{}; GetWindowRect(root(), &bounds);
+    populate(panel); place(panel, {bounds.left, bounds.top}, false); select(panel, row, action);
+  }
   void expand(size_t level, int row, bool keyboard = false) {
     if (done || level >= panels.size()) return;
     auto &parent = *panels[level];
@@ -213,11 +247,11 @@ struct Session {
     if (!actionable(item)) return;
     if (!item.actions.empty()) {
       int index = action < 0 ? std::max(0, panel.selectedAction) : action;
-      if (size_t(index) < item.actions.size()) finish(item.actions[index].command);
+      if (size_t(index) < item.actions.size() && item.actions[index].enabled) dispatch(item.actions[index].command);
       return;
     }
     // A folder's primary action always wins, even when it has a submenu.
-    if (item.command) finish(item.command); else expand(level, row, true);
+    if (item.command) dispatch(item.command); else expand(level, row, true);
   }
   struct Hit { Panel *panel; int row, action; };
   Hit hit(POINT point) {
@@ -272,9 +306,13 @@ struct Session {
     KillTimer(root(), hoverTimer);
     auto &panel = *panels[active];
     if (panel.selected >= 0 && !panel.branch->items[panel.selected].actions.empty() && (key == VK_LEFT || key == VK_RIGHT)) {
-      int count = static_cast<int>(panel.branch->items[panel.selected].actions.size());
-      int next = (panel.selectedAction + (key == VK_RIGHT ? 1 : count - 1)) % count;
-      select(panel, panel.selected, next); return;
+      const auto &actions = panel.branch->items[panel.selected].actions;
+      int count = static_cast<int>(actions.size()), next = panel.selectedAction;
+      for (int i = 0; i < count; ++i) {
+        next = (next + (key == VK_RIGHT ? 1 : count - 1)) % count;
+        if (actions[next].enabled) { select(panel, panel.selected, next); break; }
+      }
+      return;
     }
     switch (key) {
     case VK_ESCAPE: finish(); break;
@@ -310,12 +348,16 @@ struct Session {
     }
     bool selectedRow = panel.selected == int(draw.itemID) && actionable(item);
     if (selectedRow && item.actions.empty()) ui::rounded(dc, rect, p.hover, p.hover, px(4));
-    auto old = SelectObject(dc, item.row == Row::Heading || item.row == Row::Hint ? smallFont : font);
-    auto color = item.row == Row::Heading || item.row == Row::Hint ? p.muted : selectedRow && p.highContrast ? p.onAccent : p.text;
-    RECT label = rect; label.left += px(item.row == Row::Action ? 31 : 9); label.right -= px(22 + int(item.actions.size()) * 32);
+    bool caption = item.row == Row::Heading || item.row == Row::Hint || item.row == Row::Toolbar;
+    auto old = SelectObject(dc, caption ? smallFont : font);
+    auto color = caption ? p.muted : selectedRow && p.highContrast ? p.onAccent : p.text;
+    int leading = static_cast<int>(std::min<size_t>(item.leadingActions, item.actions.size()));
+    RECT label = rect;
+    label.left += px(item.row == Row::Action ? 31 : 9) + actionsWidth(item, 0, leading);
+    label.right -= px(22) + actionsWidth(item, leading, int(item.actions.size()));
     if (item.symbol == Symbol::More) {
       SelectObject(dc, symbols); ui::text(dc, L"\xE712", rect, color, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-    } else if (item.row != Row::Toolbar) ui::text(dc, item.title, label, color);
+    } else ui::text(dc, item.title, label, color);
     if (item.row == Row::Action && item.symbol != Symbol::More) {
       int x = rect.left + px(7), y = rect.top + (rect.bottom - rect.top - px(16)) / 2;
       wchar_t glyph = item.iconPath.empty() ? actionGlyph(item.symbol) : L'\0';
@@ -332,12 +374,14 @@ struct Session {
       }
     }
     for (size_t index = 0; index < item.actions.size(); ++index) {
+      const auto &action = item.actions[index];
       auto bounds = actionRect(item, rect, static_cast<int>(index));
-      bool hot = selectedRow && panel.selectedAction == int(index);
-      if (hot) ui::rounded(dc, bounds, p.hover, p.hover, px(4));
-      SelectObject(dc, symbols);
-      auto iconColor = hot && p.highContrast ? p.onAccent : p.text;
-      ui::text(dc, std::wstring(1, actionGlyph(item.actions[index].symbol)), bounds, iconColor,
+      bool hot = action.enabled && selectedRow && panel.selectedAction == int(index);
+      if (action.checked) ui::rounded(dc, bounds, p.accent, p.accent, px(4));
+      else if (hot) ui::rounded(dc, bounds, p.hover, p.hover, px(4));
+      SelectObject(dc, action.text.empty() ? symbols : font);
+      auto iconColor = !action.enabled ? p.muted : action.checked || (hot && p.highContrast) ? p.onAccent : p.text;
+      ui::text(dc, action.text.empty() ? std::wstring(1, actionGlyph(action.symbol)) : action.text, bounds, iconColor,
           DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
     }
     SelectObject(dc, old);

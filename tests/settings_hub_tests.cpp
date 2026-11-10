@@ -82,6 +82,11 @@ void scenarios() {
   navigation::showPage(navigation::SettingsPage::Features);
   check(visibleStyle(navigation::body) && !visibleStyle(navigation::managerPage), "only feature page initially visible");
   check(!navigation::notesEnabled(), "isolated notes default remains off");
+  check(!GetDlgItem(navigation::body, 19) && !GetDlgItem(navigation::body, 20),
+        "copy and move no longer require separate settings controls");
+  SendMessageW(navigation::quickCheck, BM_SETCHECK, BST_CHECKED, 0);
+  SendMessageW(hub.window, WM_COMMAND, MAKEWPARAM(14, BN_CLICKED), 0);
+  check(IsWindowEnabled(navigation::dialogCheck), "enabling quick folders still enables dialog support");
   SendMessageW(navigation::notesCheck, BM_SETCHECK, BST_CHECKED, 0);
   SendMessageW(navigation::themeChoice, CB_SETCURSEL, DWORD(ui::ThemeMode::Dark), 0);
   SendMessageW(hub.window, WM_COMMAND, MAKEWPARAM(17, CBN_SELCHANGE), reinterpret_cast<LPARAM>(navigation::themeChoice));

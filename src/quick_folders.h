@@ -7,6 +7,7 @@
 namespace quick {
 inline constexpr size_t historyLimit = 20, pinLimit = 64;
 struct State { std::vector<std::wstring> pins, history; };
+enum class MenuMode : unsigned { Navigate, Copy, Move };
 // Canonicalization is lexical only: never touch a disk/network during menu setup.
 std::wstring normalize(const std::wstring &path);
 bool same(const std::wstring &, const std::wstring &);
@@ -24,12 +25,14 @@ int manage(HINSTANCE, HWND owner = nullptr, ui::ThemeMode theme = ui::configured
 HWND createManagerPage(HINSTANCE, HWND parent, ui::ThemeMode);
 void setManagerTheme(HWND, ui::ThemeMode);
 void refreshManagerPage(HWND);
-// The helper exists only while Quick Folders + file-dialog support are enabled.
+// The helper handles the desktop whenever Quick Folders is enabled, and
+// Explorer/file dialogs only when file-dialog support is also enabled.
 void syncHelper(const std::wstring &exe);
 void configureStartup(const std::wstring &exe, bool enabled);
 void stopHelper(bool removeStartup = true);
 int helper(HINSTANCE);
 bool isFileDialog(HWND);
 bool isExplorer(HWND);
+bool isDesktop(HWND);
 bool addressEdit(HWND edit, HWND dialog);
 }

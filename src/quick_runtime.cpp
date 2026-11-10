@@ -1,4 +1,5 @@
 #include "quick_folders.h"
+#include "quick_legacy.h"
 #include "navigation.h"
 #include "core.h"
 #include <atomic>
@@ -25,6 +26,9 @@ bool classIs(HWND window, const wchar_t *name) {
   wchar_t cls[128]{}; GetClassNameW(window, cls, ARRAYSIZE(cls));
   return wcscmp(cls, name) == 0;
 }
+bool desktopClass(HWND window) {
+  return classIs(window, L"Progman") || classIs(window, L"WorkerW");
+}
 bool folderTabsSurface(HWND window, HWND frame) {
   // The in-process tab band owns its middle-button gestures (tab close).
   // Check only class names/parents here; never call Shell or UIA in the hook.
@@ -46,8 +50,8 @@ DWORD integrity(DWORD pid) {
 }
 bool eligibleTarget(HWND window, DWORD expectedProcess = 0) {
   DWORD pid = 0; GetWindowThreadProcessId(window, &pid);
-  if (!window || !pid || (expectedProcess && pid != expectedProcess) || !navigation::quickEnabled() ||
-      !navigation::dialogQuickEnabled() || (!isExplorer(window) && !isFileDialog(window))) return false;
+  if (!window || !pid || (expectedProcess && pid != expectedProcess) || !navigation::quickEnabled()) return false;
+  if (!isDesktop(window) && (!navigation::dialogQuickEnabled() || (!isExplorer(window) && !isFileDialog(window)))) return false;
   const auto targetIntegrity = integrity(pid), ownIntegrity = integrity(GetCurrentProcessId());
   return targetIntegrity != 0xffffffff && ownIntegrity != 0xffffffff && targetIntegrity <= ownIntegrity;
 }
@@ -75,30 +79,33 @@ LRESULT CALLBACK mouseHook(int code, WPARAM message, LPARAM parameter) {
       if (fromFileList && message == WM_MOUSEMOVE) middle.suppressUp = true;
       return CallNextHookEx(nullptr, code, message, parameter);
     }
-    const bool modified = ((GetAsyncKeyState(VK_CONTROL) | GetAsyncKeyState(VK_SHIFT) | GetAsyncKeyState(VK_MENU) |
-                           GetAsyncKeyState(VK_LWIN) | GetAsyncKeyState(VK_RWIN)) & 0x8000) != 0;
+    const bool allowed = !((GetAsyncKeyState(VK_CONTROL) | GetAsyncKeyState(VK_SHIFT) | GetAsyncKeyState(VK_MENU) |
+                           GetAsyncKeyState(VK_LWIN) | GetAsyncKeyState(VK_RWIN)) & 0x8000);
     HWND foreground = GetForegroundWindow();
     if (message == WM_MBUTTONDOWN || message == WM_MBUTTONDBLCLK) {
       middle = {};
       // These cheap checks run on the hook thread. Process identity, dialog
       // contents and integrity are checked on the helper thread before launch.
-      if (!modified && foreground && root == foreground &&
-          (classIs(foreground, L"CabinetWClass") || classIs(foreground, L"ExploreWClass") || classIs(foreground, L"#32770"))) {
-        middle.target = foreground; middle.down = mouse->pt;
-        GetWindowThreadProcessId(foreground, &middle.process);
-        middle.swallowed = eligible.load() == foreground;
+      if (allowed && root && (desktopClass(root) || (root == foreground &&
+          (classIs(root, L"CabinetWClass") || classIs(root, L"ExploreWClass") || classIs(root, L"#32770"))))) {
+        middle.target = root; middle.down = mouse->pt;
+        GetWindowThreadProcessId(root, &middle.process);
+        middle.swallowed = root == foreground && eligible.load() == root;
       }
       if (middle.swallowed) return 1;
     } else if (middle.target) {
-      middle.dragged = middle.dragged || modified ||
+      middle.dragged = middle.dragged || !allowed ||
           abs(mouse->pt.x - middle.down.x) > GetSystemMetrics(SM_CXDRAG) ||
           abs(mouse->pt.y - middle.down.y) > GetSystemMetrics(SM_CYDRAG);
       if (message == WM_MBUTTONUP) {
         const auto completed = middle; middle = {};
         DWORD process = 0; GetWindowThreadProcessId(foreground, &process);
-        if (!completed.dragged && foreground == completed.target && process == completed.process &&
+        // Explorer can keep Progman foreground while its desktop view lives
+        // under WorkerW. Use the actual foreground window as the popup anchor.
+        const bool desktop = desktopClass(completed.target) && desktopClass(foreground);
+        if (!completed.dragged && (foreground == completed.target || desktop) && process == completed.process &&
             root == completed.target) {
-          auto request = new (std::nothrow) MenuRequest{completed.target, completed.process, mouse->pt};
+          auto request = new (std::nothrow) MenuRequest{foreground, completed.process, mouse->pt};
           if (request && !PostMessageW(receiver, showMessage, 0, reinterpret_cast<LPARAM>(request))) delete request;
         }
         // Unknown targets retain native input while awaiting full validation.
@@ -126,16 +133,24 @@ DWORD WINAPI hookThread(void *argument) {
 LRESULT CALLBACK helperProc(HWND window, UINT message, WPARAM w, LPARAM l) {
   if (message == WM_CLOSE) { DestroyWindow(window); return 0; }
   if (message == WM_DESTROY) {
+    KillTimer(window, 1); legacy::shutdown();
     MSG pending{};
     while (PeekMessageW(&pending, window, showMessage, showMessage, PM_REMOVE))
       delete reinterpret_cast<MenuRequest *>(pending.lParam);
     PostQuitMessage(0); return 0;
   }
   try {
+    if (message == WM_COPYDATA) {
+      const bool accepted = legacy::receive(reinterpret_cast<const COPYDATASTRUCT *>(l), eligibleTarget);
+      if (accepted) SetTimer(window, 1, 1000, nullptr);
+      return accepted ? TRUE : FALSE;
+    }
+    if (message == WM_TIMER && w == 1) { if (!legacy::reap()) KillTimer(window, 1); return 0; }
     if (message == foregroundMessage) { updateTarget(); return 0; }
     if (message == showMessage) {
       std::unique_ptr<MenuRequest> request(reinterpret_cast<MenuRequest *>(l));
       if (request && request->target == GetForegroundWindow() && eligibleTarget(request->target, request->process) &&
+          (!desktopClass(request->target) || isDesktop(GetAncestor(WindowFromPoint(request->point), GA_ROOT))) &&
           request->target == GetForegroundWindow()) {
         eligible.store(request->target);
         launchMenu(request->target, nullptr, request->point);
@@ -145,6 +160,22 @@ LRESULT CALLBACK helperProc(HWND window, UINT message, WPARAM w, LPARAM l) {
   } catch (...) { }
   return DefWindowProcW(window, message, w, l);
 }
+}
+bool isDesktop(HWND window) {
+  if (!window || !desktopClass(window) || GetAncestor(window, GA_ROOT) != window) return false;
+  HWND shell = GetShellWindow();
+  DWORD shellPid = 0, pid = 0;
+  GetWindowThreadProcessId(shell, &shellPid); GetWindowThreadProcessId(window, &pid);
+  if (!shell || !shellPid || pid != shellPid) return false;
+  if (window == shell) return true;
+  // Exclude taskbar, wallpaper-only WorkerW windows and class-name lookalikes
+  // in other processes. The icon view may be nested on newer Windows builds.
+  bool view = false;
+  EnumChildWindows(window, [](HWND child, LPARAM data) -> BOOL {
+    if (classIs(child, L"SHELLDLL_DefView")) { *reinterpret_cast<bool *>(data) = true; return FALSE; }
+    return TRUE;
+  }, reinterpret_cast<LPARAM>(&view));
+  return view;
 }
 bool isExplorer(HWND window) {
   if (!classIs(window, L"CabinetWClass") && !classIs(window, L"ExploreWClass")) return false;
@@ -163,7 +194,7 @@ bool isFileDialog(HWND window) {
     if (classIs(child, L"SHELLDLL_DefView")) { *reinterpret_cast<bool *>(data) = true; return FALSE; }
     return TRUE;
   }, reinterpret_cast<LPARAM>(&found));
-  return found;
+  return found || legacy::isDialog(window);
 }
 bool addressEdit(HWND edit, HWND dialog) {
   if (!edit || !IsChild(dialog, edit) || !classIs(edit, L"Edit")) return false;
@@ -220,22 +251,22 @@ void stopHelper(bool removeStartup) {
 }
 void syncHelper(const std::wstring &exe) {
   stopHelper();
-  if (!navigation::quickEnabled() || !navigation::dialogQuickEnabled()) return;
+  if (!navigation::quickEnabled()) return;
   auto command = L"\"" + exe + L"\" --quick-helper";
   configureStartup(exe, true);
   STARTUPINFOW startup{sizeof(startup)}; PROCESS_INFORMATION process{};
   if (!CreateProcessW(exe.c_str(), command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process))
-    fn::fail(L"选项已保存，但无法启动文件对话框组件");
+    fn::fail(L"选项已保存，但无法启动中键快速定位组件");
   CloseHandle(process.hThread); CloseHandle(process.hProcess);
 }
 int helper(HINSTANCE instance) {
-  if (!navigation::quickEnabled() || !navigation::dialogQuickEnabled()) return 0;
+  if (!navigation::quickEnabled()) return 0;
   HANDLE mutex = CreateMutexW(nullptr, FALSE, L"Local\\FolderNote.QuickFolders.Helper.v1");
   if (!mutex) return 1;
   // A settings/upgrade restart may outlive stopHelper's short UI wait. Wait in
   // this new background process, so it can take over once the old owner exits.
   if (!acquireHelperMutex(mutex)) { CloseHandle(mutex); return 0; }
-  if (!navigation::quickEnabled() || !navigation::dialogQuickEnabled()) { ReleaseMutex(mutex); CloseHandle(mutex); return 0; }
+  if (!navigation::quickEnabled()) { ReleaseMutex(mutex); CloseHandle(mutex); return 0; }
   if (FindWindowExW(HWND_MESSAGE, nullptr, helperClass, nullptr)) { ReleaseMutex(mutex); CloseHandle(mutex); return 0; }
   WNDCLASSW cls{}; cls.lpfnWndProc = helperProc; cls.hInstance = instance; cls.lpszClassName = helperClass;
   RegisterClassW(&cls);

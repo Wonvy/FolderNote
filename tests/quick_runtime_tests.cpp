@@ -7,11 +7,18 @@
 
 namespace {
 HWND simulatedForeground = nullptr, underPointer = nullptr;
-int modifier = 0, checks = 0;
+HWND simulatedShell = nullptr, foreignProcessWindow = nullptr;
+int modifier = 0, extraModifier = 0, checks = 0;
 std::vector<std::pair<HWND, POINT>> launches;
 HWND fakeForeground() { return simulatedForeground; }
 HWND fakeWindowFromPoint(POINT) { return underPointer; }
-SHORT fakeKeys(int key) { return key == modifier ? SHORT(-32768) : 0; }
+HWND fakeShellWindow() { return simulatedShell; }
+DWORD fakeWindowProcess(HWND window, DWORD *pid) {
+  const auto thread = GetWindowThreadProcessId(window, pid);
+  if (pid && window && window == foreignProcessWindow) *pid = GetCurrentProcessId() + 1;
+  return thread;
+}
+SHORT fakeKeys(int key) { return key == modifier || key == extraModifier ? SHORT(-32768) : 0; }
 LRESULT fakeNextHook(HHOOK, int, WPARAM, LPARAM) { return 73; }
 void check(bool condition, const char *reason) { ++checks; if (!condition) throw std::runtime_error(reason); }
 }
@@ -22,6 +29,8 @@ void captureMenu(HWND target, HWND, POINT point) { launches.push_back({target, p
 // is injected, global hook installed, menu process started, or user setting read.
 #define GetForegroundWindow fakeForeground
 #define WindowFromPoint fakeWindowFromPoint
+#define GetShellWindow fakeShellWindow
+#define GetWindowThreadProcessId fakeWindowProcess
 #define GetAsyncKeyState fakeKeys
 #define CallNextHookEx fakeNextHook
 #define launchMenu captureMenu
@@ -30,6 +39,8 @@ void captureMenu(HWND target, HWND, POINT point) { launches.push_back({target, p
 #undef CallNextHookEx
 #undef GetAsyncKeyState
 #undef WindowFromPoint
+#undef GetShellWindow
+#undef GetWindowThreadProcessId
 #undef GetForegroundWindow
 
 struct Isolated {
@@ -44,8 +55,8 @@ struct Isolated {
   }
   ~Isolated() { RegOverridePredefKey(HKEY_CURRENT_USER, nullptr); RegCloseKey(temporary); RegDeleteTreeW(real, name.c_str()); RegCloseKey(real); }
 };
-static void enable(bool value) {
-  DWORD enabled = value ? 1 : 0, dialogs = 1;
+static void enable(bool value, bool withDialogs = true) {
+  DWORD enabled = value ? 1 : 0, dialogs = withDialogs ? 1 : 0;
   check(RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"QuickFoldersEnabled", REG_DWORD, &enabled, sizeof(enabled)) == ERROR_SUCCESS &&
         RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"QuickFoldersInDialogs", REG_DWORD, &dialogs, sizeof(dialogs)) == ERROR_SUCCESS,
         "write isolated runtime switches");
@@ -58,6 +69,192 @@ static void drain() {
   MSG message{};
   while (PeekMessageW(&message, quick::receiver, quick::showMessage, quick::showMessage, PM_REMOVE))
     quick::helperProc(message.hwnd, message.message, message.wParam, message.lParam);
+}
+static void retiredTransferGestures(HWND shell, HWND surface) {
+  enable(true, false); simulatedForeground = shell; underPointer = surface;
+  DWORD oldEnabled = 1;
+  for (auto name : {L"QuickFoldersCopy", L"QuickFoldersMove"})
+    check(RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", name, REG_DWORD, &oldEnabled, sizeof(oldEnabled)) == ERROR_SUCCESS,
+          "seed obsolete transfer switches from an upgrade");
+  quick::updateTarget();
+  const auto before = launches.size();
+  for (int key : {VK_CONTROL, VK_SHIFT}) {
+    modifier = key;
+    check(mouse(WM_MBUTTONDOWN) == 73 && mouse(WM_MBUTTONUP) == 73, "retired transfer shortcuts preserve native input");
+  }
+  drain(); check(launches.size() == before, "old transfer settings cannot launch modifier menus");
+  modifier = 0;
+  check(mouse(WM_MBUTTONDOWN) == 1 && mouse(WM_MBUTTONUP) == 1, "plain middle click remains the single menu entry");
+  drain(); check(launches.size() == before + 1, "plain middle opens one menu with obsolete settings present");
+}
+static void desktopTests(HWND dialog) {
+  const auto instance = GetModuleHandleW(nullptr);
+  for (auto name : {L"Progman", L"WorkerW"}) {
+    WNDCLASSW cls{}; cls.hInstance = instance; cls.lpfnWndProc = DefWindowProcW; cls.lpszClassName = name;
+    check(RegisterClassW(&cls) != 0, "register isolated desktop host class");
+  }
+  auto host = [&](const wchar_t *name) {
+    HWND window = CreateWindowW(name, L"Hidden desktop fixture", WS_OVERLAPPED, 0, 0, 300, 200, nullptr, nullptr, instance, nullptr);
+    check(window != nullptr, "create hidden desktop host"); return window;
+  };
+  auto view = [&](HWND parent) {
+    HWND window = CreateWindowW(L"SHELLDLL_DefView", L"", WS_CHILD, 0, 0, 200, 100, parent, nullptr, instance, nullptr);
+    check(window != nullptr, "create hidden desktop view"); return window;
+  };
+  HWND shell = host(L"Progman"), worker = host(L"WorkerW"), wallpaper = host(L"WorkerW");
+  HWND shellView = view(shell), workerView = view(worker), ordinary = host(L"STATIC");
+  simulatedShell = shell;
+  retiredTransferGestures(shell, shellView);
+  check(quick::isDesktop(shell) && quick::isDesktop(worker), "recognize both shell and WorkerW desktop hosts");
+  check(!quick::isDesktop(wallpaper) && !quick::isDesktop(ordinary) && !quick::isDesktop(shellView),
+        "wallpaper-only hosts, applications and non-root children are excluded");
+  foreignProcessWindow = worker;
+  check(!quick::isDesktop(worker), "desktop class and view cannot impersonate the Shell process");
+  foreignProcessWindow = nullptr;
+  simulatedShell = nullptr; check(!quick::isDesktop(shell), "no Shell window means no desktop target"); simulatedShell = shell;
+  for (bool dialogs : {false, true}) {
+    enable(true, dialogs);
+    for (auto [target, surface] : {std::pair{shell, shellView}, std::pair{worker, workerView}}) {
+      for (bool cached : {false, true}) {
+        simulatedForeground = target; underPointer = surface; quick::eligible = cached ? target : nullptr;
+        const auto before = launches.size();
+        check(mouse(WM_MBUTTONDOWN) == (cached ? 1 : 73) && mouse(WM_MBUTTONUP) == (cached ? 1 : 73),
+              "desktop press and release preserve matching input handling");
+        drain(); check(launches.size() == before + 1 && launches.back().first == target,
+                       "desktop opens exactly one menu with dialog support on or off");
+      }
+    }
+    simulatedForeground = shell; underPointer = workerView; quick::eligible = shell;
+    const auto before = launches.size();
+    mouse(WM_MBUTTONDOWN); mouse(WM_MBUTTONUP); drain();
+    check(launches.size() == before + 1 && launches.back().first == shell,
+          "split WorkerW view uses foreground Progman as popup anchor");
+    simulatedForeground = ordinary; underPointer = workerView; quick::eligible = nullptr;
+    mouse(WM_MBUTTONDOWN); simulatedForeground = shell; mouse(WM_MBUTTONUP); drain();
+    check(launches.size() == before + 2, "first desktop click can activate the desktop from another app");
+    for (HWND rejected : {wallpaper, ordinary}) {
+      simulatedForeground = rejected; underPointer = rejected; quick::eligible = nullptr;
+      mouse(WM_MBUTTONDOWN); mouse(WM_MBUTTONUP); drain();
+      check(launches.size() == before + 2, "non-desktop surfaces never launch a popup");
+    }
+    simulatedForeground = shell; underPointer = wallpaper;
+    mouse(WM_MBUTTONDOWN); mouse(WM_MBUTTONUP); drain();
+    check(launches.size() == before + 2, "foreground Shell does not admit a wallpaper-only click surface");
+  }
+  enable(true, false);
+  simulatedForeground = dialog; underPointer = dialog; quick::updateTarget();
+  const auto before = launches.size();
+  check(quick::eligible.load() == nullptr && mouse(WM_MBUTTONDOWN) == 73 && mouse(WM_MBUTTONUP) == 73,
+        "disabled dialog support retains native middle input while desktop helper is active");
+  drain(); check(launches.size() == before, "disabled dialog support cannot queue a usable popup");
+  simulatedForeground = shell; underPointer = shellView; quick::updateTarget();
+  check(quick::eligible.load() == shell, "desktop remains eligible with dialog support disabled");
+  for (int key : {VK_CONTROL, VK_SHIFT, VK_MENU, VK_LWIN, VK_RWIN}) {
+    modifier = key; mouse(WM_MBUTTONDOWN); mouse(WM_MBUTTONUP); modifier = 0;
+    mouse(WM_MBUTTONDOWN); modifier = key; mouse(WM_MBUTTONUP); modifier = 0;
+  }
+  mouse(WM_MBUTTONDOWN); mouse(WM_MOUSEMOVE, {20 + GetSystemMetrics(SM_CXDRAG) + 10, 20}); mouse(WM_MBUTTONUP);
+  drain(); check(launches.size() == before, "desktop modifiers and drag gestures do not open menus");
+  mouse(WM_MBUTTONDOWN); mouse(WM_MBUTTONUP); simulatedForeground = ordinary; drain();
+  check(launches.size() == before, "switching away from desktop before dispatch cancels request");
+  simulatedForeground = shell;
+  mouse(WM_MBUTTONDOWN); mouse(WM_MBUTTONUP); enable(false, false); drain();
+  check(launches.size() == before, "disabling quick folders cancels queued desktop requests");
+  enable(true, false);
+  mouse(WM_MBUTTONDOWN); mouse(WM_MBUTTONUP); DestroyWindow(shell); drain();
+  check(launches.size() == before, "destroyed desktop cannot launch a queued request");
+  simulatedForeground = underPointer = simulatedShell = nullptr; quick::eligible = nullptr; quick::middle = {};
+  for (HWND window : {worker, wallpaper, ordinary}) DestroyWindow(window);
+  for (auto name : {L"Progman", L"WorkerW"}) UnregisterClassW(name, instance);
+  enable(true);
+}
+static void legacyDialogTests() {
+  // Model only the native Browse-for-Folder structure. The caption is
+  // deliberately unrelated: recognition must not depend on UI language.
+  WNDCLASSW container{}; container.hInstance = GetModuleHandleW(nullptr);
+  container.lpfnWndProc = DefWindowProcW;
+  container.lpszClassName = L"SHBrowseForFolder ShellNameSpace Control";
+  check(RegisterClassW(&container) != 0, "register disposable legacy namespace host");
+  WNDCLASSW treeClass = container; treeClass.lpszClassName = L"SysTreeView32";
+  const bool ownsTreeClass = RegisterClassW(&treeClass) != 0;
+  check(ownsTreeClass || GetLastError() == ERROR_CLASS_ALREADY_EXISTS, "provide disposable tree control class");
+  struct Fixture { HWND root, host, tree; };
+  std::vector<Fixture> fixtures;
+  auto create = [&](bool namespaceHost, bool tree, bool ok, bool cancel, bool properRoot = true, bool nestedTree = true) {
+    Fixture item{};
+    item.root = CreateWindowW(properRoot ? L"#32770" : L"STATIC", L"Arbitrary localized title", WS_OVERLAPPED,
+                              0, 0, 200, 160, nullptr, nullptr, container.hInstance, nullptr);
+    check(item.root != nullptr, "create hidden legacy signature fixture");
+    if (namespaceHost) item.host = CreateWindowW(container.lpszClassName, L"", WS_CHILD,
+                              0, 0, 150, 100, item.root, nullptr, container.hInstance, nullptr);
+    if (tree) item.tree = CreateWindowW(treeClass.lpszClassName, L"", WS_CHILD,
+                              0, 0, 150, 100, namespaceHost && nestedTree ? item.host : item.root,
+                              nullptr, container.hInstance, nullptr);
+    auto button = [&](int id) { return CreateWindowW(L"BUTTON", L"Localized button", WS_CHILD,
+                              0, 110, 60, 25, item.root, reinterpret_cast<HMENU>(INT_PTR(id)), container.hInstance, nullptr); };
+    check((!namespaceHost || item.host) && (!tree || item.tree) && (!ok || button(IDOK)) && (!cancel || button(IDCANCEL)),
+          "create hidden native browse signature descendants");
+    fixtures.push_back(item); return item;
+  };
+  const auto legacy = create(true, true, true, true);
+  check(quick::isFileDialog(legacy.root), "legacy Browse-for-Folder tree dialog is recognized independently of its title");
+  auto classic = [&](bool prompt, bool status, int treeId = 14145) {
+    auto item = create(false, true, true, true);
+    SetWindowLongPtrW(item.tree, GWLP_ID, treeId);
+    auto label = [&](int id) { return CreateWindowW(L"STATIC", L"Localized label", WS_CHILD,
+                              0, 0, 150, 20, item.root, reinterpret_cast<HMENU>(INT_PTR(id)), container.hInstance, nullptr); };
+    check((!prompt || label(14146)) && (!status || label(14147)), "create classic browse prompt and status controls");
+    return item;
+  };
+  const auto classicValid = classic(true, true);
+  check(quick::isFileDialog(classicValid.root), "classic Browse-for-Folder with native control identifiers is recognized");
+  for (auto valid : {legacy, classicValid}) {
+    for (bool cached : {false, true}) {
+      for (int repeat = 0; repeat < 3; ++repeat) {
+        simulatedForeground = valid.root; underPointer = valid.tree;
+        quick::eligible = cached ? valid.root : nullptr;
+        const auto before = launches.size();
+        check(mouse(WM_MBUTTONDOWN) == (cached ? 1 : 73) && mouse(WM_MBUTTONUP) == (cached ? 1 : 73),
+              "legacy tree preserves matching cached and uncached middle-button handling");
+        drain();
+        check(launches.size() == before + 1 && launches.back().first == valid.root,
+              "each repeated legacy tree middle click opens exactly one menu for its own dialog");
+      }
+    }
+  }
+  const auto ordinaryTree = create(false, true, true, true);
+  const auto missingTree = create(true, false, true, true);
+  const auto missingOk = create(true, true, false, true);
+  const auto missingCancel = create(true, true, true, false);
+  const auto wrongRoot = create(true, true, true, true, false);
+  const auto unrelatedTree = create(true, true, true, true, true, false);
+  const auto classicMissingPrompt = classic(false, true), classicMissingStatus = classic(true, false);
+  const auto classicWrongTree = classic(true, true, 14144);
+  const auto classicNestedTree = classic(true, true);
+  HWND unrelatedParent = CreateWindowW(L"STATIC", L"Unrelated control", WS_CHILD, 0, 0, 150, 100,
+                                      classicNestedTree.root, nullptr, container.hInstance, nullptr);
+  check(unrelatedParent && SetParent(classicNestedTree.tree, unrelatedParent), "nest a classic tree in an unrelated host");
+  for (auto rejected : {ordinaryTree, missingTree, missingOk, missingCancel, wrongRoot, unrelatedTree,
+                        classicMissingPrompt, classicMissingStatus, classicWrongTree, classicNestedTree}) {
+    check(!quick::isFileDialog(rejected.root), "ordinary trees and incomplete or mismatched legacy signatures stay excluded");
+    simulatedForeground = rejected.root; underPointer = rejected.tree ? rejected.tree : rejected.root;
+    quick::eligible = nullptr;
+    const auto before = launches.size();
+    check(mouse(WM_MBUTTONDOWN) == 73 && mouse(WM_MBUTTONUP) == 73,
+          "unsupported tree dialogs retain native middle-button input");
+    drain(); check(launches.size() == before, "unsupported tree dialog cannot launch a menu after queued validation");
+  }
+  simulatedForeground = legacy.root; underPointer = legacy.tree; quick::eligible = legacy.root;
+  const auto beforeDisable = launches.size();
+  mouse(WM_MBUTTONDOWN); mouse(WM_MBUTTONUP); enable(false); drain();
+  check(launches.size() == beforeDisable, "disabling quick folders cancels a queued legacy dialog menu"); enable(true);
+  mouse(WM_MBUTTONDOWN); mouse(WM_MBUTTONUP);
+  DestroyWindow(legacy.root); drain();
+  check(launches.size() == beforeDisable, "closing the legacy dialog before dispatch cancels its queued menu");
+  simulatedForeground = underPointer = nullptr; quick::eligible = nullptr;
+  for (auto item : fixtures) if (IsWindow(item.root)) DestroyWindow(item.root);
+  if (ownsTreeClass) UnregisterClassW(treeClass.lpszClassName, treeClass.hInstance);
+  UnregisterClassW(container.lpszClassName, container.hInstance);
 }
 int main() {
   CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
@@ -164,6 +361,8 @@ int main() {
     WaitForSingleObject(started, INFINITE); ReleaseMutex(mutex); replacement.join();
     check(acquired, "replacement helper waits for previous mutex owner and then takes over");
     CloseHandle(started); CloseHandle(mutex);
+    desktopTests(first);
+    legacyDialogTests();
     DestroyWindow(quick::receiver); quick::receiver = nullptr;
     DestroyWindow(first); DestroyWindow(second); DestroyWindow(ordinary); UnregisterClassW(shell.lpszClassName, shell.hInstance);
     std::cout << "PASS " << checks << " quick runtime assertions: foreground race, per-click targets, queued coordinates, gesture filtering, helper handoff\n";

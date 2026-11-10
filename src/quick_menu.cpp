@@ -1,6 +1,9 @@
 #include "quick_folders.h"
 #include "quick_popup.h"
 #include "quick_menu_gate.h"
+#include "quick_legacy.h"
+#include "quick_transfer.h"
+#include "quick_hit.h"
 #include "navigation.h"
 #include "core.h"
 #include "window_position.h"
@@ -23,6 +26,19 @@ namespace {
 ComPtr<IShellBrowser> browserFor(HWND target, HWND expectedView, HWND *actualView = nullptr) {
   ComPtr<IShellWindows> windows;
   if (FAILED(CoCreateInstance(CLSID_ShellWindows, nullptr, CLSCTX_ALL, IID_PPV_ARGS(&windows)))) return {};
+  if (isDesktop(target)) {
+    VARIANT location{}; location.vt = VT_I4; location.lVal = CSIDL_DESKTOP;
+    VARIANT root{}; long handle = 0;
+    ComPtr<IDispatch> dispatch; ComPtr<IServiceProvider> services; ComPtr<IShellBrowser> browser;
+    ComPtr<IShellView> view; HWND viewWindow = nullptr;
+    if (FAILED(windows->FindWindowSW(&location, &root, SWC_DESKTOP, &handle, SWFO_NEEDDISPATCH, &dispatch)) || !dispatch ||
+        FAILED(dispatch.As(&services)) || FAILED(services->QueryService(SID_STopLevelBrowser, IID_PPV_ARGS(&browser))) ||
+        FAILED(browser->QueryActiveShellView(&view)) || !view || FAILED(view->GetWindow(&viewWindow)) ||
+        !IsWindowVisible(viewWindow) || (expectedView && viewWindow != expectedView) ||
+        !isDesktop(GetAncestor(viewWindow, GA_ROOT))) return {};
+    if (actualView) *actualView = viewWindow;
+    return browser;
+  }
   long count = 0; windows->get_Count(&count);
   for (long i = 0; i < count; ++i) {
     VARIANT index{}; index.vt = VT_I4; index.lVal = i;
@@ -76,6 +92,7 @@ std::wstring dialogPath(HWND target) {
 }
 bool navigateDialog(HWND target, const std::wstring &path, const detail::MenuRequest &request) {
   if (!request.current() || !isFileDialog(target)) return false;
+  if (legacy::isDialog(target)) return legacy::navigate(target, path, request);
   SetForegroundWindow(target);
   if (!request.current() || GetForegroundWindow() != target ||
       ((GetAsyncKeyState(VK_CONTROL) | GetAsyncKeyState(VK_SHIFT) | GetAsyncKeyState(VK_MENU)) & 0x8000)) return false;
@@ -156,7 +173,7 @@ std::wstring label(const std::wstring &path) {
   auto title = std::filesystem::path(path).filename().native();
   return title.empty() ? path : title;
 }
-enum class Kind { Open, NewWindow, Pin, Unpin, Manage, Clear };
+enum class Kind { Open, NewWindow, Pin, Unpin, Manage, Clear, Copy, Move };
 struct Command { Kind kind; std::wstring path; };
 struct Popup {
   using Branch = popup::Branch;
@@ -167,6 +184,11 @@ struct Popup {
   std::map<UINT, Command> commands;
   UINT next = 1;
   State state;
+  MenuMode mode = MenuMode::Navigate;
+  DWORD selectedCount = 0;
+  bool canCopy = false, canMove = false;
+  bool showCurrentName = false;
+  bool loaded = false;
   struct Known { std::wstring path, title; Symbol symbol; };
   std::vector<Known> known;
   bool pinned(const std::wstring &path) { return std::any_of(state.pins.begin(), state.pins.end(), [&](const auto &p) { return same(p, path); }); }
@@ -181,7 +203,9 @@ struct Popup {
   }
   void folder(Branch &branch, const std::wstring &path, unsigned depth = 0) {
     auto children = std::make_shared<Branch>();
-    add(*children, L"在新窗口打开", Kind::NewWindow, Symbol::Window, path);
+    add(*children, mode == MenuMode::Copy ? L"复制到此文件夹" : mode == MenuMode::Move ? L"移动到此文件夹" : L"在新窗口打开",
+        mode == MenuMode::Navigate ? Kind::NewWindow : Kind::Open,
+        mode == MenuMode::Copy ? Symbol::Copy : mode == MenuMode::Move ? Symbol::Move : Symbol::Window, path);
     add(*children, pinned(path) ? L"取消置顶" : L"置顶此文件夹", pinned(path) ? Kind::Unpin : Kind::Pin, pinned(path) ? Symbol::Unpin : Symbol::Star, path);
     separator(*children);
     if (depth >= 8) hint(*children, L"更深的目录请直接打开");
@@ -204,17 +228,43 @@ struct Popup {
     branch.items.push_back({title, command(Kind::Open, path), symbol, children, Row::Action, path});
   }
   void build(const std::wstring &current) {
-    state = load();
-    const KNOWNFOLDERID *ids[]{&FOLDERID_Desktop, &FOLDERID_Documents, &FOLDERID_Downloads};
-    const wchar_t *names[]{L"桌面", L"文档", L"下载"};
-    const Symbol symbols[]{Symbol::Desktop, Symbol::Documents, Symbol::Downloads};
-    for (size_t i = 0; i < 3; ++i) {
-      PWSTR path = nullptr;
-      if (SUCCEEDED(SHGetKnownFolderPath(*ids[i], KF_FLAG_DONT_VERIFY, nullptr, &path))) { known.push_back({path, names[i], symbols[i]}); CoTaskMemFree(path); }
+    root->items.clear(); commands.clear(); next = 1;
+    // Mode changes only rebuild the model; do not repeat Shell/registry queries
+    // inside the live popup's mouse/keyboard dispatch.
+    if (!loaded) {
+      state = load();
+      const KNOWNFOLDERID *ids[]{&FOLDERID_Desktop, &FOLDERID_Documents, &FOLDERID_Downloads};
+      const wchar_t *names[]{L"桌面", L"文档", L"下载"};
+      const Symbol symbols[]{Symbol::Desktop, Symbol::Documents, Symbol::Downloads};
+      for (size_t i = 0; i < 3; ++i) {
+        PWSTR path = nullptr;
+        if (SUCCEEDED(SHGetKnownFolderPath(*ids[i], KF_FLAG_DONT_VERIFY, nullptr, &path))) { known.push_back({path, names[i], symbols[i]}); CoTaskMemFree(path); }
+      }
+      loaded = true;
     }
-    heading(*root, L"置顶文件夹");
+    heading(*root, L"");
+    if (showCurrentName && !selectedCount && !current.empty()) {
+      root->items.back().title = label(current);
+      for (const auto &place : known) if (same(place.path, current)) { root->items.back().title = place.title; break; }
+    }
+    auto actionTitle = [&](MenuMode action, bool enabled) {
+      std::wstring title = action == MenuMode::Copy ? L"复制" : L"移动";
+      if (!enabled) return title + L"：所选项目不支持此操作";
+      return mode == action ? L"取消" + title + L"，返回快速定位" : title + L"所选项目到…";
+    };
+    if (selectedCount) {
+      root->items.back().actions = {
+          {command(Kind::Copy), Symbol::Copy, actionTitle(MenuMode::Copy, canCopy), canCopy, mode == MenuMode::Copy, L"复制"},
+          {command(Kind::Move), Symbol::Move, actionTitle(MenuMode::Move, canMove), canMove, mode == MenuMode::Move, L"移动"}};
+      root->items.back().leadingActions = 2;
+    }
     if (!current.empty()) root->items.back().actions.push_back({command(pinned(current) ? Kind::Unpin : Kind::Pin, current), pinned(current) ? Symbol::Unpin : Symbol::Star,
         pinned(current) ? L"取消置顶当前文件夹" : L"置顶当前文件夹"});
+    if (root->items.back().actions.empty()) root->items.clear();
+    else {
+      if (mode != MenuMode::Navigate) hint(*root, L"单击目标文件夹，悬停展开子目录");
+      separator(*root);
+    }
     if (state.pins.empty()) hint(*root, L"暂无置顶");
     for (const auto &path : state.pins) folder(*root, path);
     separator(*root); heading(*root, L"最近访问");
@@ -226,15 +276,32 @@ struct Popup {
     for (const auto &path : state.history) folder(*history, path);
     if (state.history.empty()) hint(*history, L"暂无历史记录");
     root->items.push_back({L"历史记录（最近 20 条）", 0, Symbol::More, history});
+    if (mode != MenuMode::Navigate) {
+      separator(*root); heading(*root, L"常用位置");
+      for (const auto &place : known) folder(*root, place.path);
+    }
     separator(*root);
     Item toolbar; toolbar.row = Row::Toolbar;
+    if (selectedCount) toolbar.title = mode == MenuMode::Navigate ? L"已选 " + std::to_wstring(selectedCount) + L" 项" :
+        (mode == MenuMode::Copy ? L"复制 " : L"移动 ") + std::to_wstring(selectedCount) + L" 项到…";
     toolbar.actions = {{command(Kind::Manage), Symbol::Settings, L"管理置顶与历史"}, {command(Kind::Clear), Symbol::Trash, L"清空历史"}};
     root->items.push_back(std::move(toolbar));
+    root->invoke = [this, current](unsigned selected) {
+      const auto found = commands.find(selected);
+      if (found == commands.end()) return false;
+      const auto kind = found->second.kind;
+      if (kind != Kind::Copy && kind != Kind::Move) return false;
+      if ((kind == Kind::Copy && !canCopy) || (kind == Kind::Move && !canMove)) return true;
+      const auto requested = kind == Kind::Copy ? MenuMode::Copy : MenuMode::Move;
+      mode = mode == requested ? MenuMode::Navigate : requested;
+      build(current); return true;
+    };
   }
 };
 }
 int menu(HINSTANCE instance, HWND target, HWND view, POINT point) {
-  if (!navigation::quickEnabled() || (!isExplorer(target) && !isFileDialog(target))) return 1;
+  const bool desktop = isDesktop(target);
+  if (!navigation::quickEnabled() || (!desktop && !isExplorer(target) && !isFileDialog(target))) return 1;
   if (GetForegroundWindow() != target) return 0;
   DWORD targetPid = 0; GetWindowThreadProcessId(target, &targetPid);
   auto requestName = std::wstring(L"Local\\FolderNote.QuickFolders.Request.v1.") + std::to_wstring(targetPid) + L"." +
@@ -250,6 +317,10 @@ int menu(HINSTANCE instance, HWND target, HWND view, POINT point) {
   try {
     if (!request.valid()) fn::fail(L"无法准备快速文件夹菜单", request.error());
     std::wstring current;
+    ComPtr<IShellItemArray> selection;
+    DWORD selectedCount = 0;
+    bool showCurrentName = false;
+    MenuMode mode = MenuMode::Navigate;
     bool repeat = true;
     while (repeat && navigation::quickEnabled()) {
       repeat = false;
@@ -266,18 +337,46 @@ int menu(HINSTANCE instance, HWND target, HWND view, POINT point) {
           request.begin(); started = true;
           // Keep preparation serialized too: a slow Shell provider must not
           // accumulate one blocked query process per repeated middle click.
-          if (isExplorer(target)) {
+          if (desktop || isExplorer(target)) {
             auto browser = browserFor(target, view, &view);
             ComPtr<IShellView> active;
-            if (browser && SUCCEEDED(browser->QueryActiveShellView(&active))) current = viewPath(active.Get());
+            if (browser && SUCCEEDED(browser->QueryActiveShellView(&active)) && active) {
+              if (!desktop) current = viewPath(active.Get());
+              // Read the active view's selection regardless of the click position,
+              // then freeze it before the user chooses an operation/destination.
+              selection = transfer::selectedItems(active.Get(), selectedCount);
+              if (!browserFor(target, view) || GetForegroundWindow() != target) { selection.Reset(); selectedCount = 0; }
+            }
           } else current = dialogPath(target);
+          if (desktop) {
+            PWSTR path = nullptr;
+            if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Desktop, KF_FLAG_DONT_VERIFY, nullptr, &path))) current = path;
+            CoTaskMemFree(path);
+          }
+          if (!current.empty() && !selectedCount) {
+            HWND hitView = view;
+            if (!hitView) {
+              // File dialogs have no IShellBrowser; locate their file-list
+              // surface under the click, without treating a tree as a list.
+              for (HWND child = WindowFromPoint(point); child && child != target && IsChild(target, child); child = GetParent(child)) {
+                wchar_t cls[128]{}; GetClassNameW(child, cls, ARRAYSIZE(cls));
+                if (!wcscmp(cls, L"SHELLDLL_DefView") || !wcscmp(cls, L"SysListView32")) { hitView = child; break; }
+              }
+            }
+            showCurrentName = detail::blankSurface(hitView, point);
+          }
           if (!current.empty()) visit(current);
         }
         if (!currentRequest() || GetForegroundWindow() != target) break;
+        popup.mode = mode; popup.selectedCount = selectedCount;
+        popup.showCurrentName = showCurrentName;
+        popup.canCopy = transfer::supports(selection.Get(), MenuMode::Copy);
+        popup.canMove = transfer::supports(selection.Get(), MenuMode::Move);
         popup.build(current);
         // Slow queries must not reopen after focus changes or a newer request.
         if (!currentRequest() || GetForegroundWindow() != target) break;
         selected = popup::show(instance, point, popup.root, ui::configuredTheme(), target);
+        mode = popup.mode;
       } // The hidden popup no longer owns the gate, even if its command is slow.
       if (!selected || !popup.commands.contains(selected) || !currentRequest()) break;
       auto command = popup.commands.at(selected);
@@ -289,7 +388,7 @@ int menu(HINSTANCE instance, HWND target, HWND view, POINT point) {
         if (!currentRequest()) break;
         if (answer == IDYES) clearHistory();
         repeat = true;
-      } else {
+      } else if (command.kind == Kind::Open || command.kind == Kind::NewWindow) {
         const bool available = directoryAvailable(command.path);
         if (!currentRequest()) break;
         if (!available) throw fn::Error{L"该文件夹不存在、无权访问或响应超时。置顶记录已保留。"};
@@ -302,8 +401,19 @@ int menu(HINSTANCE instance, HWND target, HWND view, POINT point) {
         } id{parsed};
         if (!currentRequest()) break;
         if (FAILED(parsedResult)) throw fn::Error{L"无法打开这个文件夹。"};
+        if (mode != MenuMode::Navigate) {
+          if (!selection || !browserFor(target, view) || !transfer::supports(selection.Get(), mode)) break;
+          ComPtr<IShellItem> destination;
+          const auto created = SHCreateItemFromIDList(id.get(), IID_PPV_ARGS(&destination));
+          if (FAILED(created)) fn::fail(L"无法访问目标文件夹", static_cast<DWORD>(created));
+          if (!currentRequest()) break;
+          const auto transferred = transfer::perform(target, selection.Get(), destination.Get(), mode, currentRequest);
+          if (FAILED(transferred)) fn::fail(L"无法完成复制 / 移动操作", static_cast<DWORD>(transferred));
+          if (transferred == S_OK) visit(command.path);
+          break;
+        }
         bool ok = false;
-        if (command.kind == Kind::NewWindow) {
+        if (desktop || command.kind == Kind::NewWindow) {
           SHELLEXECUTEINFOW execute{sizeof(execute)}; execute.fMask = SEE_MASK_IDLIST; execute.lpIDList = id.get(); execute.nShow = SW_SHOWNORMAL;
           ok = ShellExecuteExW(&execute) != FALSE;
         } else if (isExplorer(target)) {
