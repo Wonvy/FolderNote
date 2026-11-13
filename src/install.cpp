@@ -2,9 +2,13 @@
 #include "language.h"
 #include "context_commands.h"
 #include "context_inventory.h"
+#include "custom_explorer_entries.h"
+#include "desktop_folder_links.h"
+#include "explorer_entries.h"
 #include "navigation.h"
 #include "navigation_registration.h"
 #include "resource.h"
+#include "removed_entries.h"
 #include "quick_folders.h"
 #include "window_position.h"
 #include "app_version.h"
@@ -234,6 +238,17 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
       navreg::unregisterUser();
       context::unregisterCommands();
       const auto unresolvedContextMenus = context::restoreAll();
+      size_t unresolvedEntries = 0;
+      for (auto cleanup : {explorer_entries::restoreAll, desktop_folder_links::restoreAll}) {
+        try { unresolvedEntries += cleanup(); }
+        catch (...) { ++unresolvedEntries; }
+      }
+      if (!unresolvedEntries) {
+        try { explorer_entries::clearRemoved(); }
+        catch (...) { ++unresolvedEntries; }
+      }
+      try { unresolvedEntries += explorer_entries::removeAllCustom(); }
+      catch (...) { ++unresolvedEntries; }
 #ifdef FOLDERNOTE_UNINSTALL_ONLY
       bool modernRemoved = removeModernPackage();
 #endif
@@ -278,6 +293,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
       if (unresolvedContextMenus) {
         message += L"\n\n";
         message += lang::text(L"部分右键菜单已被其他程序修改，原有恢复记录仍保留。");
+        result = 2;
+      }
+      if (unresolvedEntries) {
+        message += L"\n\n";
+        message += lang::text(L"部分文件夹入口未能还原或移除，处理记录仍保留。");
         result = 2;
       }
       MessageBoxW(nullptr, message.c_str(), L"FolderNote", MB_OK | MB_ICONINFORMATION);

@@ -26,6 +26,8 @@ wchar_t actionGlyph(Symbol symbol) {
   case Symbol::Window: return L'\xE78B';
   case Symbol::Copy: return L'\xE8C8';
   case Symbol::Move: return L'\xE8DE';
+  case Symbol::Visibility: return L'\xE890';
+  case Symbol::AddFolder: return L'\xE8F4';
   default: return 0;
   }
 }

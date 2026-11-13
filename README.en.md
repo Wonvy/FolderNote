@@ -2,9 +2,9 @@
 
 [简体中文](README.md) · [English](README.en.md)
 
-**Windows File Explorer tools · Version 1.9.3 · x64**
+**Windows File Explorer tools · Version 1.9.4 · x64**
 
-FolderNote adds context menu management, folder notes, double-click navigation, a middle-click folder menu, and tabs for Windows 10. Each feature has its own switch in a native Win32 settings window. No separate C++ runtime installation is required.
+FolderNote adds folder entry management, context menu management, folder notes, double-click navigation, a middle-click folder menu, and tabs for Windows 10. It uses a native Win32 settings window and requires no separate C++ runtime installation.
 
 [User guide (Chinese)](docs/USER_GUIDE.md) · [Development and builds (Chinese)](docs/DEVELOPMENT.md) · [Changelog (Chinese)](CHANGELOG.md) · [Contributing (Chinese)](CONTRIBUTING.md)
 
@@ -12,18 +12,25 @@ FolderNote adds context menu management, folder notes, double-click navigation, 
 
 ![FolderNote Context Menu Manager in English](docs/previews/settings-en-US.png)
 
-[View the Simplified Chinese interface](docs/previews/settings-zh-CN.png)
+| Folder entries | Feature settings |
+| --- | --- |
+| ![This PC grouped icon view in Simplified Chinese](docs/previews/folder-entries-zh-CN.png) | ![Feature settings in Simplified Chinese](docs/previews/features-zh-CN.png) |
+| **Pins and history** | **Custom command editor** |
+| ![Pins and history in Simplified Chinese](docs/previews/quick-folders-zh-CN.png) | ![Custom command editor in Simplified Chinese](docs/previews/context-editor-zh-CN.png) |
+
+[View Context Menu Manager in Simplified Chinese](docs/previews/settings-zh-CN.png)
 
 ## Features
 
 | Feature | How to use it | Default |
 | --- | --- | --- |
 | Context Menu Manager | Browse existing menus by Explorer object, hide or restore supported entries, and create ordered FolderNote commands. | Off |
+| Folder entries | Add folders in This PC, the navigation pane, or the desktop. Hide, show, or restore supported entries, and remove or recover supported This PC entries. | Available in Settings |
 | Folder notes | Add, edit, clear, or repair notes from a folder's context menu. Show notes in the Comments column in File Explorer. | Off |
 | Double-click empty space | Go up one level or configure the gesture to go back. | Go up one level |
 | Middle-click folder menu | Open pinned, recent, and frequently used folders on the desktop or in File Explorer. Hover over folders to browse subfolders. You can also enable the menu in file and folder dialogs. | Off |
 | Copy or move by middle click | Select files, middle-click, choose Copy or Move, and select a destination. Windows shows the operation's progress. | Available when the menu opens with items selected |
-| Tabs on Windows 10 | Create, duplicate, close, and reopen tabs. Scroll over the tab bar to switch tabs or middle-click a tab to close it. | Off |
+| Tabs on Windows 10 | Create, duplicate, close, and reopen tabs. Scroll to switch tabs, middle-click to close a tab, or drop files on a tab to transfer them to its folder. | Off |
 | Open folders in new tabs | Route new folder windows to tabs in an existing window on Windows 10. A tab's context menu also offers Open in New Window. | Off |
 | Appearance | Use a light, dark, or system theme with DPI scaling and the folders' own icons. | Follow system |
 | Interface language | Choose Simplified Chinese or English, export a translation template, or import a custom XML language file. | Settings tab |
@@ -36,12 +43,18 @@ In a build published on GitHub, choose **Check for Updates** at the bottom left 
 
 Choose **Context Menu Manager** in the settings sidebar. Browse menus for files, extensions, folders, folder backgrounds, drives, and the desktop, plus the **New**, **Send to**, and **Open with** submenus. Select a row to view its source. The eye icon hides or restores supported entries.
 
-Add programs, websites, or CMD and PowerShell commands under **Custom commands**. You can limit commands to a folder or file extension and set their order in the FolderNote submenu. See the [user guide](docs/USER_GUIDE.md#右键菜单管理) for the supported changes and how to restore them.
+The status bar shows progress while FolderNote reads menus. Some Windows commands are read-only, including **Restore previous versions** on drives.
+
+Add programs, websites, or CMD and PowerShell commands under **Custom commands**. You can limit commands to a folder or file extension and set their order in the FolderNote submenu. The editor can open the Windows folder and icon pickers. See the [user guide](docs/USER_GUIDE.md#右键菜单管理) for supported changes and how to restore them.
+
+## Manage folder entries
+
+Select **Folder entries** and choose a location. Switch between list and icon views, collapse any of the three **This PC** groups, or select an entry to view its status, source, and target path where available. Select **Add folder…** to add your own folder to the selected location. See the [user guide](docs/USER_GUIDE.md#文件夹入口管理) for the hide, restore, and remove actions.
 
 ## Install and get started
 
 1. Extract the entire installer archive. Run `Install.exe` for the standard edition or `Install-Win11.exe` for the Windows 11 first-level context menu test edition. Keep the EXE, DLL, and MSIX files together. The first installation may request administrator approval to register the navigation extension.
-2. Find **FolderNote** in the Start menu or open `FolderNote.exe`. Use the sidebar to switch between Features, Pins and history, Context Menu Manager, and Settings. The running version appears at the bottom left.
+2. Find **FolderNote** in the Start menu or open `FolderNote.exe`. Use the sidebar to switch between Features, Pins and history, Context Menu Manager, Folder entries, and Settings. The running version appears at the bottom left.
 3. Enable the features you want and save. To display notes, add the **Comments** column to File Explorer's Details view.
 4. Close and reopen File Explorer windows after installing or upgrading. If Explorer still has the old extension loaded, wait for any file operations to finish before restarting Explorer.
 
@@ -85,4 +98,4 @@ Binaries go to `build/Release/`. Run `packaging/build-release.ps1` after the Rel
 
 ## Compatibility
 
-FolderNote targets Windows 10 and 11 on x64. Version 1.9.3 passed all 24 CTest tests on Windows 10 22H2, covering context menu inventory, hiding and restoring entries, the settings interface, language selection, folder navigation, the middle-click menu, and file transfers. The unsigned Windows 11 first-level context menu package is intended for testing. See the [user guide](docs/USER_GUIDE.md) for supported configurations and troubleshooting.
+FolderNote targets Windows 10 and 11 on x64. The current build passed 27 CTest tests on Windows 10 22H2, covering folder entries, context menus, the settings interface, language selection, folder navigation, and file transfers. The unsigned Windows 11 first-level context menu package is intended for testing. See the [user guide](docs/USER_GUIDE.md) for supported configurations and troubleshooting.

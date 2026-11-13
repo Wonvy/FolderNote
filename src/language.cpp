@@ -22,6 +22,7 @@ constexpr std::pair<const wchar_t *, const wchar_t *> translations[] = {
 #include "language_other.inc"
 #include "language_context.inc"
 #include "language_context_commands.inc"
+#include "language_explorer_entries.inc"
 };
 using Strings = std::map<std::wstring, std::wstring, std::less<>>;
 struct Pack { std::wstring name; Strings messages; };

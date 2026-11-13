@@ -20,6 +20,7 @@ void text(HDC dc, const std::wstring &value, RECT rect, COLORREF color,
           UINT format = DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
 void surface(HWND control, bool value = true);
 void muted(HWND control);
+void toggleSwitch(HWND control);
 
 // Native controls retain their keyboard, accessibility and control semantics.
 // Painting is shared by the settings, note editor and folder manager.

@@ -7,6 +7,7 @@
 #include "app_version.h"
 #include "update.h"
 #include "context_manager.h"
+#include "explorer_entries_page.h"
 #include "language.h"
 #include <commdlg.h>
 #include <dwmapi.h>
@@ -233,14 +234,14 @@ static HWND dialogCheck;
 static HWND tabsCheck;
 static HWND preferNewTabCheck;
 static HFONT font, headingFont;
-static HWND body, themeChoice, settingsWindow, managerPage, contextPage;
+static HWND body, themeChoice, settingsWindow, managerPage, contextPage, entriesPage;
 static SettingsPage activePage = SettingsPage::Features;
 static int settingsSidebarWidth = 208;
 static bool draggingSettingsSidebar = false;
 static HWND updateTip;
-static constexpr std::array pageButtons{40, 41, 47, 48};
+static constexpr std::array pageButtons{40, 41, 47, 49, 48};
 static const wchar_t *pageTitle(size_t page) {
-  constexpr std::array labels{L"功能设置", L"置顶与历史", L"右键菜单管理", L"设置"};
+  constexpr std::array labels{L"功能设置", L"置顶与历史", L"右键菜单管理", L"文件夹入口管理", L"设置"};
   return lang::text(labels[page]);
 }
 static UINT selectPageMessage() { return RegisterWindowMessageW(L"FolderNote.Settings.SelectPage.v1"); }
@@ -398,9 +399,53 @@ static void layoutBody() {
   scrollPosition = std::clamp(scrollPosition, 0, std::max(0, contentHeight() - int(client.bottom)));
   settingsScroll.configure(contentHeight(), client.bottom, scrollPosition, dpi, scale(16));
   if (activePage != SettingsPage::Features) ShowWindow(settingsScroll.window(), SW_HIDE);
-  for (const auto &item : placements) MoveWindow(item.window, scale(item.x), scale(item.y) - scrollPosition,
-      item.width < 0 ? client.right - scale(item.x - item.width) : scale(item.width), scale(item.height), TRUE);
-  InvalidateRect(body, nullptr, TRUE);
+  constexpr UINT moveFlags = SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_NOCOPYBITS;
+  auto batch = BeginDeferWindowPos(static_cast<int>(placements.size()));
+  for (const auto &item : placements) {
+    const int left = scale(item.x);
+    const bool mainSwitch = item.window == notesCheck || item.window == navigationCheck ||
+        item.window == quickCheck || item.window == tabsCheck;
+    const int right = client.right - scale(mainSwitch ? 40 : 86);
+    int width = item.width < 0 ? right - left : std::min(scale(item.width), right - left);
+    if (item.window == choice) {
+      if (auto dc = GetDC(choice)) {
+        auto previous = SelectObject(dc, font);
+        int longest = 0;
+        const auto count = SendMessageW(choice, CB_GETCOUNT, 0, 0);
+        for (LRESULT index = 0; index < count; ++index) {
+          const auto length = SendMessageW(choice, CB_GETLBTEXTLEN, index, 0);
+          if (length < 0) continue;
+          std::wstring label(size_t(length) + 1, L'\0');
+          const auto copied = SendMessageW(choice, CB_GETLBTEXT, index, reinterpret_cast<LPARAM>(label.data()));
+          SIZE extent{};
+          if (copied >= 0 && GetTextExtentPoint32W(dc, label.c_str(), static_cast<int>(copied), &extent))
+            longest = std::max(longest, int(extent.cx));
+        }
+        width = std::min(width, longest + scale(48));
+        SelectObject(dc, previous);
+        ReleaseDC(choice, dc);
+      }
+    }
+    if (item.window == dialogCheck || item.window == preferNewTabCheck) {
+      const int length = GetWindowTextLengthW(item.window);
+      std::wstring label(size_t(length) + 1, L'\0');
+      GetWindowTextW(item.window, label.data(), length + 1);
+      if (auto dc = GetDC(item.window)) {
+        auto previous = SelectObject(dc, font);
+        SIZE extent{};
+        if (GetTextExtentPoint32W(dc, label.c_str(), length, &extent))
+          width = std::min(width, int(extent.cx) + scale(34));
+        SelectObject(dc, previous);
+        ReleaseDC(item.window, dc);
+      }
+    }
+    const int top = scale(item.y) - scrollPosition;
+    if (batch) batch = DeferWindowPos(batch, item.window, nullptr, left, top,
+        std::max(0, width), scale(item.height), moveFlags);
+    else SetWindowPos(item.window, nullptr, left, top, std::max(0, width), scale(item.height), moveFlags);
+  }
+  if (batch) EndDeferWindowPos(batch);
+  RedrawWindow(body, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
 }
 static void layoutSettings() {
   RECT client{}; GetClientRect(settingsWindow, &client);
@@ -420,36 +465,50 @@ static void layoutSettings() {
   };
   preference(46, 0, 104, 210, 22);
   preference(languageChoice, 0, 132, 210, 130);
-  preference(languageExport, 0, 178, 210, 32);
-  preference(languageImport, 220, 178, 210, 32);
-  preference(32, 0, 242, 210, 22);
-  preference(17, 0, 270, 210, 130);
+  preference(languageExport, 220, 132, 174, 32);
+  preference(languageImport, 404, 132, 174, 32);
+  preference(32, 0, 196, 210, 22);
+  preference(17, 0, 224, 210, 130);
   int bodyHeight = std::max(scale(40), height - scale(166));
   bool overflow = bodyHeight < contentHeight();
   const int contentLeft = scale(sidebar + 5);
   MoveWindow(body, contentLeft, scale(88), width - contentLeft - (overflow ? scale(20) : 0), bodyHeight, TRUE);
   MoveWindow(managerPage, contentLeft, scale(88), width - contentLeft, bodyHeight, TRUE);
   MoveWindow(contextPage, contentLeft, 0, width - contentLeft, height, TRUE);
+  MoveWindow(entriesPage, contentLeft, scale(88), width - contentLeft, std::max(0, height - scale(88)), TRUE);
   settingsScroll.move(width - scale(18), scale(88), scale(12), bodyHeight);
   MoveWindow(GetDlgItem(settingsWindow, 33), scale(sidebar + 24), height - scale(70), width - scale(sidebar + 48), scale(18), TRUE);
   MoveWindow(GetDlgItem(settingsWindow, 13), scale(sidebar + 24), height - scale(44), scale(140), scale(32), TRUE);
   MoveWindow(GetDlgItem(settingsWindow, IDOK), width - scale(212), height - scale(44), scale(88), scale(32), TRUE);
   MoveWindow(GetDlgItem(settingsWindow, IDCANCEL), width - scale(112), height - scale(44), scale(88), scale(32), TRUE);
   for (int id : {33, 13, IDOK, IDCANCEL})
-    ShowWindow(GetDlgItem(settingsWindow, id), activePage == SettingsPage::ContextMenus ? SW_HIDE : SW_SHOWNA);
+    ShowWindow(GetDlgItem(settingsWindow, id),
+        activePage == SettingsPage::ContextMenus || activePage == SettingsPage::ExplorerEntries ? SW_HIDE : SW_SHOWNA);
   layoutBody();
   ShowWindow(settingsScroll.window(), activePage == SettingsPage::Features && overflow ? SW_SHOWNA : SW_HIDE);
 }
 static void showPage(SettingsPage page) {
   activePage = page;
-  if (page == SettingsPage::QuickFolders) quick::refreshManagerPage(managerPage);
-  ShowWindow(body, page == SettingsPage::Features ? SW_SHOWNA : SW_HIDE);
-  ShowWindow(managerPage, page == SettingsPage::QuickFolders ? SW_SHOWNA : SW_HIDE);
-  ShowWindow(contextPage, page == SettingsPage::ContextMenus ? SW_SHOWNA : SW_HIDE);
+  const std::array pages{body, managerPage, contextPage, entriesPage, HWND{}};
+  const auto target = pages[size_t(page)];
+  for (auto panel : pages)
+    if (panel && panel != target) ShowWindow(panel, SW_HIDE);
   ShowWindow(GetDlgItem(settingsWindow, 30), page == SettingsPage::ContextMenus ? SW_HIDE : SW_SHOWNA);
   SetWindowTextW(GetDlgItem(settingsWindow, 30), pageTitle(size_t(page)));
-  for (int id : pageButtons) InvalidateRect(GetDlgItem(settingsWindow, id), nullptr, TRUE);
+  for (int id : pageButtons)
+    RedrawWindow(GetDlgItem(settingsWindow, id), nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW);
   layoutSettings();
+  if (target) ShowWindow(target, SW_SHOWNA);
+  if (page == SettingsPage::QuickFolders) quick::refreshManagerPage(managerPage);
+  if (page == SettingsPage::ExplorerEntries) explorer_entries_page::refresh(entriesPage);
+}
+static LRESULT CALLBACK navigationChoiceProc(HWND h, UINT message, WPARAM w, LPARAM l, UINT_PTR id, DWORD_PTR) {
+  if (message == WM_MOUSEWHEEL) {
+    SendMessageW(GetParent(h), message, w, l);
+    return 0;
+  }
+  if (message == WM_NCDESTROY) RemoveWindowSubclass(h, navigationChoiceProc, id);
+  return DefSubclassProc(h, message, w, l);
 }
 static LRESULT CALLBACK sidebarProc(HWND h, UINT message, WPARAM w, LPARAM l, UINT_PTR id, DWORD_PTR) {
   if (message == WM_KEYDOWN && (w == VK_UP || w == VK_DOWN || w == VK_HOME || w == VK_END)) {
@@ -468,10 +527,12 @@ static LRESULT CALLBACK contentProc(HWND h, UINT message, WPARAM w, LPARAM l) {
   case WM_PAINT: {
     PAINTSTRUCT paint{}; HDC dc = BeginPaint(h, &paint); RECT client{}; GetClientRect(h, &client);
     FillRect(dc, &client, appearance->background);
-    for (auto pair : {std::pair{0, 88}, std::pair{100, 122}, std::pair{234, 206}, std::pair{450, 180}}) {
-      if (pair.first == 450 && !tabsSupported()) continue;
-      RECT card{scale(20), scale(pair.first) - scrollPosition, client.right - scale(20), scale(pair.first + pair.second) - scrollPosition};
-      ui::rounded(dc, card, appearance->colors.surface, appearance->colors.border, scale(9));
+    SetDCBrushColor(dc, appearance->colors.border);
+    for (int separator : {94, 228, 445}) {
+      if (separator == 445 && !tabsSupported()) continue;
+      const int y = scale(separator) - scrollPosition;
+      RECT line{scale(20), y, client.right - scale(20), y + 1};
+      FillRect(dc, &line, reinterpret_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
     }
     EndPaint(h, &paint); return 0;
   }
@@ -497,11 +558,14 @@ static LRESULT CALLBACK contentProc(HWND h, UINT message, WPARAM w, LPARAM l) {
   return DefWindowProcW(h, message, w, l);
 }
 static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
-  if (m == selectPageMessage()) { showPage(w == 1 ? SettingsPage::QuickFolders : SettingsPage::Features); return 0; }
+  if (m == selectPageMessage()) {
+    showPage(w < pageButtons.size() ? SettingsPage(w) : SettingsPage::Features); return 0;
+  }
   if (m == ui::themeChangedMessage() && appearance) {
     appearance->reset(ui::configuredTheme());
     contextmenu::setTheme(contextPage, unsigned(appearance->mode));
-    SendMessageW(themeChoice, CB_SETCURSEL, DWORD(appearance->mode), 0); appearance->apply(h); quick::setManagerTheme(managerPage, appearance->mode); return 0;
+    SendMessageW(themeChoice, CB_SETCURSEL, DWORD(appearance->mode), 0); appearance->apply(h); quick::setManagerTheme(managerPage, appearance->mode);
+    SendMessageW(entriesPage, WM_THEMECHANGED, 0, 0); return 0;
   }
   if (m == WM_DRAWITEM && appearance) {
     auto *item = reinterpret_cast<DRAWITEMSTRUCT *>(l);
@@ -509,16 +573,13 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
       const auto &p = appearance->colors;
       const bool selected = (item->itemState & ODS_SELECTED) != 0;
       const bool disabled = (item->itemState & ODS_DISABLED) != 0;
-      FillRect(item->hDC, &item->rcItem, appearance->card);
+      FillRect(item->hDC, &item->rcItem, appearance->background);
       ui::rounded(item->hDC, item->rcItem, selected ? p.pressed : p.field, p.border, scale(5));
       auto symbols = ui::makeSymbolFont(dpi, 16);
       auto old = SelectObject(item->hDC, symbols);
       ui::text(item->hDC, L"\xE72C", item->rcItem, disabled ? p.muted : p.text,
                DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
       SelectObject(item->hDC, old); DeleteObject(symbols);
-      if ((item->itemState & ODS_FOCUS) && !(item->itemState & ODS_NOFOCUSRECT)) {
-        auto focus = item->rcItem; InflateRect(&focus, -scale(3), -scale(3)); DrawFocusRect(item->hDC, &focus);
-      }
       return TRUE;
     }
     auto button = std::find(pageButtons.begin(), pageButtons.end(), int(item->CtlID));
@@ -526,17 +587,14 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
       const auto &p = appearance->colors;
       const auto page = size_t(button - pageButtons.begin());
       bool selected = page == size_t(activePage);
-      FillRect(item->hDC, &item->rcItem, appearance->card);
+      FillRect(item->hDC, &item->rcItem, appearance->background);
       RECT rect = item->rcItem; InflateRect(&rect, -scale(2), -scale(2));
-      const auto fill = selected ? p.accent : (item->itemState & (ODS_SELECTED | ODS_HOTLIGHT)) ? p.hover : p.field;
+      const auto fill = selected ? p.accent : (item->itemState & (ODS_SELECTED | ODS_HOTLIGHT | ODS_FOCUS)) ? p.hover : p.background;
       ui::rounded(item->hDC, rect, fill, fill, scale(6));
       auto old = SelectObject(item->hDC, font);
       ui::text(item->hDC, pageTitle(page), rect, selected ? p.onAccent : p.text,
                DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
       SelectObject(item->hDC, old);
-      if (!selected && (item->itemState & ODS_FOCUS) && !(item->itemState & ODS_NOFOCUSRECT)) {
-        InflateRect(&rect, -scale(3), -scale(3)); DrawFocusRect(item->hDC, &rect);
-      }
       return TRUE;
     }
   }
@@ -579,7 +637,6 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     FillRect(dc, &client, appearance->background);
     auto sidebar = client;
     sidebar.right = scale(settingsSidebarWidth);
-    FillRect(dc, &sidebar, appearance->card);
     RECT separator{sidebar.right - 1, client.top, sidebar.right, client.bottom};
     SetDCBrushColor(dc, appearance->colors.border);
     FillRect(dc, &separator, reinterpret_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
@@ -596,10 +653,9 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
       SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE); return control;
     };
     HWND logo = add(h, L"STATIC", L"FolderNote", 0, 35);
-    ui::surface(logo);
     SendMessageW(logo, WM_SETFONT, reinterpret_cast<WPARAM>(headingFont), TRUE);
     auto subtitle = add(h, L"STATIC", lang::text(L"系统工具"), 0, 36);
-    ui::surface(subtitle); ui::muted(subtitle);
+    ui::muted(subtitle);
     for (size_t page = 0; page < pageButtons.size(); ++page) {
       auto button = add(h, L"BUTTON", pageTitle(page), BS_OWNERDRAW | WS_TABSTOP, pageButtons[page]);
       SetWindowSubclass(button, sidebarProc, 1, 0);
@@ -608,7 +664,7 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     SendMessageW(title, WM_SETFONT, reinterpret_cast<WPARAM>(headingFont), TRUE);
     const auto version = lang::format(L"版本 {0} · x64", {app::version});
     auto versionControl = add(h, L"STATIC", version.c_str(), SS_LEFT | SS_NOPREFIX, 31);
-    ui::surface(versionControl); ui::muted(versionControl);
+    ui::muted(versionControl);
     auto update = add(h, L"BUTTON", lang::text(L"检查更新"), WS_TABSTOP | BS_OWNERDRAW, updateButton);
     updateTip = CreateWindowExW(WS_EX_TOPMOST | WS_EX_NOACTIVATE, TOOLTIPS_CLASSW, nullptr,
         WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX, 0, 0, 0, 0, h, nullptr, GetModuleHandleW(nullptr), nullptr);
@@ -652,41 +708,46 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         SendMessageW(notesCheck, BM_SETCHECK, BST_CHECKED, 0);
       } else setNoteCommandHidden(operation, hidden);
     });
-    if (!managerPage || !contextPage) return -1;
+    entriesPage = explorer_entries_page::create(h, *appearance, font);
+    if (!managerPage || !contextPage || !entriesPage) return -1;
     auto field = [&](LPCWSTR cls, LPCWSTR text, DWORD style, int x, int y, int width, int height, int id, bool quiet = false) {
       HWND c = add(body, cls, text, style, id); placements.push_back({c, x, y, width, height});
-      ui::surface(c); if (quiet) ui::muted(c); return c;
+      if (quiet) ui::muted(c);
+      return c;
     };
     constexpr DWORD checkStyle = BS_AUTOCHECKBOX | BS_NOTIFY | WS_TABSTOP;
     notesCheck = field(L"BUTTON", lang::text(L"文件夹备注"), checkStyle, 40, 14, -40, 26, 11);
     SendMessageW(notesCheck, BM_SETCHECK, notesEnabled() ? BST_CHECKED : BST_UNCHECKED, 0);
-    field(L"STATIC", lang::text(L"开启后在文件夹右键菜单中添加、编辑和修复备注。\n关闭只隐藏入口，已有备注会保留。"), 0, 68, 45, -40, 38, 0, true);
+    field(L"STATIC", lang::text(L"开启后在文件夹右键菜单中添加、编辑和修复备注。\n关闭只隐藏入口，已有备注会保留。"), 0, 86, 45, -40, 38, 0, true);
     navigationCheck = field(L"BUTTON", lang::text(L"双击空白处导航"), checkStyle, 40, 112, -40, 26, 12);
     const auto action = configuredAction();
     SendMessageW(navigationCheck, BM_SETCHECK, action != Action::Off ? BST_CHECKED : BST_UNCHECKED, 0);
-    choice = field(L"COMBOBOX", L"", comboStyle, 68, 146, -40, 180, 10);
+    choice = field(L"COMBOBOX", L"", comboStyle, 86, 146, -40, 180, 10);
+    SetWindowSubclass(choice, navigationChoiceProc, 1, 0);
     for (auto titleText : {lang::text(L"返回上一级文件夹"), lang::text(L"后退到上一次浏览的位置")}) SendMessageW(choice, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(titleText));
     SendMessageW(choice, CB_SETCURSEL, preferredAction() == Action::Back ? 1 : 0, 0);
     SendMessageW(choice, CB_SETITEMHEIGHT, WPARAM(-1), scale(26));
     EnableWindow(choice, action != Action::Off);
-    field(L"STATIC", lang::text(L"在资源管理器文件列表的空白处双击。"), 0, 68, 190, -40, 22, 0, true);
+    field(L"STATIC", lang::text(L"在资源管理器文件列表的空白处双击。"), 0, 86, 190, -40, 22, 0, true);
     quickCheck = field(L"BUTTON", lang::text(L"中键快速定位"), checkStyle, 40, 246, -40, 26, 14);
     SendMessageW(quickCheck, BM_SETCHECK, quickEnabled() ? BST_CHECKED : BST_UNCHECKED, 0);
-    dialogCheck = field(L"BUTTON", lang::text(L"同时支持文件与文件夹选择对话框"), checkStyle, 68, 278, -40, 26, 15);
+    dialogCheck = field(L"BUTTON", lang::text(L"同时支持文件与文件夹选择对话框"), checkStyle, 86, 278, -40, 26, 15);
     SendMessageW(dialogCheck, BM_SETCHECK, dialogQuickEnabled() ? BST_CHECKED : BST_UNCHECKED, 0); EnableWindow(dialogCheck, quickEnabled());
-    field(L"STATIC", lang::text(L"桌面和资源管理器中均可使用，悬停展开子目录。\n启用后运行后台组件，快速访问常用和最近打开的文件夹。"), 0, 68, 309, -40, 38, 0, true);
-    field(L"STATIC", lang::text(L"选中项目后按中键，点击“复制”或“移动”，\n再选择目标文件夹；在空白处按中键也可使用。"), 0, 68, 352, -40, 38, 0, true);
-    field(L"BUTTON", lang::text(L"置顶与历史 →"), WS_TABSTOP, 68, 402, 220, 28, 16);
+    field(L"STATIC", lang::text(L"桌面和资源管理器中均可使用，悬停展开子目录。\n启用后运行后台组件，快速访问常用和最近打开的文件夹。"), 0, 86, 309, -40, 38, 0, true);
+    field(L"STATIC", lang::text(L"选中项目后按中键，点击“复制”或“移动”，\n再选择目标文件夹；在空白处按中键也可使用。"), 0, 86, 352, -40, 38, 0, true);
+    field(L"BUTTON", lang::text(L"置顶与历史 →"), WS_TABSTOP, 86, 402, 220, 28, 16);
     tabsCheck = preferNewTabCheck = nullptr;
     if (tabsSupported()) {
       tabsCheck = field(L"BUTTON", lang::text(L"资源管理器多标签（Windows 10）"), checkStyle, 40, 462, -40, 26, 18);
       SendMessageW(tabsCheck, BM_SETCHECK, tabsEnabled() ? BST_CHECKED : BST_UNCHECKED, 0);
-      field(L"STATIC", lang::text(L"悬停标签：滚轮切换，中键关闭；右键可新建和设置。\n保存后显示或隐藏标签栏；升级后请重新打开文件夹窗口。"), 0, 68, 494, -40, 40, 0, true);
-      preferNewTabCheck = field(L"BUTTON", lang::text(L"始终在新标签中打开文件夹"), checkStyle, 68, 548, -40, 26, 21);
+      field(L"STATIC", lang::text(L"悬停标签：滚轮切换，中键关闭；右键可新建和设置。\n保存后显示或隐藏标签栏；升级后请重新打开文件夹窗口。"), 0, 86, 494, -40, 40, 0, true);
+      preferNewTabCheck = field(L"BUTTON", lang::text(L"始终在新标签中打开文件夹"), checkStyle, 86, 548, -40, 26, 21);
       SendMessageW(preferNewTabCheck, BM_SETCHECK, preferNewTabEnabled() ? BST_CHECKED : BST_UNCHECKED, 0);
       EnableWindow(preferNewTabCheck, tabsEnabled());
-      field(L"STATIC", lang::text(L"首个窗口正常打开；桌面或其他软件另开文件夹时\n优先使用新标签；标签右键仍可开新窗口。"), 0, 96, 580, -40, 40, 0, true);
+      field(L"STATIC", lang::text(L"首个窗口正常打开；桌面或其他软件另开文件夹时\n优先使用新标签；标签右键仍可开新窗口。"), 0, 114, 580, -40, 40, 0, true);
     }
+    for (auto toggle : {notesCheck, navigationCheck, quickCheck, tabsCheck})
+      if (toggle) ui::toggleSwitch(toggle);
     ui::muted(add(h, L"STATIC", lang::text(L"功能设置保存后应用 · 置顶与历史修改立即保存"), 0, 33));
     add(h, L"BUTTON", lang::text(L"复制诊断信息"), WS_TABSTOP, 13);
     add(h, L"BUTTON", lang::text(L"保存"), WS_TABSTOP | BS_DEFPUSHBUTTON, IDOK);
@@ -783,7 +844,8 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     auto *limits = reinterpret_cast<MINMAXINFO *>(l); limits->ptMinTrackSize = {scale(900), scale(500)}; return 0;
   }
   case WM_SETTINGCHANGE: case WM_THEMECHANGED:
-    appearance->reset(appearance->mode); appearance->apply(h); quick::setManagerTheme(managerPage, appearance->mode); return 0;
+    appearance->reset(appearance->mode); appearance->apply(h); quick::setManagerTheme(managerPage, appearance->mode);
+    SendMessageW(entriesPage, WM_THEMECHANGED, 0, 0); return 0;
   case WM_DPICHANGED: {
     UINT oldDpi = dpi; dpi = HIWORD(w); scrollPosition = MulDiv(scrollPosition, dpi, oldDpi);
     auto oldFont = font, oldHeading = headingFont; font = ui::makeFont(dpi); headingFont = ui::makeFont(dpi, 23, FW_SEMIBOLD);
@@ -798,10 +860,11 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     auto *rect = reinterpret_cast<RECT *>(l);
     SetWindowPos(h, nullptr, rect->left, rect->top, rect->right - rect->left, rect->bottom - rect->top, SWP_NOZORDER);
     SendMessageW(managerPage, WM_DPICHANGED_AFTERPARENT, 0, 0);
+    SendMessageW(entriesPage, WM_DPICHANGED_AFTERPARENT, 0, 0);
     layoutSettings(); return 0;
   }
   case WM_DESTROY: KillTimer(h, updateTimer); updateWork = {}; PostQuitMessage(0); return 0;
-  case WM_NCDESTROY: RemovePropW(h, app::settingsWindowTag); DeleteObject(font); DeleteObject(headingFont); body = managerPage = contextPage = settingsWindow = nullptr; placements.clear(); break;
+  case WM_NCDESTROY: RemovePropW(h, app::settingsWindowTag); DeleteObject(font); DeleteObject(headingFont); body = managerPage = contextPage = entriesPage = settingsWindow = nullptr; placements.clear(); break;
   }
   return DefWindowProcW(h, m, w, l);
 }
@@ -812,7 +875,7 @@ int settings(HINSTANCE instance, SettingsPage page) {
     *reinterpret_cast<HWND *>(data) = window; return FALSE;
   }, reinterpret_cast<LPARAM>(&existing));
   if (existing) {
-    PostMessageW(existing, selectPageMessage(), page == SettingsPage::QuickFolders ? 1 : 0, 0);
+    PostMessageW(existing, selectPageMessage(), static_cast<WPARAM>(page), 0);
     ShowWindow(existing, IsIconic(existing) ? SW_RESTORE : SW_SHOW); SetForegroundWindow(existing); return 0;
   }
   activePage = page;
@@ -833,7 +896,8 @@ int settings(HINSTANCE instance, SettingsPage page) {
     while (GetMessageW(&message, nullptr, 0, 0) > 0) {
       if (message.message == WM_KEYDOWN && (message.wParam == VK_ESCAPE || message.wParam == VK_RETURN)) {
         HWND dropped = nullptr;
-        for (auto combo : {themeChoice, choice, GetDlgItem(window, languageChoice)})
+        for (auto combo : {themeChoice, choice, GetDlgItem(window, languageChoice),
+             explorer_entries_page::locationControl(entriesPage)})
           if (SendMessageW(combo, CB_GETDROPPEDSTATE, 0, 0)) dropped = combo;
         if (dropped) { SendMessageW(dropped, CB_SHOWDROPDOWN, FALSE, 0); continue; }
         if (message.wParam == VK_ESCAPE) SendMessageW(window, WM_CLOSE, 0, 0);

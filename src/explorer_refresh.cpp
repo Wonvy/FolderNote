@@ -115,18 +115,31 @@ static bool explorerView(HWND view) {
   return _wcsicmp(image, (std::wstring(windows) + L"\\explorer.exe").c_str()) == 0;
 }
 
-void refreshOpenViews(const std::vector<std::wstring> &changedFolders) noexcept {
+static ComPtr<IShellView> activeView(IDispatch *dispatch) {
+  ComPtr<IShellView> view;
+  ComPtr<IServiceProvider> services;
+  if (dispatch && SUCCEEDED(dispatch->QueryInterface(IID_PPV_ARGS(&services)))) {
+    ComPtr<IShellBrowser> browser;
+    if (SUCCEEDED(services->QueryService(SID_STopLevelBrowser, IID_PPV_ARGS(&browser))) && browser)
+      browser->QueryActiveShellView(&view);
+  }
+  return view;
+}
+
+static void refreshViews(std::span<const PCIDLIST_ABSOLUTE> parents, bool all, bool includeDesktop) noexcept {
   try {
-    auto targets = refresh_detail::affectedParents(changedFolders);
-    if (targets.empty())
-      return;
-    std::vector<PCIDLIST_ABSOLUTE> parents;
-    for (const auto &target : targets)
-      parents.push_back(target.get());
     ComPtr<IShellWindows> windows;
     if (FAILED(CoCreateInstance(CLSID_ShellWindows, nullptr, CLSCTX_LOCAL_SERVER,
                                 IID_PPV_ARGS(&windows))) || !windows)
       return;
+    if (includeDesktop) {
+      VARIANT location{}, root{};
+      long desktop = 0;
+      ComPtr<IDispatch> dispatch;
+      if (SUCCEEDED(windows->FindWindowSW(&location, &root, SWC_DESKTOP, &desktop, SWFO_NEEDDISPATCH, &dispatch))) {
+        if (auto view = activeView(dispatch.Get())) view->Refresh();
+      }
+    }
     long count = 0;
     if (FAILED(windows->get_Count(&count)))
       return;
@@ -143,24 +156,33 @@ void refreshOpenViews(const std::vector<std::wstring> &changedFolders) noexcept 
       ComPtr<IDispatch> dispatch;
       if (FAILED(windows->Item(item, &dispatch)) || !dispatch)
         continue;
-      ComPtr<IServiceProvider> services;
-      if (FAILED(dispatch.As(&services)))
-        continue;
-      ComPtr<IShellBrowser> browser;
-      if (FAILED(services->QueryService(SID_STopLevelBrowser, IID_PPV_ARGS(&browser))) || !browser)
-        continue;
-      ComPtr<IShellView> view;
-      if (FAILED(browser->QueryActiveShellView(&view)) || !view)
+      auto view = activeView(dispatch.Get());
+      if (!view)
         continue;
       HWND handle = nullptr;
       if (FAILED(view->GetWindow(&handle)) || !handle || !explorerView(handle) ||
           !seenViews.insert(handle).second)
         continue;
-      refresh_detail::refreshMatchingView(view.Get(), parents);
+      if (all) view->Refresh();
+      else refresh_detail::refreshMatchingView(view.Get(), parents);
     }
   } catch (...) {
     // Metadata is already safely committed. A closed or inaccessible Explorer
     // window must not turn that successful operation into a save failure.
   }
+}
+
+void refreshOpenViews(const std::vector<std::wstring> &changedFolders) noexcept {
+  try {
+    auto targets = refresh_detail::affectedParents(changedFolders);
+    std::vector<PCIDLIST_ABSOLUTE> parents;
+    for (const auto &target : targets) parents.push_back(target.get());
+    if (!parents.empty()) refreshViews(parents, false, false);
+  } catch (...) {}
+}
+
+void refreshShellViews(PCIDLIST_ABSOLUTE location, bool includeDesktop) noexcept {
+  if (location) refreshViews(std::span(&location, 1), false, includeDesktop);
+  else refreshViews({}, true, includeDesktop);
 }
 } // namespace fn

@@ -119,6 +119,41 @@ void scenarios() {
   check(visibleStyle(navigation::contextPage) && GetParent(navigation::contextPage) == hub.window &&
         !visibleStyle(navigation::body) && !visibleStyle(navigation::managerPage),
         "context manager is an embedded settings page");
+  SendMessageW(hub.window, WM_COMMAND, MAKEWPARAM(49, BN_CLICKED), reinterpret_cast<LPARAM>(GetDlgItem(hub.window, 49)));
+  check(visibleStyle(navigation::entriesPage) && !visibleStyle(navigation::contextPage) &&
+        !visibleStyle(GetDlgItem(hub.window, IDOK)), "folder entry manager is embedded and applies changes directly");
+  auto location = explorer_entries_page::locationControl(navigation::entriesPage);
+  check(SendMessageW(location, CB_GETCOUNT, 0, 0) == 3 &&
+        windowText(GetDlgItem(hub.window, 30)) == L"文件夹入口管理", "folder manager exposes three locations");
+  RECT pageBounds{};
+  GetClientRect(navigation::entriesPage, &pageBounds);
+  const auto locationBounds = childBounds(location, navigation::entriesPage);
+  check(locationBounds.left >= 0 && locationBounds.right <= pageBounds.right &&
+        locationBounds.top >= 0 && locationBounds.bottom <= pageBounds.bottom,
+        "folder location picker fits the page");
+  const auto entries = FindWindowExW(navigation::entriesPage, nullptr, WC_LISTVIEWW, nullptr);
+  check(entries && (GetWindowLongPtrW(entries, GWL_STYLE) & (LVS_OWNERDRAWFIXED | LVS_NOCOLUMNHEADER)) ==
+        (LVS_OWNERDRAWFIXED | LVS_NOCOLUMNHEADER) && Header_GetItemCount(ListView_GetHeader(entries)) == 1,
+        "folder entries use a compact owner-drawn list without metadata columns");
+  check(ListView_IsGroupViewEnabled(entries) && ListView_GetGroupCount(entries) == 3,
+        "This PC uses the three Explorer groups");
+  SendMessageW(explorer_entries_page::viewControl(navigation::entriesPage, true), BM_CLICK, 0, 0);
+  check(ListView_GetView(entries) == LV_VIEW_ICON && ListView_GetGroupCount(entries) == 3,
+        "icon view retains the This PC groups");
+  check(!(GetWindowLongPtrW(entries, GWL_STYLE) & LVS_OWNERDRAWFIXED),
+        "icon view uses native layout without the report row style");
+  for (int i = 0; i < ListView_GetItemCount(entries); ++i) {
+    LVITEMW item{};
+    item.mask = LVIF_GROUPID;
+    item.iItem = i;
+    RECT group{}, icon{};
+    if (ListView_GetItem(entries, &item) && ListView_GetGroupRect(entries, item.iGroupId, LVGGR_GROUP, &group) &&
+        ListView_GetItemRect(entries, i, &icon, LVIR_ICON))
+      check(icon.top >= group.top && icon.bottom <= group.bottom, "icon is positioned inside its own group");
+  }
+  SendMessageW(explorer_entries_page::viewControl(navigation::entriesPage, false), BM_CLICK, 0, 0);
+  check(ListView_GetView(entries) == LV_VIEW_DETAILS && (GetWindowLongPtrW(entries, GWL_STYLE) & LVS_OWNERDRAWFIXED),
+        "switching back restores the owner-drawn list rows");
   navigation::showPage(navigation::SettingsPage::Features);
   check(visibleStyle(navigation::body) && !visibleStyle(navigation::managerPage), "only feature page initially visible");
   check(!navigation::notesEnabled(), "isolated notes default remains off");

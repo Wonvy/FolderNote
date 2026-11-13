@@ -9,10 +9,16 @@
 #include "resource.h"
 #include "theme.h"
 #include "theme_scroll.h"
+#include "system_icon_picker.h"
 #include "window_position.h"
 #include <algorithm>
 #include <array>
 #include <iterator>
+#include <future>
+#include <thread>
+#include <chrono>
+#include <atomic>
+#include <utility>
 #include <span>
 #include <set>
 #include <map>
@@ -45,11 +51,12 @@ constexpr std::array modes{L"程序", L"CMD", L"PowerShell", L"网址"};
 enum Id {
   enable = 100, category, extension, refresh, originals, commands, details,
   visibility, appearance, restore, restoreAll, copyCommand, add, edit, remove, toggle, up, down,
-  originalLabel, commandLabel, explanation, extensionLabel, registryLocation,
+  originalLabel, commandLabel, explanation, registryLocation = explanation + 2,
   categoryScroll, originalsScroll, commandsScroll, nameColumn, statusColumn, menuSearch, pageHeading, extensionDrop
 };
 enum EditorId { entryMode = 200, entryName, entryProgram, entryArguments, entryDirectory, entryPath, entryIcon, descendants, preview,
-  modeLabel, nameLabel, programLabel, argumentsLabel, directoryLabel, pathLabel, iconLabel, previewLabel };
+  modeLabel, nameLabel, programLabel, argumentsLabel, directoryLabel, pathLabel, iconLabel, previewLabel,
+  browseDirectory, browsePath, browseIcon };
 
 std::wstring windowText(HWND control) {
   std::wstring value(static_cast<size_t>(GetWindowTextLengthW(control)) + 1, L'\0');
@@ -115,14 +122,14 @@ struct Window {
   void updateTheme() { theme.reset(ui::configuredTheme()); theme.apply(window); }
 };
 
-void modal(HWND window, HWND owner, int width, int height, bool center = true) {
+void modal(HWND window, HWND owner, int width, int height, bool center = true, HWND dropdownButton = nullptr) {
   struct RestoreOwner {
     HWND window;
     bool enabled;
     ~RestoreOwner() {
       if (enabled && IsWindow(window)) { EnableWindow(window, TRUE); SetActiveWindow(window); }
     }
-  } restoreOwner{owner, owner && IsWindowEnabled(owner)};
+  } restoreOwner{owner, !dropdownButton && owner && IsWindowEnabled(owner)};
   if (restoreOwner.enabled) EnableWindow(owner, FALSE);
   if (center) ui::centerLogical(window, ui::mouseWorkArea(), width, height);
   ShowWindow(window, SW_SHOWNORMAL);
@@ -132,6 +139,14 @@ void modal(HWND window, HWND owner, int width, int height, bool center = true) {
     if (result <= 0) {
       DestroyWindow(window);
       if (result == 0) PostQuitMessage(static_cast<int>(message.wParam));
+      break;
+    }
+    const bool outside = message.hwnd != window && !IsChild(window, message.hwnd);
+    if (dropdownButton && outside &&
+        (message.message == WM_LBUTTONDOWN || message.message == WM_RBUTTONDOWN ||
+         message.message == WM_MBUTTONDOWN || message.message == WM_NCLBUTTONDOWN)) {
+      DestroyWindow(window);
+      if (message.hwnd != dropdownButton) DispatchMessageW(&message);
       break;
     }
     if (message.message == WM_KEYDOWN && message.wParam == VK_ESCAPE &&
@@ -149,6 +164,48 @@ struct Editor : Window {
   Command command;
   bool rename, accepted = false;
   Editor(HINSTANCE instance, Command value, bool rename) : Window(instance), command(std::move(value)), rename(rename) {}
+  void field(int id, DWORD limit, DWORD style = ES_AUTOHSCROLL) {
+    auto child = create(id, L"EDIT", L"", WS_TABSTOP | style);
+    SendMessageW(child, EM_SETLIMITTEXT, limit, 0);
+  }
+  void selectFolder(int id) {
+    Microsoft::WRL::ComPtr<IFileOpenDialog> dialog;
+    auto result = CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog));
+    FILEOPENDIALOGOPTIONS flags{};
+    if (SUCCEEDED(result)) result = dialog->GetOptions(&flags);
+    if (SUCCEEDED(result)) result = dialog->SetOptions(flags | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
+    if (FAILED(result)) throw fn::Error{lang::text(L"无法打开文件夹选择窗口。")};
+    const auto initial = windowText(control(id));
+    if (!initial.empty()) {
+      Microsoft::WRL::ComPtr<IShellItem> start;
+      if (SUCCEEDED(SHCreateItemFromParsingName(initial.c_str(), nullptr, IID_PPV_ARGS(&start))))
+        dialog->SetFolder(start.Get());
+    }
+    result = dialog->Show(window);
+    if (result == HRESULT_FROM_WIN32(ERROR_CANCELLED)) return;
+    Microsoft::WRL::ComPtr<IShellItem> folder;
+    if (SUCCEEDED(result)) result = dialog->GetResult(&folder);
+    PWSTR raw = nullptr;
+    if (SUCCEEDED(result)) result = folder->GetDisplayName(SIGDN_FILESYSPATH, &raw);
+    std::unique_ptr<wchar_t, decltype(&CoTaskMemFree)> path(raw, CoTaskMemFree);
+    if (FAILED(result) || !path) throw fn::Error{lang::text(L"无法打开文件夹选择窗口。")};
+    set(id, path.get());
+  }
+  void paint() const {
+    PAINTSTRUCT info{};
+    auto dc = BeginPaint(window, &info);
+    FillRect(dc, &info.rcPaint, theme.background);
+    for (int id : {entryName, entryProgram, entryArguments, entryDirectory, entryPath, entryIcon, preview}) {
+      if (auto child = control(id)) {
+        RECT bounds{};
+        GetWindowRect(child, &bounds);
+        MapWindowPoints(nullptr, window, reinterpret_cast<POINT *>(&bounds), 2);
+        InflateRect(&bounds, px(7), px(4));
+        ui::rounded(dc, bounds, theme.colors.field, theme.colors.border, px(5));
+      }
+    }
+    EndPaint(window, &info);
+  }
   Mode mode() const {
     return static_cast<Mode>(std::clamp(index(window, entryMode, CB_GETCURSEL), 0, 3));
   }
@@ -176,6 +233,7 @@ struct Editor : Window {
     enableControl(entryProgram, program || url);
     enableControl(entryArguments, !url);
     enableControl(entryDirectory, !url);
+    enableControl(browseDirectory, !url);
     try { set(preview, context::previewCommand(edited()).c_str()); }
     catch (...) { set(preview, L""); }
   }
@@ -199,25 +257,31 @@ struct Editor : Window {
       button(descendants, L"包括子文件夹", BS_AUTOCHECKBOX);
       SendDlgItemMessageW(window, descendants, BM_SETCHECK, command.includeChildren ? BST_CHECKED : BST_UNCHECKED, 0);
       label(previewLabel, L"执行预览 · 可用 {path} 和 {parent}");
-      field(preview, 18000, ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL);
+      field(preview, 18000, ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL);
+      button(browseDirectory, L"选择文件夹");
+      button(browsePath, L"选择文件夹");
       updatePreview();
     }
+    button(browseIcon, L"选择图标");
     button(IDOK, L"保存", BS_DEFPUSHBUTTON);
     button(IDCANCEL, L"取消");
   }
   void layout() {
-    scaled(nameLabel, 20, 18, 150, 26); scaled(entryName, 176, 16, 420, 28);
+    scaled(nameLabel, 20, 18, 150, 26); scaled(entryName, 184, 20, 404, 20);
     scaled(programLabel, 20, rename ? 58 : 96, 150, 26);
-    scaled(entryProgram, 176, rename ? 56 : 94, 420, 28);
+    scaled(entryProgram, 184, rename ? 60 : 98, rename ? 292 : 404, 20);
+    scaled(browseIcon, 492, rename ? 56 : 284, 104, 28);
     scaled(argumentsLabel, 20, rename ? 100 : 134, rename ? 576 : 150, 26);
     if (!rename) {
       scaled(modeLabel, 20, 57, 150, 26); scaled(entryMode, 176, 54, 420, 160);
-      scaled(entryArguments, 176, 132, 420, 28);
-      scaled(directoryLabel, 20, 174, 150, 26); scaled(entryDirectory, 176, 172, 420, 28);
-      scaled(pathLabel, 20, 214, 150, 26); scaled(entryPath, 176, 212, 420, 28);
+      scaled(entryArguments, 184, 136, 404, 20);
+      scaled(directoryLabel, 20, 174, 150, 26); scaled(entryDirectory, 184, 176, 292, 20);
+      scaled(pathLabel, 20, 214, 150, 26); scaled(entryPath, 184, 216, 292, 20);
+      scaled(browseDirectory, 492, 172, 104, 28);
+      scaled(browsePath, 492, 212, 104, 28);
       scaled(descendants, 176, 248, 420, 28);
-      scaled(iconLabel, 20, 286, 150, 26); scaled(entryIcon, 176, 284, 420, 28);
-      scaled(previewLabel, 20, 326, 576, 26); scaled(preview, 20, 350, 576, 103);
+      scaled(iconLabel, 20, 286, 150, 26); scaled(entryIcon, 184, 288, 292, 20);
+      scaled(previewLabel, 20, 326, 576, 26); scaled(preview, 28, 355, 560, 94);
     }
     scaled(IDOK, 374, rename ? 132 : 468, 106, 30);
     scaled(IDCANCEL, 490, rename ? 132 : 468, 106, 30);
@@ -246,9 +310,16 @@ LRESULT CALLBACK editorProc(HWND window, UINT message, WPARAM w, LPARAM l) {
   }
   auto *state = reinterpret_cast<Editor *>(GetWindowLongPtrW(window, GWLP_USERDATA));
   if (!state) return DefWindowProcW(window, message, w, l);
-  LRESULT themed = 0;
-  if (state->theme.handle(window, message, w, l, themed)) return themed;
   try {
+    if (message == WM_PAINT) { state->paint(); return 0; }
+    if (message == WM_CTLCOLORSTATIC && reinterpret_cast<HWND>(l) == state->control(preview)) {
+      auto dc = reinterpret_cast<HDC>(w);
+      SetBkColor(dc, state->theme.colors.field);
+      SetTextColor(dc, state->theme.colors.text);
+      return reinterpret_cast<LRESULT>(state->theme.field);
+    }
+    LRESULT themed = 0;
+    if (state->theme.handle(window, message, w, l, themed)) return themed;
     if (message == WM_CREATE) { state->init(); state->createControls(); state->updateTheme(); state->layout(); return 0; }
     if (message == ui::themeChangedMessage() || message == WM_THEMECHANGED) { state->updateTheme(); return 0; }
     if (message == WM_DPICHANGED) {
@@ -260,6 +331,13 @@ LRESULT CALLBACK editorProc(HWND window, UINT message, WPARAM w, LPARAM l) {
     }
     if (message == WM_COMMAND) {
       const auto id = LOWORD(w), code = HIWORD(w);
+      if (code == BN_CLICKED && (id == browseDirectory || id == browsePath))
+        state->selectFolder(id == browseDirectory ? entryDirectory : entryPath);
+      if (code == BN_CLICKED && id == browseIcon) {
+        const int field = state->rename ? entryProgram : entryIcon;
+        if (auto icon = ui::pickSystemIcon(window, windowText(state->control(field))))
+          state->set(field, icon->c_str());
+      }
       if (id == IDOK && code == BN_CLICKED) state->commit();
       if (id == IDCANCEL && code == BN_CLICKED) DestroyWindow(window);
       if ((id == entryMode && code == CBN_SELCHANGE) ||
@@ -323,6 +401,10 @@ struct ExtensionPicker : Window {
     }
     auto self = reinterpret_cast<ExtensionPicker *>(GetWindowLongPtrW(window, GWLP_USERDATA));
     if (!self) return DefWindowProcW(window, message, w, l);
+    if (message == WM_ACTIVATEAPP && !w) {
+      DestroyWindow(window);
+      return 0;
+    }
     LRESULT themed{};
     if (self->theme.handle(window, message, w, l, themed)) return themed;
     if (message == WM_CREATE) {
@@ -370,6 +452,19 @@ struct Manager : Window {
   void (*setNoteHidden)(int, bool) = nullptr;
   wchar_t extensionLetter = L'A';
   enum class Divider { None, Category, Actions, Status };
+  struct LoadResult {
+    std::vector<ExistingItem> registered;
+    std::vector<context::MenuPreviewItem> order, hidden;
+    std::vector<Command> commands;
+    bool enabled = false;
+  };
+  static constexpr UINT_PTR loadTimer = 301;
+  static constexpr UINT_PTR registryTimer = 302;
+  std::future<LoadResult> loading;
+  std::future<DWORD> openingRegistry;
+  std::shared_ptr<std::atomic<bool>> readingShell;
+  bool reloadPending = false;
+  int pendingOriginal = -1, pendingCustom = -1;
   bool active = false;
   bool customView = false;
   Scene scene = Scene::File;
@@ -523,18 +618,16 @@ struct Manager : Window {
     auto dc = BeginPaint(button, &paint);
     RECT rect{};
     GetClientRect(button, &rect);
-    FillRect(dc, &rect, theme.field);
+    FillRect(dc, &rect, theme.background);
     auto &p = theme.colors;
     const bool link = statusLink();
     const bool expanded = rect.bottom > px(34);
-    const bool focused = GetFocus() == button && !(SendMessageW(button, WM_QUERYUISTATE, 0, 0) & UISF_HIDEFOCUS);
     RECT text = rect;
     InflateRect(&text, -px(7), 0);
     if (expanded) { text.top += px(4); text.bottom -= px(4); }
     auto old = SelectObject(dc, font);
     ui::text(dc, expanded ? statusText : windowText(button), text, link ? p.accent : p.muted,
         DT_LEFT | DT_NOPREFIX | DT_END_ELLIPSIS | (expanded ? DT_WORDBREAK | DT_EDITCONTROL : DT_SINGLELINE | DT_VCENTER));
-    if (focused && link) DrawFocusRect(dc, &rect);
     SelectObject(dc, old);
     EndPaint(button, &paint);
   }
@@ -635,7 +728,7 @@ struct Manager : Window {
     const auto &icons = originalList ? existingIcons : customIcons;
     const auto &p = theme.colors;
     const bool selected = (item.itemState & ODS_SELECTED) != 0;
-    FillRect(item.hDC, &item.rcItem, theme.field);
+    FillRect(item.hDC, &item.rcItem, theme.background);
     if (item.itemID == UINT(-1)) return;
     RECT row = item.rcItem;
     row.right -= px(11);
@@ -700,7 +793,7 @@ struct Manager : Window {
       if (objectList) {
         RECT marker{row.left + px(3), row.top + px(8), row.left + px(5), row.bottom - px(8)};
         ui::rounded(item.hDC, marker, ink, ink, px(1));
-      } else DrawFocusRect(item.hDC, &row);
+      }
     }
   }
 
@@ -726,7 +819,7 @@ struct Manager : Window {
     const auto field = control(id);
     scroll(field).create(field, scrollId, theme, [field](int top) {
       SendMessageW(field, LB_SETTOPINDEX, top, 0);
-    }, true);
+    });
     SetWindowSubclass(field, scrollProc, 1, reinterpret_cast<DWORD_PTR>(this));
   }
   static LRESULT CALLBACK scrollProc(HWND field, UINT message, WPARAM w, LPARAM l, UINT_PTR id, DWORD_PTR data) {
@@ -885,7 +978,7 @@ struct Manager : Window {
     auto heading = create(pageHeading, L"STATIC", title, SS_NOPREFIX | SS_ENDELLIPSIS);
     SendMessageW(heading, WM_SETFONT, reinterpret_cast<WPARAM>(headingFont), TRUE);
     button(enable, L"启用右键菜单管理", BS_AUTOCHECKBOX);
-    label(extensionLabel, L"扩展名");
+    ui::toggleSwitch(control(enable));
     constexpr auto listStyle = WS_TABSTOP | WS_CLIPCHILDREN | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT | LBS_HASSTRINGS;
     create(category, L"LISTBOX", L"", listStyle | LBS_OWNERDRAWFIXED);
     for (auto label : sceneLabels) append(control(category), lang::text(label));
@@ -990,9 +1083,11 @@ struct Manager : Window {
       return static_cast<int>(size.cx);
     };
     const int tabTextWidth = std::max(measure(originalLabel, font), measure(commandLabel, font));
-    const int tabLimit = std::max(px(66), (width - px(108) - gap * 2) / 2);
+    const int extensionSpace = extensionScene() ? px(140) : 0;
+    const int tabLimit = std::max(px(66), (width - px(108) - gap * 2 - extensionSpace) / 2);
     const int buttonWidth = std::min(std::max(px(112), tabTextWidth + px(28)), tabLimit);
     const int headingTextWidth = measure(pageHeading, headingFont);
+    const int enableWidth = std::min(px(226), measure(enable, font) + px(48));
     if (dc) ReleaseDC(window, dc);
     const int header = px(26), tabs = px(76);
     const int panelHeight = px(std::min(statusHeight, statusLimit(client.bottom)));
@@ -1003,31 +1098,32 @@ struct Manager : Window {
     const int listWidth = listRight - content;
     const int searchTop = tabs;
     const int secondary = tabs + height + gap;
-    const int columns = secondary + (extensionScene() ? px(32) : 0);
+    const int columns = secondary;
     const int listY = columns + px(21);
     auto buttonRow = [&](const auto &ids, int top, int width) {
       int left = content;
       for (auto id : ids) { bounds(id, left, top, width, height); left += width + gap; }
     };
     const int restoreWidth = px(132);
-    const int refreshLeft = right - restoreWidth - gap - px(32);
+    const int enableLeft = right - enableWidth;
+    const int restoreLeft = enableLeft - gap - restoreWidth;
+    const int refreshLeft = restoreLeft - gap - px(32);
     const int headingWidth = std::min(std::max(px(188), headingTextWidth + px(4)),
                                       std::max(px(100), (refreshLeft - edge - gap) / 2));
-    const int enableLeft = edge + headingWidth + gap;
     bounds(pageHeading, edge, header + px(4), headingWidth, height);
-    bounds(enable, enableLeft, header, std::max(0, refreshLeft - enableLeft - gap), height);
+    bounds(enable, enableLeft, header, enableWidth, height);
     bounds(refresh, refreshLeft, header, px(32), height);
-    bounds(restoreAll, right - restoreWidth, header, restoreWidth, height);
+    bounds(restoreAll, restoreLeft, header, restoreWidth, height);
     bounds(category, edge, tabs, leftWidth, statusBar - gap - tabs);
     buttonRow(std::array{originalLabel, commandLabel}, tabs, buttonWidth);
-    const int extensionWidth = px(76);
-    bounds(extension, content + px(68), secondary + px(5), extensionWidth - px(12), height - px(10));
-    bounds(extensionDrop, content + px(68) + extensionWidth - px(6), secondary, px(28), height);
-    bounds(extensionLabel, content, secondary + px(6), px(62), px(22));
     bounds(nameColumn, content + px(31), columns, listWidth - statusWidth() - px(55), px(20));
     const int searchLeft = content + 2 * (buttonWidth + gap);
-    const int searchWidth = std::min(px(200), std::max(px(48), right - searchLeft));
+    const int searchWidth = std::min(px(150), std::max(px(48), right - searchLeft - extensionSpace));
     bounds(menuSearch, searchLeft + px(27), searchTop + px(4), searchWidth - px(33), px(19));
+    const int extensionInput = searchLeft + searchWidth + gap + px(6);
+    const int extensionWidth = std::min(px(100), std::max(0, right - extensionInput - px(32)));
+    bounds(extension, extensionInput, tabs + px(5), extensionWidth, height - px(10));
+    bounds(extensionDrop, extensionInput + extensionWidth + px(4), tabs, px(28), height);
     bounds(statusColumn, listRight - statusWidth() - px(20), columns, statusWidth(), px(20));
     bounds(originals, content, listY, listWidth, statusBar - gap - listY);
     bounds(commands, content, listY, listWidth, statusBar - gap - listY);
@@ -1095,6 +1191,8 @@ struct Manager : Window {
         entry->hidden && entry->managed;
     if (blockedExtension)
       summary = lang::text(L"已设为隐藏。若右键菜单仍显示，请在任务管理器中重启 Windows 资源管理器。");
+    else if (selectedEntry && !entry->canHide && summary.empty())
+      summary = lang::text(L"此菜单项由资源管理器生成，当前仅可查看。");
     statusText = summary;
     if (blockedExtension && !entry->source.empty()) statusText += L"\r\n" + entry->source;
     if (selectedEntry && !entry->command.empty()) statusText += L"\r\n" + entry->command;
@@ -1114,11 +1212,37 @@ struct Manager : Window {
       ShowWindow(control(id), customView && IsWindowEnabled(control(id)) ? SW_SHOWNA : SW_HIDE);
   }
   void reload(int originalRow = -1, int customRow = -1) {
+    pendingOriginal = originalRow;
+    pendingCustom = customRow;
+    if (loading.valid()) { reloadPending = true; return; }
     const int selection = std::clamp(index(window, category), 0, int(scenes.size() - 1));
     scene = scenes[selection];
     currentExtension = suffix(window);
-    active = context::commandsEnabled();
-    inventoryItems = context::inventory(scene, currentExtension);
+    const auto selectedScene = scene;
+    const auto extension = currentExtension;
+    auto stage = std::make_shared<std::atomic<bool>>(false);
+    std::packaged_task<LoadResult()> task([selectedScene, extension, stage] {
+      const auto com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+      struct Apartment { HRESULT result; ~Apartment() { if (SUCCEEDED(result)) CoUninitialize(); } } apartment{com};
+      return loadData(selectedScene, extension, SUCCEEDED(com), *stage);
+    });
+    if (!SetTimer(window, loadTimer, 80, nullptr)) fn::fail(L"无法启动菜单加载");
+    try {
+      auto result = task.get_future();
+      std::thread(std::move(task)).detach();
+      loading = std::move(result);
+      readingShell = std::move(stage);
+    } catch (...) { KillTimer(window, loadTimer); throw; }
+    statusText = lang::text(L"正在读取右键菜单…");
+    set(explanation, statusText.c_str());
+    EnableWindow(control(originals), FALSE);
+    EnableWindow(control(commands), FALSE);
+  }
+  static LoadResult loadData(Scene scene, const std::wstring &extension, bool preview, std::atomic<bool> &readingShell) {
+    LoadResult result;
+    result.registered = context::inventory(scene, extension);
+    result.enabled = context::commandsEnabled();
+    result.commands = context::loadCommands();
     if (scene == Scene::Folder) {
       for (int op = 0; op < 3; ++op) {
         ExistingItem item;
@@ -1126,14 +1250,11 @@ struct Manager : Window {
         item.noteOperation = op;
         item.canHide = true;
         item.hidden = !navigation::notesEnabled() || navigation::noteCommandHidden(op);
-        inventoryItems.push_back(std::move(item));
+        result.registered.push_back(std::move(item));
       }
     }
-    submenuEnds.clear();
-    expandedMenus.clear();
-    inventoryIcons.clear();
     std::vector<std::wstring> handlerCandidates, hiddenHandlers;
-    for (const auto &entry : inventoryItems) {
+    for (const auto &entry : result.registered) {
       if (!entry.shellBlock) continue;
       auto &candidates = entry.hidden ? hiddenHandlers : handlerCandidates;
       if ((!entry.hidden || (entry.managed && entry.canHide)) &&
@@ -1141,8 +1262,48 @@ struct Manager : Window {
         candidates.push_back(entry.shellBlockId);
     }
     std::vector<context::MenuPreviewItem> hiddenItems;
-    const auto shellOrder = readActualOrder(handlerCandidates, hiddenHandlers, hiddenItems);
-    auto registered = std::move(inventoryItems);
+    if (preview) {
+      readingShell = true;
+      result.order = readActualOrder(scene, extension, handlerCandidates, hiddenHandlers, hiddenItems);
+    }
+    result.hidden = std::move(hiddenItems);
+    return result;
+  }
+  void finishLoad() {
+    if (!loading.valid()) return;
+    if (loading.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready) {
+      const auto stage = lang::text(L"正在读取资源管理器中的实际菜单…");
+      if (readingShell && *readingShell && statusText != stage) {
+        statusText = stage;
+        set(explanation, stage);
+      }
+      return;
+    }
+    KillTimer(window, loadTimer);
+    auto result = std::move(loading);
+    if (std::exchange(reloadPending, false)) { reload(pendingOriginal, pendingCustom); return; }
+    EnableWindow(control(originals), TRUE);
+    EnableWindow(control(commands), TRUE);
+    LoadResult data;
+    try { data = result.get(); }
+    catch (...) {
+      inventoryItems.clear();
+      inventoryIcons.clear();
+      submenuEnds.clear();
+      expandedMenus.clear();
+      filter();
+      statusText = lang::text(L"右键菜单加载失败，请刷新重试。");
+      set(explanation, statusText.c_str());
+      throw;
+    }
+    active = data.enabled;
+    auto &registered = data.registered;
+    const auto &shellOrder = data.order;
+    const auto &hiddenItems = data.hidden;
+    const int originalRow = pendingOriginal, customRow = pendingCustom;
+    submenuEnds.clear();
+    expandedMenus.clear();
+    inventoryIcons.clear();
     inventoryItems.clear();
     std::vector<bool> matched(registered.size());
     auto sameName = [](const std::wstring &a, const std::wstring &b) {
@@ -1209,20 +1370,20 @@ struct Manager : Window {
       }
       if (!hasPreview) addRow(std::move(entry), nullptr);
     }
-    custom = context::loadCommands();
+    custom = std::move(data.commands);
     SendDlgItemMessageW(window, enable, BM_SETCHECK, active ? BST_CHECKED : BST_UNCHECKED, 0);
-    ShowWindow(control(extensionLabel), extensionScene() ? SW_SHOW : SW_HIDE);
     ShowWindow(control(extension), extensionScene() ? SW_SHOW : SW_HIDE);
     ShowWindow(control(extensionDrop), extensionScene() ? SW_SHOW : SW_HIDE);
     layout();
     InvalidateRect(window, nullptr, TRUE);
     filter(originalRow, customRow);
   }
-  std::vector<context::MenuPreviewItem> readActualOrder(std::span<const std::wstring> handlerCandidates,
+  static std::vector<context::MenuPreviewItem> readActualOrder(Scene scene, const std::wstring &currentExtension,
+                                                       std::span<const std::wstring> handlerCandidates,
                                                        std::span<const std::wstring> hiddenHandlers,
                                                        std::vector<context::MenuPreviewItem> &hiddenItems) {
     auto read = [&](const std::wstring &path, context::PreviewTarget target = context::PreviewTarget::Object) {
-      return context::actualMenuOrder(window, path, target, handlerCandidates, hiddenHandlers, &hiddenItems);
+      return context::actualMenuOrder(nullptr, path, target, handlerCandidates, hiddenHandlers, &hiddenItems);
     };
     auto submenu = [](std::vector<context::MenuPreviewItem> items, std::wstring_view chinese, std::wstring_view english) {
       for (auto &item : items) {
@@ -1234,7 +1395,7 @@ struct Manager : Window {
       return std::vector<context::MenuPreviewItem>{};
     };
     if (scene == Scene::New)
-      return submenu(context::actualMenuOrder(window, L"", context::PreviewTarget::Background), L"新建", L"New");
+      return submenu(context::actualMenuOrder(nullptr, L"", context::PreviewTarget::Background), L"新建", L"New");
     if (scene == Scene::Desktop)
       return read(L"", context::PreviewTarget::Background);
     std::error_code error;
@@ -1335,6 +1496,7 @@ struct Manager : Window {
     const bool customSelected = row >= 0 && size_t(row) < displayed.size();
     if ((id == originals || id == commands) && code == LBN_SELCHANGE) { updateActions(); return; }
     if (id == category && code == LBN_SELCHANGE) { reload(); return; }
+    if (loading.valid() && id != extension && id != refresh) return;
     if (id == menuSearch && code == EN_CHANGE) { filter(); return; }
     if (id == extension && code == EN_KILLFOCUS && extensionScene() && currentExtension != suffix(window)) {
       reload(); return;
@@ -1376,7 +1538,7 @@ struct Manager : Window {
           std::clamp<int>(anchor.left, monitor.rcWork.left, std::max<int>(monitor.rcWork.left, monitor.rcWork.right - width)),
           anchor.bottom + height <= monitor.rcWork.bottom ? anchor.bottom : std::max<int>(monitor.rcWork.top, anchor.top - height),
           width, height, GetAncestor(window, GA_ROOT), nullptr, instance, &picker);
-      if (popup) modal(popup, GetAncestor(window, GA_ROOT), 640, 328, false);
+      if (popup) modal(popup, GetAncestor(window, GA_ROOT), 640, 328, false, control(extensionDrop));
       extensionLetter = picker.letter;
       if (!picker.selected.empty()) { set(extension, picker.selected.c_str()); reload(); }
       return;
@@ -1398,15 +1560,63 @@ struct Manager : Window {
       const auto &source = entry->source;
       if (!source.starts_with(L"HKCU\\") && !source.starts_with(L"HKLM\\")) return;
       auto path = std::wstring(source.starts_with(L"HKCU") ? L"HKEY_CURRENT_USER" : L"HKEY_LOCAL_MACHINE") + source.substr(4);
-      constexpr auto key = L"Software\\Microsoft\\Windows\\CurrentVersion\\Applets\\Regedit";
-      auto result = RegSetKeyValueW(HKEY_CURRENT_USER, key, L"LastKey", REG_SZ, path.c_str(),
-          static_cast<DWORD>((path.size() + 1) * sizeof(wchar_t)));
-      if (result != ERROR_SUCCESS) fn::fail(L"无法打开注册表位置。", result);
-      wchar_t windows[MAX_PATH]{};
-      if (!GetWindowsDirectoryW(windows, ARRAYSIZE(windows))) fn::fail(L"无法打开注册表位置。");
-      auto regedit = std::filesystem::path(windows) / L"regedit.exe";
-      if (reinterpret_cast<INT_PTR>(ShellExecuteW(window, L"open", regedit.c_str(), nullptr, nullptr, SW_SHOWNORMAL)) <= 32)
-        throw fn::Error{lang::text(L"无法打开注册表位置。")};
+      if (openingRegistry.valid()) return;
+      std::packaged_task<DWORD()> launch([path = std::move(path)] {
+        wchar_t windows[MAX_PATH]{};
+        const auto length = GetWindowsDirectoryW(windows, ARRAYSIZE(windows));
+        if (!length || length >= ARRAYSIZE(windows)) return DWORD(ERROR_PATH_NOT_FOUND);
+        const auto regedit = std::filesystem::path(windows) / L"regedit.exe";
+        // LastKey is the localized tree path, including the root above the hives.
+        constexpr UINT computerCaption = 19;
+        wchar_t root[256]{};
+        if (auto resources = LoadLibraryExW(regedit.c_str(), nullptr, LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_IMAGE_RESOURCE)) {
+          LoadStringW(resources, computerCaption, root, ARRAYSIZE(root));
+          FreeLibrary(resources);
+        }
+        if (!*root) return DWORD(ERROR_RESOURCE_NAME_NOT_FOUND);
+        const auto lastKey = std::wstring(root) + L"\\" + path;
+        constexpr auto key = L"Software\\Microsoft\\Windows\\CurrentVersion\\Applets\\Regedit";
+        const auto result = RegSetKeyValueW(HKEY_CURRENT_USER, key, L"LastKey", REG_SZ, root,
+            static_cast<DWORD>((wcslen(root) + 1) * sizeof(wchar_t)));
+        if (result != ERROR_SUCCESS) return static_cast<DWORD>(result);
+        SHELLEXECUTEINFOW run{sizeof(run)};
+        run.fMask = SEE_MASK_NOASYNC | SEE_MASK_FLAG_NO_UI | SEE_MASK_NOCLOSEPROCESS;
+        run.lpFile = regedit.c_str();
+        run.lpParameters = L"-m";
+        run.nShow = SW_SHOWNORMAL;
+        const auto apartment = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+        const DWORD error = ShellExecuteExW(&run) ? ERROR_SUCCESS : GetLastError();
+        if (SUCCEEDED(apartment)) CoUninitialize();
+        if (error != ERROR_SUCCESS) return error;
+        if (!run.hProcess) return DWORD(ERROR_NOT_READY);
+        struct Process { HANDLE handle; ~Process() { CloseHandle(handle); } } process{run.hProcess};
+        if (WaitForInputIdle(process.handle, 5000) != 0) return DWORD(ERROR_TIMEOUT);
+        struct Address { DWORD process; HWND field; } address{GetProcessId(process.handle), nullptr};
+        EnumWindows([](HWND candidate, LPARAM data) -> BOOL {
+          auto &address = *reinterpret_cast<Address *>(data);
+          DWORD pid = 0;
+          GetWindowThreadProcessId(candidate, &pid);
+          if (pid == address.process && IsWindowVisible(candidate))
+            address.field = FindWindowExW(candidate, nullptr, L"Edit", nullptr);
+          return !address.field;
+        }, reinterpret_cast<LPARAM>(&address));
+        if (!address.field) return DWORD(ERROR_NOT_READY);
+        DWORD_PTR accepted = 0;
+        if (!SendMessageTimeoutW(address.field, WM_SETTEXT, 0, reinterpret_cast<LPARAM>(lastKey.c_str()),
+                                SMTO_ABORTIFHUNG | SMTO_BLOCK, 1500, &accepted) ||
+            !accepted || !PostMessageW(address.field, WM_KEYDOWN, VK_RETURN, 1))
+          return DWORD(ERROR_ACCESS_DENIED);
+        return DWORD(ERROR_SUCCESS);
+      });
+      if (!SetTimer(window, registryTimer, 100, nullptr)) fn::fail(L"无法打开注册表位置。");
+      try {
+        auto result = launch.get_future();
+        std::thread(std::move(launch)).detach();
+        openingRegistry = std::move(result);
+      } catch (...) {
+        KillTimer(window, registryTimer);
+        throw;
+      }
       return;
     }
     if (id == enable) {
@@ -1566,6 +1776,16 @@ LRESULT CALLBACK managerProc(HWND window, UINT message, WPARAM w, LPARAM l) {
     RedrawWindow(window, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN);
     return 0;
   }
+  if (message == WM_CTLCOLORLISTBOX) {
+    const auto field = reinterpret_cast<HWND>(l);
+    if (field == state->control(category) || field == state->control(originals) ||
+        field == state->control(commands)) {
+      auto dc = reinterpret_cast<HDC>(w);
+      SetBkColor(dc, state->theme.colors.background);
+      SetTextColor(dc, state->theme.colors.text);
+      return reinterpret_cast<LRESULT>(state->theme.background);
+    }
+  }
   if (message == WM_DRAWITEM && (w == category || w == originals || w == commands)) {
     state->drawMenuItem(*reinterpret_cast<const DRAWITEMSTRUCT *>(l)); return TRUE;
   }
@@ -1637,6 +1857,16 @@ LRESULT CALLBACK managerProc(HWND window, UINT message, WPARAM w, LPARAM l) {
       return 0;
     }
     if (message == WM_SIZE) { state->layout(); return 0; }
+    if (message == WM_TIMER && w == Manager::loadTimer) { state->finishLoad(); return 0; }
+    if (message == WM_TIMER && w == Manager::registryTimer) {
+      auto &result = state->openingRegistry;
+      if (result.valid() && result.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready) {
+        KillTimer(window, Manager::registryTimer);
+        const DWORD error = result.get();
+        if (error != ERROR_SUCCESS && error != ERROR_CANCELLED) fn::fail(L"无法打开注册表位置。", error);
+      }
+      return 0;
+    }
     if (message == WM_SHOWWINDOW && w) { state->reload(); return 0; }
     if (message == WM_DPICHANGED_AFTERPARENT) { state->rescale(GetDpiForWindow(window)); state->layout(); return 0; }
     if (message == WM_DPICHANGED) {

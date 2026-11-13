@@ -13,12 +13,26 @@ function Require([bool]$Condition, [string]$Message) {
 $keys = @($document.SelectNodes('/p:Package/p:Properties/v:RegistryWriteVirtualization/v:ExcludedKeys/v:ExcludedKey', $namespaces) | ForEach-Object { $_.InnerText.Trim() })
 $expected = @(
     'HKEY_CURRENT_USER\Software\FolderNote'
+    'HKEY_CURRENT_USER\Software\FolderNote\ExplorerEntries\Custom'
+    'HKEY_CURRENT_USER\Software\FolderNote\ExplorerEntryChanges'
+    'HKEY_CURRENT_USER\Software\FolderNote\ExplorerEntryChanges\ThisPC'
+    'HKEY_CURRENT_USER\Software\FolderNote\ExplorerEntryChanges\Navigation'
+    'HKEY_CURRENT_USER\Software\FolderNote\ExplorerEntryChanges\Desktop'
+    'HKEY_CURRENT_USER\Software\FolderNote\DesktopFolderLinkChanges'
     'HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run'
     'HKEY_CURRENT_USER\Software\Classes\Directory\shell\FolderNote.Edit'
     'HKEY_CURRENT_USER\Software\Classes\Directory\shell\FolderNote.Clear'
     'HKEY_CURRENT_USER\Software\Classes\Directory\shell\FolderNote.Repair'
+    'HKEY_CURRENT_USER\Software\Classes\CLSID'
+    'HKEY_CURRENT_USER\Software\Classes\Wow6432Node\CLSID'
+    'HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer\MyComputer\NameSpace'
+    'HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer\MyComputer\NameSpace_36354489'
+    'HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer\Desktop\NameSpace'
+    'HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer\HideMyComputerIcons'
+    'HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer\HideDesktopIcons\NewStartPanel'
+    'HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Policies\NonEnum'
 )
-Require ($keys.Count -eq $expected.Count) 'Only shared settings, the optional helper startup registration and three owned menu branches may bypass registry virtualization.'
+Require ($keys.Count -eq $expected.Count) 'Only settings and registrations shared with Explorer may bypass registry virtualization.'
 foreach ($key in $expected) {
     Require (@($keys | Where-Object { $_ -eq $key }).Count -eq 1) "Shared registry branch missing or duplicated: $key"
 }

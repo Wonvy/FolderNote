@@ -1,6 +1,8 @@
 #include "../src/explorer_tabs.h"
 #include <shlobj.h>
 #include <shellapi.h>
+#include <wrl/client.h>
+#include <array>
 #include <filesystem>
 #include <functional>
 #include <iostream>
@@ -58,6 +60,14 @@ static HWND testFindWindowExW(HWND parent, HWND after, LPCWSTR className, LPCWST
       !wcscmp(className, L"FolderNote.QuickFolders.Helper.v1")) return testOwnedHelper;
   return FindWindowExW(parent, after, className, title);
 }
+static HRESULT WINAPI testBindToParent(PCIDLIST_ABSOLUTE, REFIID, void **, PCUITEMID_CHILD *);
+static Microsoft::WRL::ComPtr<IDropTarget> observedDropTarget;
+static bool observeDropTarget = false;
+static HRESULT WINAPI testRegisterDragDrop(HWND window, IDropTarget *target) {
+  const auto result = RegisterDragDrop(window, target);
+  if (SUCCEEDED(result) && observeDropTarget) observedDropTarget = target;
+  return result;
+}
 #define GetModuleFileNameW testExplorerPath
 #define GetDpiForWindow testWindowDpi
 #define ShowWindow testShowWindow
@@ -67,7 +77,11 @@ static HWND testFindWindowExW(HWND parent, HWND after, LPCWSTR className, LPCWST
 #define GetTickCount64 testTickCount64
 #define ShellExecuteExW testShellExecuteExW
 #define FindWindowExW testFindWindowExW
+#define SHBindToParent testBindToParent
+#define RegisterDragDrop testRegisterDragDrop
 #include "../src/explorer_tabs.cpp"
+#undef RegisterDragDrop
+#undef SHBindToParent
 #undef FindWindowExW
 #undef ShellExecuteExW
 #undef GetTickCount64
@@ -83,6 +97,90 @@ static int checks = 0;
 static void require(bool ok, const char *message) { ++checks; if (!ok) throw message; }
 static void pump() { MSG message{}; while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) { TranslateMessage(&message); DispatchMessageW(&message); } }
 static void expirePending(HWND window) { simulatedElapsed += 15001; SendMessageW(window, WM_TIMER, 1, 0); }
+
+enum class DropEvent { Enter, Over, Leave, Drop };
+struct DropCall {
+  DropEvent event;
+  IDataObject *data;
+  DWORD keys;
+  POINTL point;
+  DWORD allowed;
+};
+struct RecordingDropTarget final : IDropTarget {
+  ULONG refs = 1;
+  std::vector<DropCall> calls;
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void **out) override {
+    if (!out) return E_POINTER;
+    *out = nullptr;
+    if (iid != IID_IUnknown && iid != IID_IDropTarget) return E_NOINTERFACE;
+    *out = static_cast<IDropTarget *>(this);
+    AddRef();
+    return S_OK;
+  }
+  ULONG STDMETHODCALLTYPE AddRef() override { return ++refs; }
+  ULONG STDMETHODCALLTYPE Release() override { return --refs; }
+  HRESULT record(DropEvent event, IDataObject *data, DWORD keys, POINTL point, DWORD *effect) {
+    calls.push_back({event, data, keys, point, *effect});
+    const DWORD preferred = keys & MK_CONTROL ? DROPEFFECT_COPY : DROPEFFECT_MOVE;
+    *effect &= preferred;
+    return S_OK;
+  }
+  HRESULT STDMETHODCALLTYPE DragEnter(IDataObject *data, DWORD keys, POINTL point, DWORD *effect) override {
+    return record(DropEvent::Enter, data, keys, point, effect);
+  }
+  HRESULT STDMETHODCALLTYPE DragOver(DWORD keys, POINTL point, DWORD *effect) override {
+    return record(DropEvent::Over, nullptr, keys, point, effect);
+  }
+  HRESULT STDMETHODCALLTYPE DragLeave() override {
+    calls.push_back({DropEvent::Leave, nullptr, 0, {}, 0});
+    return S_OK;
+  }
+  HRESULT STDMETHODCALLTYPE Drop(IDataObject *data, DWORD keys, POINTL point, DWORD *effect) override {
+    return record(DropEvent::Drop, data, keys, point, effect);
+  }
+};
+struct RecordingDropParent final : IShellFolder {
+  ULONG refs = 1;
+  std::array<tabs::Location, 2> locations;
+  std::array<RecordingDropTarget, 2> targets;
+  RecordingDropTarget *bound = nullptr;
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void **out) override {
+    if (!out) return E_POINTER;
+    *out = nullptr;
+    if (iid != IID_IUnknown && iid != IID_IShellFolder) return E_NOINTERFACE;
+    *out = static_cast<IShellFolder *>(this);
+    AddRef();
+    return S_OK;
+  }
+  ULONG STDMETHODCALLTYPE AddRef() override { return ++refs; }
+  ULONG STDMETHODCALLTYPE Release() override { return --refs; }
+  HRESULT STDMETHODCALLTYPE ParseDisplayName(HWND, IBindCtx *, LPWSTR, ULONG *, PIDLIST_RELATIVE *, ULONG *) override { return E_NOTIMPL; }
+  HRESULT STDMETHODCALLTYPE EnumObjects(HWND, SHCONTF, IEnumIDList **) override { return E_NOTIMPL; }
+  HRESULT STDMETHODCALLTYPE BindToObject(PCUIDLIST_RELATIVE, IBindCtx *, REFIID, void **) override { return E_NOTIMPL; }
+  HRESULT STDMETHODCALLTYPE BindToStorage(PCUIDLIST_RELATIVE, IBindCtx *, REFIID, void **) override { return E_NOTIMPL; }
+  HRESULT STDMETHODCALLTYPE CompareIDs(LPARAM, PCUIDLIST_RELATIVE, PCUIDLIST_RELATIVE) override { return E_NOTIMPL; }
+  HRESULT STDMETHODCALLTYPE CreateViewObject(HWND, REFIID, void **) override { return E_NOTIMPL; }
+  HRESULT STDMETHODCALLTYPE GetAttributesOf(UINT, PCUITEMID_CHILD_ARRAY, SFGAOF *) override { return E_NOTIMPL; }
+  HRESULT STDMETHODCALLTYPE GetUIObjectOf(HWND, UINT count, PCUITEMID_CHILD_ARRAY, REFIID iid, UINT *, void **out) override {
+    return count == 1 && bound ? bound->QueryInterface(iid, out) : E_NOINTERFACE;
+  }
+  HRESULT STDMETHODCALLTYPE GetDisplayNameOf(PCUITEMID_CHILD, SHGDNF, STRRET *) override { return E_NOTIMPL; }
+  HRESULT STDMETHODCALLTYPE SetNameOf(HWND, PCUITEMID_CHILD, LPCWSTR, SHGDNF, PITEMID_CHILD *) override { return E_NOTIMPL; }
+};
+static RecordingDropParent *dropParent = nullptr;
+static HRESULT WINAPI testBindToParent(PCIDLIST_ABSOLUTE id, REFIID iid, void **out, PCUITEMID_CHILD *child) {
+  if (dropParent) {
+    for (size_t i = 0; i < dropParent->locations.size(); ++i) {
+      const auto &location = dropParent->locations[i];
+      const auto *bytes = reinterpret_cast<const BYTE *>(id);
+      if (location.id.size() != ILGetSize(id) || !std::equal(location.id.begin(), location.id.end(), bytes)) continue;
+      dropParent->bound = &dropParent->targets[i];
+      if (child) *child = ILFindLastID(id);
+      return dropParent->QueryInterface(iid, out);
+    }
+  }
+  return SHBindToParent(id, iid, out, child);
+}
 static tabs::Location known(REFKNOWNFOLDERID folder) {
   PIDLIST_ABSOLUTE id = nullptr;
   require(SUCCEEDED(SHGetKnownFolderIDList(folder, 0, nullptr, &id)), "known folder PIDL");
@@ -985,6 +1083,155 @@ static void tabInputTests() {
   require(tabs::activeObjects() == 0 && browser.refs == 1 && browser.view.refs == 1, "tab input fixture releases windows and COM references");
   DestroyWindow(frame); UnregisterClassW(cls.lpszClassName, cls.hInstance);
 }
+static void tabDropTests() {
+  if (!navigation::tabsSupported()) return;
+  TooltipFolder destinationFolder;
+  const auto sourceFile = destinationFolder.root + L"\\source.txt";
+  const auto copiedFile = destinationFolder.path + L"\\source.txt";
+  struct FileCleanup {
+    const std::wstring &source, &copy;
+    ~FileCleanup() { DeleteFileW(copy.c_str()); DeleteFileW(source.c_str()); }
+  } cleanup{sourceFile, copiedFile};
+  auto file = CreateFileW(sourceFile.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+  require(file != INVALID_HANDLE_VALUE, "create isolated drag source file");
+  const char content[] = "FolderNote drop test";
+  DWORD written = 0;
+  const bool writeOk = WriteFile(file, content, sizeof(content), &written, nullptr) && written == sizeof(content);
+  CloseHandle(file);
+  require(writeOk, "write isolated drag source file");
+  struct Fixture {
+    WNDCLASSW cls{};
+    HWND frame = nullptr;
+    Browser browser;
+    RecordingDropParent parent;
+    ComPtr<IObjectWithSite> site;
+    ~Fixture() {
+      if (site) site->SetSite(nullptr);
+      observedDropTarget.Reset();
+      observeDropTarget = false;
+      dropParent = nullptr;
+      if (frame) DestroyWindow(frame);
+      if (cls.lpszClassName) UnregisterClassW(cls.lpszClassName, cls.hInstance);
+    }
+  } fixture;
+  fixture.cls.hInstance = GetModuleHandleW(nullptr);
+  fixture.cls.lpszClassName = L"CabinetWClass";
+  fixture.cls.lpfnWndProc = DefWindowProcW;
+  require(RegisterClassW(&fixture.cls) != 0, "register isolated tab drop host");
+  DWORD enabled = 1;
+  RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"ExplorerTabsEnabled", REG_DWORD, &enabled, sizeof(enabled));
+  fixture.frame = CreateWindowW(fixture.cls.lpszClassName, L"Hidden tab drop test", WS_OVERLAPPED,
+      0, 0, 1000, 200, nullptr, nullptr, fixture.cls.hInstance, nullptr);
+  require(fixture.frame != nullptr, "create isolated tab drop frame");
+  fixture.browser.parent = fixture.frame;
+  observeDropTarget = true;
+  dropParent = &fixture.parent;
+  fixture.parent.locations = {fixture.browser.view.folder, known(FOLDERID_Profile)};
+  require(SUCCEEDED(tabs::create(IID_PPV_ARGS(&fixture.site))) && SUCCEEDED(fixture.site->SetSite(&fixture.browser)),
+          "attach tab drop fixture");
+  require(observedDropTarget != nullptr, "attached tab strip registers its drop target with OLE");
+  ComPtr<IDeskBand2> band;
+  HWND window = nullptr;
+  require(SUCCEEDED(fixture.site.As(&band)) && SUCCEEDED(band->GetWindow(&window)), "get isolated tab drop window");
+  MoveWindow(window, 0, 0, 900, 40, FALSE);
+  const HWND control = GetDlgItem(window, 1);
+  SendMessageW(window, tabs::actionMessage, tabs::Duplicate, 0);
+  pump();
+  fixture.browser.view.folder = fixture.parent.locations[1];
+  SendMessageW(window, tabs::changedMessage, 0, 0);
+  require(TabCtrl_GetItemCount(control) == 2 && TabCtrl_GetCurSel(control) == 1,
+          "fixture has two distinct tabs with the second active");
+  const auto point = [&](int row) {
+    RECT bounds{};
+    require(TabCtrl_GetItemRect(control, row, &bounds) != FALSE, "find actual tab drop bounds");
+    POINT value{(bounds.left + bounds.right) / 2, (bounds.top + bounds.bottom) / 2};
+    ClientToScreen(control, &value);
+    return POINTL{value.x, value.y};
+  };
+  auto sourceItem = reinterpret_cast<PCIDLIST_ABSOLUTE>(fixture.parent.locations[1].id.data());
+  ComPtr<IShellFolder> sourceParent;
+  PCUITEMID_CHILD child = nullptr;
+  require(SUCCEEDED(SHBindToParent(sourceItem, IID_PPV_ARGS(&sourceParent), &child)) && child,
+          "bind Shell source item");
+  ComPtr<IDataObject> data;
+  require(SUCCEEDED(sourceParent->GetUIObjectOf(fixture.frame, 1, &child, IID_IDataObject, nullptr,
+          reinterpret_cast<void **>(data.GetAddressOf()))) && data,
+          "create Shell data object for isolated drop");
+  const auto first = point(0), second = point(1);
+  constexpr DWORD allowed = DROPEFFECT_COPY | DROPEFFECT_MOVE;
+  auto effect = allowed;
+  auto &a = fixture.parent.targets[0].calls;
+  auto &b = fixture.parent.targets[1].calls;
+  const int before = fixture.browser.navigations;
+  require(SUCCEEDED(observedDropTarget->DragEnter(data.Get(), MK_CONTROL | MK_LBUTTON, first, &effect)) &&
+          effect == DROPEFFECT_COPY && a.size() == 1 && a.back().event == DropEvent::Enter &&
+          a.back().data == data.Get() && a.back().keys == (MK_CONTROL | MK_LBUTTON) &&
+          a.back().point.x == first.x && a.back().point.y == first.y && a.back().allowed == allowed,
+          "background tab forwards original Shell object, screen coordinates, keys and effects");
+  effect = allowed;
+  require(SUCCEEDED(observedDropTarget->DragOver(MK_LBUTTON, first, &effect)) && effect == DROPEFFECT_MOVE &&
+          a.back().event == DropEvent::Over, "same tab negotiates a changed modifier with its existing target");
+  effect = allowed;
+  require(SUCCEEDED(observedDropTarget->DragOver(MK_LBUTTON, second, &effect)) && effect == DROPEFFECT_MOVE &&
+          a.back().event == DropEvent::Leave && !b.empty() && b.front().event == DropEvent::Enter,
+          "crossing tabs leaves previous target and enters the correct active folder");
+  effect = allowed;
+  require(SUCCEEDED(observedDropTarget->DragOver(MK_LBUTTON, POINTL{second.x, second.y + 100}, &effect)) &&
+          effect == DROPEFFECT_NONE && b.back().event == DropEvent::Leave,
+          "blank strip does not accept a drop");
+  effect = allowed;
+  require(SUCCEEDED(observedDropTarget->DragOver(MK_LBUTTON, first, &effect)) && effect == DROPEFFECT_MOVE &&
+          a.back().event != DropEvent::Leave, "re-enter the first folder in the same drag");
+  effect = allowed;
+  require(SUCCEEDED(observedDropTarget->Drop(data.Get(), MK_CONTROL, first, &effect)) && effect == DROPEFFECT_COPY &&
+          a.back().event == DropEvent::Drop && a.back().data == data.Get() && a.back().keys == MK_CONTROL &&
+          fixture.browser.navigations == before && TabCtrl_GetCurSel(control) == 1 && b.back().event == DropEvent::Leave,
+          "drop goes to the background folder without switching the visible tab");
+  effect = allowed;
+  require(SUCCEEDED(observedDropTarget->DragEnter(data.Get(), MK_LBUTTON, first, &effect)) &&
+          effect == DROPEFFECT_MOVE, "a new drag can follow a completed drop");
+  require(SUCCEEDED(fixture.site->SetSite(nullptr)) && a.back().event == DropEvent::Leave,
+          "detaching the tab strip leaves the native target during an active drag");
+  observedDropTarget.Reset();
+  band.Reset();
+  dropParent = nullptr;
+  fixture.browser.view.folder = destinationFolder.location();
+  require(SUCCEEDED(fixture.site->SetSite(&fixture.browser)) && observedDropTarget, "attach with a real drop folder");
+  require(SUCCEEDED(fixture.site.As(&band)) && SUCCEEDED(band->GetWindow(&window)), "get native drop window");
+  MoveWindow(window, 0, 0, 900, 40, FALSE);
+  HWND nativeTabs = GetDlgItem(window, 1);
+  RECT nativeBounds{};
+  require(TabCtrl_GetItemRect(nativeTabs, 0, &nativeBounds) != FALSE, "locate native drop folder tab");
+  POINT nativePoint{(nativeBounds.left + nativeBounds.right) / 2, (nativeBounds.top + nativeBounds.bottom) / 2};
+  ClientToScreen(nativeTabs, &nativePoint);
+  PIDLIST_ABSOLUTE sourceId = nullptr;
+  require(SUCCEEDED(SHParseDisplayName(sourceFile.c_str(), nullptr, &sourceId, 0, nullptr)), "parse actual source file");
+  struct SourcePidl { PIDLIST_ABSOLUTE value; ~SourcePidl() { CoTaskMemFree(value); } } sourcePidl{sourceId};
+  sourceParent.Reset();
+  data.Reset();
+  require(SUCCEEDED(SHBindToParent(sourceId, IID_PPV_ARGS(&sourceParent), &child)) && child &&
+          SUCCEEDED(sourceParent->GetUIObjectOf(fixture.frame, 1, &child, IID_IDataObject, nullptr,
+            reinterpret_cast<void **>(data.GetAddressOf()))) && data, "create native file drag data");
+  effect = allowed;
+  const POINTL nativeDrop{nativePoint.x, nativePoint.y};
+  require(SUCCEEDED(observedDropTarget->DragEnter(data.Get(), MK_CONTROL | MK_LBUTTON, nativeDrop, &effect)) &&
+          effect == DROPEFFECT_COPY, "actual folder accepts Ctrl-drag with copy effect");
+  effect = allowed;
+  require(SUCCEEDED(observedDropTarget->Drop(data.Get(), MK_CONTROL, nativeDrop, &effect)) &&
+          effect == DROPEFFECT_COPY, "actual folder receives native Shell copy drop");
+  const auto deadline = GetTickCount64() + 5000;
+  while (GetFileAttributesW(copiedFile.c_str()) == INVALID_FILE_ATTRIBUTES && GetTickCount64() < deadline) {
+    pump();
+    Sleep(20);
+  }
+  require(GetFileAttributesW(copiedFile.c_str()) != INVALID_FILE_ATTRIBUTES &&
+          GetFileAttributesW(sourceFile.c_str()) != INVALID_FILE_ATTRIBUTES, "native drop copies the file into the tab folder");
+  require(SUCCEEDED(fixture.site->SetSite(nullptr)), "detach native drop fixture");
+  observedDropTarget.Reset();
+  band.Reset();
+  fixture.site.Reset();
+  require(tabs::activeObjects() == 0, "detached drag releases all band objects");
+}
 struct RebarReentry {
   std::function<void()> onSet;
   unsigned maximizes = 0, writes = 0;
@@ -1368,7 +1615,7 @@ int main() {
   HKEY root = nullptr;
   if (RegCreateKeyExW(HKEY_CURRENT_USER, key.c_str(), 0, nullptr, 0, KEY_ALL_ACCESS, nullptr, &root, nullptr) || RegOverridePredefKey(HKEY_CURRENT_USER, root)) return 2;
   int result = 0;
-  try { models(); bandTests(); stableLayoutTests(); rollbackViewportTests(); tabInputTests(); directHostTests(); packetTests(); routingTests(); std::cout << "PASS " << checks << " tab assertions: independent folders, stable DPI layout, blank-area duplication, navigation rollback, reentrant detach, direct rebar hosting, confirmed new-tab routing\n"; }
+  try { models(); bandTests(); stableLayoutTests(); rollbackViewportTests(); tabInputTests(); tabDropTests(); directHostTests(); packetTests(); routingTests(); std::cout << "PASS " << checks << " tab assertions: independent folders, stable DPI layout, blank-area duplication, navigation rollback, reentrant detach, folder drop forwarding, direct rebar hosting, confirmed new-tab routing\n"; }
   catch (const char *message) { std::cerr << "FAIL " << checks << ": " << message << "\n"; result = 1; }
   catch (...) { std::cerr << "FAIL unexpected exception\n"; result = 1; }
   RegOverridePredefKey(HKEY_CURRENT_USER, nullptr); RegCloseKey(root); RegDeleteTreeW(HKEY_CURRENT_USER, key.c_str());

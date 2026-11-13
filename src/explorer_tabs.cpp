@@ -16,6 +16,7 @@
 #include <uxtheme.h>
 #include <atomic>
 #include <memory>
+#include <new>
 #include <utility>
 #include <cstdlib>
 
@@ -172,6 +173,166 @@ class Band final : public IDeskBand2, public IObjectWithSite, public IPersistStr
   };
   int px(int value) const { return MulDiv(value, dpi, 96); }
   struct Guard { Band *band; explicit Guard(Band *value):band(value){band->AddRef();} ~Guard(){band->Release();} };
+  class TabDropTarget final : public IDropTarget {
+    ULONG refs = 1;
+    Band *band;
+    ComPtr<IDataObject> source;
+    ComPtr<IDropTarget> destination;
+    std::vector<BYTE> destinationId;
+
+    static ComPtr<IDropTarget> shellTarget(HWND frame, PCIDLIST_ABSOLUTE id) {
+      ComPtr<IShellFolder> parent;
+      PCUITEMID_CHILD child = nullptr;
+      ComPtr<IDropTarget> target;
+      if (!ILIsEmpty(id) && SUCCEEDED(SHBindToParent(id, IID_PPV_ARGS(&parent), &child)) && parent)
+        parent->GetUIObjectOf(frame, 1, &child, IID_IDropTarget, nullptr,
+                             reinterpret_cast<void **>(target.GetAddressOf()));
+      if (!target && ILIsEmpty(id)) {
+        ComPtr<IShellFolder> desktop;
+        if (SUCCEEDED(SHGetDesktopFolder(&desktop)) && desktop)
+          desktop->CreateViewObject(frame, IID_PPV_ARGS(&target));
+      }
+      return target;
+    }
+
+    int rowAt(POINTL point) const {
+      return band && band->tabs && !band->changing && !band->waiting
+          ? band->tabAt(nullptr, {point.x, point.y}) : -1;
+    }
+
+    const Location *locationAt(int row) const {
+      if (!band || row < 0 || size_t(row) >= band->visible.size()) return nullptr;
+      const auto index = band->visible[size_t(row)];
+      return index < band->model.items.size() ? &band->model.items[index] : nullptr;
+    }
+
+    void leaveDestination() {
+      auto previous = std::move(destination);
+      destinationId.clear();
+      if (band) band->paintDropRow(-1);
+      if (previous) previous->DragLeave();
+    }
+
+    HRESULT update(DWORD keys, POINTL point, DWORD *effect) {
+      const auto allowed = std::exchange(*effect, DWORD(DROPEFFECT_NONE));
+      int row = rowAt(point);
+      const auto *location = locationAt(row);
+      if (!location || location->id.empty() || !source) { leaveDestination(); return S_OK; }
+      auto id = location->id;
+      DWORD resultEffect = allowed;
+      HRESULT result = S_OK;
+      if (destination && destinationId == id) {
+        auto active = destination;
+        result = active->DragOver(keys, point, &resultEffect);
+      } else {
+        leaveDestination();
+        if (!band || !source) return S_OK;
+        auto data = source;
+        auto target = shellTarget(band->frame, reinterpret_cast<PCIDLIST_ABSOLUTE>(id.data()));
+        if (!band || !source || !target) return S_OK;
+        result = target->DragEnter(data.Get(), keys, point, &resultEffect);
+        if (FAILED(result)) return S_OK;
+        if (!band || !source) { target->DragLeave(); return S_OK; }
+        destination = std::move(target);
+        destinationId = std::move(id);
+      }
+      row = rowAt(point);
+      location = locationAt(row);
+      if (!location || destinationId != location->id || FAILED(result)) {
+        leaveDestination();
+        return S_OK;
+      }
+      *effect = resultEffect;
+      band->paintDropRow(resultEffect & (DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK) ? row : -1);
+      return S_OK;
+    }
+
+  public:
+    explicit TabDropTarget(Band *owner) : band(owner) { ++objects; }
+    ~TabDropTarget() { --objects; }
+    void disconnect() { band = nullptr; DragLeave(); }
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void **out) override {
+      if (!out) return E_POINTER;
+      *out = nullptr;
+      if (iid != IID_IUnknown && iid != IID_IDropTarget) return E_NOINTERFACE;
+      *out = static_cast<IDropTarget *>(this);
+      AddRef();
+      return S_OK;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override { return ++refs; }
+    ULONG STDMETHODCALLTYPE Release() override {
+      const auto count = --refs;
+      if (!count) delete this;
+      return count;
+    }
+    HRESULT STDMETHODCALLTYPE DragEnter(IDataObject *data, DWORD keys, POINTL point, DWORD *effect) override {
+      if (!effect) return E_POINTER;
+      ComPtr<IDropTarget> keepAlive(this);
+      DragLeave();
+      if (!band) { *effect = DROPEFFECT_NONE; return S_OK; }
+      source = data;
+      return DragOver(keys, point, effect);
+    }
+    HRESULT STDMETHODCALLTYPE DragOver(DWORD keys, POINTL point, DWORD *effect) override {
+      if (!effect) return E_POINTER;
+      if (!band) { *effect = DROPEFFECT_NONE; return S_OK; }
+      ComPtr<IDropTarget> keepAlive(this);
+      Guard guard(band);
+      try { return update(keys, point, effect); }
+      catch (...) { *effect = DROPEFFECT_NONE; return S_OK; }
+    }
+    HRESULT STDMETHODCALLTYPE DragLeave() override {
+      ComPtr<IDropTarget> keepAlive(this);
+      auto data = std::move(source);
+      leaveDestination();
+      return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE Drop(IDataObject *data, DWORD keys, POINTL point, DWORD *effect) override {
+      if (!effect) return E_POINTER;
+      ComPtr<IDropTarget> keepAlive(this);
+      const auto *location = locationAt(rowAt(point));
+      if (!location || !destination || location->id != destinationId || !data) {
+        *effect = DROPEFFECT_NONE;
+        return DragLeave();
+      }
+      Guard guard(band);
+      auto target = std::move(destination);
+      auto entered = std::move(source);
+      destinationId.clear();
+      band->paintDropRow(-1);
+      const auto result = target->Drop(data, keys, point, effect);
+      if (FAILED(result)) *effect = DROPEFFECT_NONE;
+      return result;
+    }
+  };
+  ComPtr<TabDropTarget> dropTarget;
+  int dropRow = -1;
+  void paintDropRow(int row) {
+    if (std::exchange(dropRow, row) != row && tabs) InvalidateRect(tabs, nullptr, FALSE);
+  }
+  void stopDrop(HWND tabWindow) {
+    auto target = std::move(dropTarget);
+    dropRow = -1;
+    if (!target) return;
+    target->disconnect();
+    RevokeDragDrop(tabWindow);
+    OleUninitialize();
+  }
+  void startDrop() {
+    const auto handle = tabs;
+    if (FAILED(OleInitialize(nullptr))) return;
+    ComPtr<TabDropTarget> target;
+    target.Attach(new (std::nothrow) TabDropTarget(this));
+    if (target && SUCCEEDED(RegisterDragDrop(handle, target.Get()))) {
+      if (tabs == handle) {
+        dropTarget = std::move(target);
+        return;
+      }
+      target->disconnect();
+      RevokeDragDrop(handle);
+    }
+    OleUninitialize();
+  }
   void detach() {
     incoming = {}; outgoing = {}; importStarted = false;
     ++epoch; ++viewRevision; ++navigationRevision; changing = waiting = earlyNavigationError = false; pendingDeadline = 0;
@@ -189,6 +350,7 @@ class Band final : public IDeskBand2, public IObjectWithSite, public IPersistStr
     first = beforeFirst = 0; closeDown = hot = -1;
     // Clear all published state before window destruction or COM calls can reenter.
     if (oldFrame && GetPropW(oldFrame, windowProperty) == oldWindow) RemovePropW(oldFrame, windowProperty);
+    stopDrop(oldTabs);
     if (oldTabs) RemoveWindowSubclass(oldTabs, tabProc, 1);
     if (oldWindow) {
       SetWindowLongPtrW(oldWindow, GWLP_USERDATA, 0);
@@ -741,7 +903,8 @@ class Band final : public IDeskBand2, public IObjectWithSite, public IPersistStr
     for (size_t row = 0; row < visible.size(); ++row) {
       RECT bounds{}; TabCtrl_GetItemRect(tabs, static_cast<int>(row), &bounds); InflateRect(&bounds, -px(2), -px(2));
       auto index = visible[row]; const auto &item = model.items[index]; bool selected = index == model.active;
-      if (selected || hot == int(row)) ui::rounded(dc, bounds, selected ? p.surface : p.hover, selected ? p.border : p.hover, 0);
+      if (dropRow == int(row)) ui::rounded(dc, bounds, p.hover, p.accent, px(3));
+      else if (selected || hot == int(row)) ui::rounded(dc, bounds, selected ? p.surface : p.hover, selected ? p.border : p.hover, 0);
       if (selected) { RECT line{bounds.left + px(8), bounds.bottom - px(2), bounds.right - px(8), bounds.bottom}; ui::rounded(dc, line, p.accent, p.accent, 0); }
       auto image = !item.path.empty() && icons ? icons->get(quick::icons::Source::file(item.path)) : quick::icons::Image{};
       HICON icon = image ? image->handle : folder ? folder->handle : nullptr;
@@ -803,7 +966,10 @@ class Band final : public IDeskBand2, public IObjectWithSite, public IPersistStr
         if (self->TranslateAcceleratorIO(&key) == S_OK) return 0;
       }
       if (message == WM_SETFOCUS || message == WM_KILLFOCUS) if (self->input) self->input->OnFocusChangeIS(static_cast<IDeskBand2 *>(self), message == WM_SETFOCUS);
-      if (message == WM_NCDESTROY) RemoveWindowSubclass(h, tabProc, id);
+      if (message == WM_NCDESTROY) {
+        RemoveWindowSubclass(h, tabProc, id);
+        if (self->tabs == h) self->stopDrop(h);
+      }
     } catch (...) { }
     auto result = DefSubclassProc(h, message, w, l);
     if (message == WM_LBUTTONDOWN || message == WM_LBUTTONUP || message == WM_KEYDOWN || message == WM_SETFOCUS || message == WM_KILLFOCUS)
@@ -998,7 +1164,13 @@ public:
       connectEvents(generation); if (epoch != generation) return finish(E_ABORT);
       stage = L"read-current-folder";
       refresh(); if (epoch != generation) return finish(E_ABORT);
-      if (model.items.empty()) model.remember(computer()); layout(); stage = L"attached"; return finish(S_OK);
+      if (model.items.empty()) model.remember(computer());
+      layout();
+      if (epoch != generation || !tabs) return finish(E_ABORT);
+      startDrop();
+      if (epoch != generation || !tabs) return finish(E_ABORT);
+      stage = L"attached";
+      return finish(S_OK);
     } catch (...) { if (epoch == generation) detach(); return finish(E_FAIL); }
   }
   HRESULT STDMETHODCALLTYPE GetSite(REFIID iid, void **out) override { if (!out) return E_POINTER; *out = nullptr; auto current = site; return current ? current->QueryInterface(iid, out) : E_FAIL; }

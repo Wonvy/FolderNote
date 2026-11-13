@@ -93,17 +93,19 @@ struct Manager {
     scroll(window).create(window, 1, theme, [this, window](int top) {
       if (tips) SendMessageW(tips, TTM_POP, 0, 0);
       SendMessageW(window, LB_SETTOPINDEX, top, 0);
-    }, true);
+    });
     TOOLINFOW tool{sizeof(tool)}; tool.uFlags = TTF_IDISHWND | TTF_SUBCLASS; tool.hwnd = parent;
     tool.uId = reinterpret_cast<UINT_PTR>(window); tool.lpszText = LPSTR_TEXTCALLBACKW;
     SendMessageW(tips, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&tool));
   }
   void draw(const DRAWITEMSTRUCT &item) {
-    if (item.CtlType != ODT_LISTBOX || item.itemID == UINT(-1)) return;
+    if (item.CtlType != ODT_LISTBOX) return;
+    FillRect(item.hDC, &item.rcItem, theme.background);
+    if (item.itemID == UINT(-1)) return;
     const auto &paths = item.hwndItem == pins ? data.pins : data.history;
     if (item.itemID >= paths.size()) return;
     const auto &p = theme.colors; RECT row = item.rcItem; auto dc = item.hDC;
-    FillRect(dc, &row, theme.field); row.right -= px(15); InflateRect(&row, -px(3), -px(2));
+    row.right -= px(15); InflateRect(&row, -px(3), -px(2));
     bool selected = (item.itemState & ODS_SELECTED) != 0;
     if (selected) {
       ui::rounded(dc, row, p.hover, p.hover, px(4));
@@ -118,9 +120,6 @@ struct Manager {
     auto old = SelectObject(dc, font);
     ui::text(dc, paths[item.itemID], label, selected && p.highContrast ? p.onAccent : p.text,
         DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_PATH_ELLIPSIS | DT_NOPREFIX);
-    if ((item.itemState & ODS_FOCUS) && !(item.itemState & ODS_NOFOCUSRECT)) {
-      SetTextColor(dc, p.text); SetBkColor(dc, p.hover); DrawFocusRect(dc, &row);
-    }
     SelectObject(dc, old);
   }
   void refresh() {
@@ -152,6 +151,13 @@ LRESULT CALLBACK managerProc(HWND window, UINT message, WPARAM w, LPARAM l) {
   }
   if (message == ui::themeChangedMessage()) {
     state->theme.reset(ui::configuredTheme()); state->theme.apply(window); state->style(); return 0;
+  }
+  if (message == WM_CTLCOLORLISTBOX &&
+      (reinterpret_cast<HWND>(l) == state->pins || reinterpret_cast<HWND>(l) == state->history)) {
+    const auto dc = reinterpret_cast<HDC>(w);
+    SetTextColor(dc, state->theme.colors.text);
+    SetBkColor(dc, state->theme.colors.background);
+    return reinterpret_cast<LRESULT>(state->theme.background);
   }
   LRESULT themed = 0;
   if (state->theme.handle(window, message, w, l, themed)) return themed;

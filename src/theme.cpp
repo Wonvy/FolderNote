@@ -7,7 +7,34 @@ namespace ui {
 namespace {
 constexpr wchar_t surfaceKey[] = L"FolderNote.Theme.Surface";
 constexpr wchar_t mutedKey[] = L"FolderNote.Theme.Muted";
+constexpr wchar_t switchKey[] = L"FolderNote.Theme.Switch";
 int px(HWND window, int n) { return MulDiv(n, GetDpiForWindow(window), 96); }
+void smoothPill(HDC dc, RECT bounds, COLORREF fill, COLORREF edge, COLORREF background) {
+  const int width = bounds.right - bounds.left, height = bounds.bottom - bounds.top;
+  const auto inside = [=](int x, int y, int inset) {
+    const int radius = height * 4 - inset;
+    const int dx = x - std::clamp(x, height * 4, width * 8 - height * 4);
+    const int dy = y - height * 4;
+    return dx * dx + dy * dy <= radius * radius;
+  };
+  for (int y = 0; y < height; ++y) {
+    for (int x = 0; x < width; ++x) {
+      int outer = 0, inner = 0;
+      for (int sy : {1, 3, 5, 7}) for (int sx : {1, 3, 5, 7}) {
+        outer += inside(x * 8 + sx, y * 8 + sy, 0);
+        inner += inside(x * 8 + sx, y * 8 + sy, 8);
+      }
+      if (!outer) continue;
+      const auto mix = [&](int fg, int border, int bg) {
+        return (fg * inner + border * (outer - inner) + bg * (16 - outer) + 8) / 16;
+      };
+      SetPixelV(dc, bounds.left + x, bounds.top + y,
+          RGB(mix(GetRValue(fill), GetRValue(edge), GetRValue(background)),
+              mix(GetGValue(fill), GetGValue(edge), GetGValue(background)),
+              mix(GetBValue(fill), GetBValue(edge), GetBValue(background))));
+    }
+  }
+}
 std::wstring caption(HWND window) {
   std::wstring value(GetWindowTextLengthW(window) + 1, L'\0');
   value.resize(GetWindowTextW(window, value.data(), static_cast<int>(value.size())));
@@ -19,7 +46,7 @@ LRESULT CALLBACK controlProc(HWND window, UINT message, WPARAM w, LPARAM l, UINT
   const bool button = !wcscmp(name, L"Button"), combo = !wcscmp(name, L"ComboBox");
   if (message == WM_NCDESTROY) {
     RemoveWindowSubclass(window, controlProc, id);
-    RemovePropW(window, surfaceKey); RemovePropW(window, mutedKey);
+    RemovePropW(window, surfaceKey); RemovePropW(window, mutedKey); RemovePropW(window, switchKey);
     return DefSubclassProc(window, message, w, l);
   }
   if (message == WM_MOUSEMOVE) {
@@ -38,7 +65,23 @@ LRESULT CALLBACK controlProc(HWND window, UINT message, WPARAM w, LPARAM l, UINT
     auto color = enabled ? p.text : p.muted;
     FillRect(dc, &rect, GetPropW(window, surfaceKey) ? theme.card : theme.background);
     auto title = caption(window);
-    if (button && ((style & BS_TYPEMASK) == BS_AUTOCHECKBOX || (style & BS_TYPEMASK) == BS_CHECKBOX)) {
+    if (button && GetPropW(window, switchKey)) {
+      const bool checked = SendMessageW(window, BM_GETCHECK, 0, 0) == BST_CHECKED;
+      const bool keyboardFocus = focus && !(SendMessageW(window, WM_QUERYUISTATE, 0, 0) & UISF_HIDEFOCUS);
+      const int height = px(window, 20), width = px(window, 36);
+      const int top = (rect.bottom - height) / 2;
+      RECT track{rect.right - width - 1, top, rect.right - 1, top + height};
+      const auto fill = checked && enabled ? p.accent : hot ? p.hover : p.background;
+      const auto edge = keyboardFocus || (checked && enabled) ? p.accent : enabled ? p.muted : p.border;
+      smoothPill(dc, track, fill, edge, GetPropW(window, surfaceKey) ? p.surface : p.background);
+      const int inset = px(window, 4), knobSize = height - inset * 2;
+      const int x = checked ? track.right - inset - knobSize : track.left + inset;
+      RECT knob{x, top + inset, x + knobSize, top + inset + knobSize};
+      const auto knobColor = checked && enabled ? p.onAccent : enabled ? p.text : p.muted;
+      smoothPill(dc, knob, knobColor, knobColor, fill);
+      rect.right = track.left - px(window, 10);
+      text(dc, title, rect, color);
+    } else if (button && ((style & BS_TYPEMASK) == BS_AUTOCHECKBOX || (style & BS_TYPEMASK) == BS_CHECKBOX)) {
       int size = px(window, 18), top = (rect.bottom - size) / 2;
       RECT box{1, top, size + 1, top + size};
       bool checked = SendMessageW(window, BM_GETCHECK, 0, 0) == BST_CHECKED;
@@ -66,10 +109,6 @@ LRESULT CALLBACK controlProc(HWND window, UINT message, WPARAM w, LPARAM l, UINT
         LineTo(dc, x, y + px(window, 2)); LineTo(dc, x + px(window, 4), y - px(window, 2));
         SelectObject(dc, old); DeleteObject(pen);
       }
-    }
-    if (focus && !(SendMessageW(window, WM_QUERYUISTATE, 0, 0) & UISF_HIDEFOCUS)) {
-      RECT focusRect{}; GetClientRect(window, &focusRect); InflateRect(&focusRect, -px(window, 3), -px(window, 3));
-      SetTextColor(dc, p.text); SetBkColor(dc, p.field); DrawFocusRect(dc, &focusRect);
     }
     SelectObject(dc, oldFont); EndPaint(window, &paint); return 0;
   }
@@ -149,6 +188,7 @@ void text(HDC dc, const std::wstring &value, RECT rect, COLORREF color, UINT for
 }
 void surface(HWND control, bool value) { if (value) SetPropW(control, surfaceKey, reinterpret_cast<HANDLE>(1)); else RemovePropW(control, surfaceKey); }
 void muted(HWND control) { SetPropW(control, mutedKey, reinterpret_cast<HANDLE>(1)); }
+void toggleSwitch(HWND control) { SetPropW(control, switchKey, reinterpret_cast<HANDLE>(1)); }
 Theme::Theme() { reset(configuredTheme()); }
 Theme::~Theme() { DeleteObject(background); DeleteObject(card); DeleteObject(field); }
 void Theme::reset(ThemeMode value) {

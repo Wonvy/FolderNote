@@ -5,7 +5,7 @@
 #include <vector>
 
 namespace quick::popup {
-enum class Symbol { Folder, Desktop, Downloads, Documents, History, Star, Unpin, Settings, Trash, Window, More, Copy, Move };
+enum class Symbol { Folder, Desktop, Downloads, Documents, History, Star, Unpin, Settings, Trash, Window, More, Copy, Move, Visibility, AddFolder };
 enum class Row { Action, Heading, Separator, Hint, Toolbar, Tabs };
 struct IconAction {
   unsigned command; Symbol symbol; std::wstring title;
