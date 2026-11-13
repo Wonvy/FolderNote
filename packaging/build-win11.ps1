@@ -1,3 +1,5 @@
+param([switch]$StableName)
+
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 $stage = Join-Path $root 'build\msix-stage'
@@ -24,4 +26,5 @@ Copy-Item "$root\CHANGELOG.md","$root\CONTRIBUTING.md" $out
 Copy-Item -LiteralPath "$root\docs" -Destination $out -Recurse -Force
 New-Item -ItemType Directory -Force "$out\packaging" | Out-Null
 Copy-Item -LiteralPath "$PSScriptRoot\README-Win11.md" -Destination "$out\packaging"
-Compress-Archive -Path $out -DestinationPath "$root\dist\FolderNote-$version-win11-test.zip" -Force
+$zip = if ($StableName) { 'FolderNote-win11-test.zip' } else { "FolderNote-$version-win11-test.zip" }
+Compress-Archive -Path "$out\*" -DestinationPath "$root\dist\$zip" -Force

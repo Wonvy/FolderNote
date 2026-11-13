@@ -65,6 +65,11 @@ void inspectVersion(HWND window) {
   check(GetParent(version) == window, "version belongs to fixed shell instead of a scrolling page");
   RECT client{}; GetClientRect(window, &client);
   auto bounds = childBounds(version, window);
+  HWND update = GetDlgItem(window, navigation::updateButton);
+  auto updateBounds = childBounds(update, window);
+  check(visibleStyle(update) && windowText(update) == L"检查更新" &&
+        updateBounds.top >= bounds.bottom && updateBounds.bottom <= client.bottom &&
+        updateBounds.right <= navigation::scale(208), "update button stays visible below the version");
   check(bounds.left >= 0 && bounds.top >= 0 && bounds.right <= client.right && bounds.bottom <= client.bottom,
         "version stays inside resized settings window");
   auto secondTab = childBounds(GetDlgItem(window, 41), window);

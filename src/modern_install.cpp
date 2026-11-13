@@ -64,11 +64,26 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
   int count = 0;
   auto arguments = CommandLineToArgvW(GetCommandLineW(), &count);
   const bool worker = count == 3 && std::wstring(arguments[1]) == L"--install-package";
+  DWORD parent = 0;
+  if (count == 3 && std::wstring(arguments[1]) == L"--parent") {
+    wchar_t *end = nullptr;
+    auto id = wcstoul(arguments[2], &end, 10);
+    if (end && !*end) parent = id;
+  }
   std::wstring sid = worker ? arguments[2] : L"";
   LocalFree(arguments);
   try {
     if (worker)
       return installPackage(sid);
+    if (parent && parent != GetCurrentProcessId()) {
+      // The settings app may be running from the MSIX being replaced.
+      HANDLE process = OpenProcess(SYNCHRONIZE, FALSE, parent);
+      if (process) {
+        const auto wait = WaitForSingleObject(process, 15000);
+        CloseHandle(process);
+        if (wait != WAIT_OBJECT_0) throw fn::Error{L"请关闭 FolderNote 设置后再安装更新。"};
+      }
+    }
     auto source = fn::modulePath().parent_path();
     for (auto name : {L"FolderNote.msix", L"Install.exe", L"FolderNote.exe",
                       L"FolderNoteShell.dll", L"FolderNoteNavigation.dll", L"Uninstall.exe"})

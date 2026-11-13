@@ -27,7 +27,7 @@ int main() {
   try {
     Isolated isolated;
     check(!navigation::quickEnabled() && navigation::dialogQuickEnabled());
-    check(quick::load().pins.empty() && quick::load().history.empty());
+    check(quick::load().pins.empty() && quick::load().history.empty() && quick::load().frequent.empty());
     check(quick::normalize(L"c:/资料/项目/../项目/") == L"c:\\资料\\项目");
     check(quick::normalize(L"C:\\..\\..\\") == L"C:\\");
     check(quick::normalize(L"\\\\server\\share\\..\\资料") == L"\\\\server\\share\\资料");
@@ -42,18 +42,31 @@ int main() {
     quick::visit(L"C:\\A"); quick::visit(L"C:\\B"); quick::visit(L"c:\\a\\");
     auto state = quick::load();
     check(state.history.size() == 2 && quick::same(state.history.front(), L"C:\\A"));
-    for (unsigned i = 0; i < 230; ++i) quick::visit(L"C:\\History\\" + std::to_wstring(i));
+    check(state.frequent.size() == 2 && quick::same(state.frequent.front(), L"C:\\A"));
+    quick::visit(L"C:\\B"); quick::visit(L"C:\\B");
+    quick::touchHistory(L"C:\\A"); quick::touchHistory(L"C:\\OnlyMenu");
     state = quick::load();
-    check(state.history.size() == quick::historyLimit && state.history.front() == L"C:\\History\\229");
+    check(state.history.front() == L"C:\\OnlyMenu" && state.frequent.size() == 2 && state.frequent.front() == L"C:\\B");
+    for (unsigned i = 0; i < 270; ++i) quick::visit(L"C:\\History\\" + std::to_wstring(i));
+    state = quick::load();
+    check(state.history.size() == quick::historyLimit && state.history.front() == L"C:\\History\\269");
+    check(state.frequent.size() == 256 && state.frequent[0] == L"C:\\B" && quick::same(state.frequent[1], L"C:\\A") &&
+          state.frequent[2] == L"C:\\History\\269");
     quick::clearHistory();
-    check(quick::load().history.empty() && quick::load().pins.size() == 2);
+    check(quick::load().history.empty() && quick::load().frequent.empty() && quick::load().pins.size() == 2);
     std::atomic<bool> success{true}; std::vector<std::thread> writers;
     for (int t = 0; t < 4; ++t) writers.emplace_back([&, t] {
-      try { for (int i = 0; i < 30; ++i) quick::visit(L"D:\\Thread" + std::to_wstring(t) + L"\\" + std::to_wstring(i)); }
+      try {
+        for (int i = 0; i < 30; ++i) quick::visit(L"D:\\Thread" + std::to_wstring(t) + L"\\" + std::to_wstring(i));
+        quick::visit(L"D:\\Shared");
+      }
       catch (...) { success = false; }
     });
     for (auto &thread : writers) thread.join();
-    check(success && quick::load().history.size() == quick::historyLimit && quick::load().pins.size() == 2);
+    state = quick::load();
+    check(success && state.history.size() == quick::historyLimit && state.pins.size() == 2 && state.frequent.size() == 121);
+    for (int i = 0; i < 3; ++i) quick::visit(L"D:\\Less frequent");
+    check(quick::load().frequent.front() == L"D:\\Shared");
     quick::visit(L"D:\\最后点击"); quick::visit(L"D:\\另一目录"); quick::visit(L"d:\\最后点击");
     check(quick::load().history.size() == 20 && quick::same(quick::load().history.front(), L"D:\\最后点击"));
     // Upgrade: an older 200-entry list must shrink even if the visited folder
@@ -64,11 +77,15 @@ int main() {
       legacy.insert(legacy.end(), path.begin(), path.end()); legacy.push_back(0);
     }
     legacy.push_back(0);
+    quick::clearHistory();
     check(RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote\\QuickFolders", L"History", REG_MULTI_SZ,
         legacy.data(), static_cast<DWORD>(legacy.size() * sizeof(wchar_t))) == ERROR_SUCCESS);
+    state = quick::load();
+    check(state.history.size() == 20 && state.frequent.empty());
     quick::visit(L"D:\\旧历史\\0");
     state = quick::load();
     check(state.history.size() == 20 && state.history.front() == L"D:\\旧历史\\0" && state.history.back() == L"D:\\旧历史\\19");
+    check(state.frequent.size() == 1 && state.frequent.front() == L"D:\\旧历史\\0");
     DWORD savedBytes = 0;
     check(RegGetValueW(HKEY_CURRENT_USER, L"Software\\FolderNote\\QuickFolders", L"History", RRF_RT_REG_MULTI_SZ,
         nullptr, nullptr, &savedBytes) == ERROR_SUCCESS && savedBytes < legacy.size() * sizeof(wchar_t));
@@ -84,7 +101,7 @@ int main() {
     check(rejected);
     wchar_t unchanged[100]{}; DWORD bytes = sizeof(unchanged);
     check(RegGetValueW(HKEY_CURRENT_USER, L"Software\\FolderNote\\QuickFolders", L"History", RRF_RT_REG_SZ, nullptr, unchanged, &bytes) == 0 && !wcscmp(bad, unchanged));
-    quick::clearHistory(); check(quick::load().history.empty());
+    quick::clearHistory(); check(quick::load().history.empty() && quick::load().frequent.empty());
     // An optional helper may only modify its own Run value, never other startup apps.
     constexpr auto run = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
     const wchar_t other[] = L"existing application";
@@ -106,7 +123,7 @@ int main() {
     check(!quick::addressEdit(filename, dialog)); check(quick::addressEdit(address, dialog));
     check(!quick::addressEdit(address, filename));
     DestroyWindow(dialog);
-    std::cout << "PASS " << checks << " quick folder checks: MRU/dedup, pins/order/limits, concurrent updates, Unicode/UNC, corrupt data, opt-in startup, filename protection\n";
+    std::cout << "PASS " << checks << " quick folder checks: MRU/dedup, visit frequency, pins/order/limits, concurrent updates, Unicode/UNC, corrupt data, opt-in startup, filename protection\n";
   } catch (const fn::Error &error) { std::wcerr << error.message << L'\n'; return 1; }
     catch (const std::exception &error) { std::cerr << error.what() << '\n'; return 1; }
   CoUninitialize(); return 0;

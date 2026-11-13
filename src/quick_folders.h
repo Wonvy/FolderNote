@@ -6,7 +6,7 @@
 #include <shobjidl.h>
 namespace quick {
 inline constexpr size_t historyLimit = 20, pinLimit = 64;
-struct State { std::vector<std::wstring> pins, history; };
+struct State { std::vector<std::wstring> pins, history, frequent; };
 enum class MenuMode : unsigned { Navigate, Copy, Move };
 // Canonicalization is lexical only: never touch a disk/network during menu setup.
 std::wstring normalize(const std::wstring &path);
@@ -14,6 +14,7 @@ bool same(const std::wstring &, const std::wstring &);
 State load();
 void visit(const std::wstring &path);
 void visitAsync(const std::wstring &path) noexcept;
+void touchHistory(const std::wstring &path);
 void pin(const std::wstring &path, bool enabled);
 void movePin(const std::wstring &path, int direction);
 void clearHistory();

@@ -156,6 +156,14 @@ struct Session {
   }
   RECT actionRect(const Item &item, RECT row, int action) const {
     int size = px(28);
+    if (item.row == Row::Tabs) {
+      const int count = static_cast<int>(item.actions.size());
+      const int gap = px(4);
+      const int left = row.left + px(5);
+      const int width = (row.right - left - px(5) - (count - 1) * gap) / count;
+      const int start = left + action * (width + gap);
+      return {start, row.top, start + width, row.bottom};
+    }
     int leading = static_cast<int>(std::min<size_t>(item.leadingActions, item.actions.size()));
     int left = action < leading ? row.left + px(5) + actionsWidth(item, 0, action) :
         row.right - px(5) - actionsWidth(item, leading, static_cast<int>(item.actions.size())) + actionsWidth(item, leading, action);
@@ -191,13 +199,14 @@ struct Session {
     panel.selected = row; panel.selectedAction = action; SendMessageW(panel.list, LB_SETCURSEL, row, 0);
     InvalidateRect(panel.list, nullptr, FALSE);
   }
-  void place(Panel &panel, POINT point, bool child, RECT parent = {}) {
+  void place(Panel &panel, POINT point, bool child, RECT parent = {}, bool keepTop = false) {
     MONITORINFO monitor{sizeof(monitor)};
     GetMonitorInfoW(MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST), &monitor);
     RECT work = monitor.rcWork;
     int content = px(16); for (const auto &item : panel.branch->items) content += height(item);
     int width = std::min(px(260), int(work.right - work.left));
-    int heightPixels = std::min(content, int(work.bottom - work.top - px(16)));
+    const auto availableHeight = keepTop ? work.bottom - point.y : work.bottom - work.top - px(16);
+    int heightPixels = std::min(content, static_cast<int>(availableHeight));
     heightPixels = std::max(px(45), heightPixels);
     int x = point.x, y = point.y;
     if (child && x + width > work.right) x = parent.left - width + px(3);
@@ -210,17 +219,21 @@ struct Session {
     if (!SetWindowRgn(panel.window, region, FALSE)) DeleteObject(region);
   }
   Panel &create(std::shared_ptr<Branch> branch, POINT point, bool child, RECT parent = {});
-  void dispatch(unsigned command) {
+  void dispatch(unsigned command, bool switchingTab = false) {
     // Copy the handler: rebuilding the model may replace its own callback.
     auto invoke = panels.front()->branch->invoke;
     if (!invoke || !invoke(command)) { finish(command); return; }
     hideTip(); KillTimer(root(), hoverTimer); KillTimer(root(), loadingTimer);
-    pendingRow = downRow = downAction = -1; lastMouse = {LONG_MIN, LONG_MIN};
+    pendingRow = downRow = downAction = -1;
+    if (!switchingTab) lastMouse = {LONG_MIN, LONG_MIN};
     trim(1); active = 0;
     auto &panel = *panels.front();
     const int row = panel.selected, action = panel.selectedAction;
+    const auto top = SendMessageW(panel.list, LB_GETTOPINDEX, 0, 0);
     RECT bounds{}; GetWindowRect(root(), &bounds);
-    populate(panel); place(panel, {bounds.left, bounds.top}, false); select(panel, row, action);
+    populate(panel); place(panel, {bounds.left, bounds.top}, false, {}, switchingTab);
+    if (switchingTab) SendMessageW(panel.list, LB_SETTOPINDEX, top, 0);
+    select(panel, row, action);
   }
   void expand(size_t level, int row, bool keyboard = false) {
     if (done || level >= panels.size()) return;
@@ -247,7 +260,8 @@ struct Session {
     if (!actionable(item)) return;
     if (!item.actions.empty()) {
       int index = action < 0 ? std::max(0, panel.selectedAction) : action;
-      if (size_t(index) < item.actions.size() && item.actions[index].enabled) dispatch(item.actions[index].command);
+      if (size_t(index) < item.actions.size() && item.actions[index].enabled &&
+          (item.row != Row::Tabs || !item.actions[index].checked)) dispatch(item.actions[index].command, item.row == Row::Tabs);
       return;
     }
     // A folder's primary action always wins, even when it has a submenu.
@@ -283,6 +297,14 @@ struct Session {
     if (!panel) { hideTip(); return; } // Keep the child open across its narrow joining edge.
     queueTip(*panel, row, action, point);
     active = panel->level;
+    if (row >= 0 && action >= 0) {
+      const auto &item = panel->branch->items[row];
+      if (item.row == Row::Tabs && item.actions[action].enabled && !item.actions[action].checked) {
+        select(*panel, row, action);
+        activate(panel->level, row, action);
+        return;
+      }
+    }
     if (row == panel->selected && action == panel->selectedAction) return;
     select(*panel, row, action); KillTimer(root(), hoverTimer);
     pendingLevel = panel->level; pendingRow = panel->selected;
@@ -377,10 +399,13 @@ struct Session {
       const auto &action = item.actions[index];
       auto bounds = actionRect(item, rect, static_cast<int>(index));
       bool hot = action.enabled && selectedRow && panel.selectedAction == int(index);
-      if (action.checked) ui::rounded(dc, bounds, p.accent, p.accent, px(4));
-      else if (hot) ui::rounded(dc, bounds, p.hover, p.hover, px(4));
+      const bool accented = action.checked && (item.row != Row::Tabs || p.highContrast);
+      if (action.checked || hot) {
+        const auto fill = accented ? p.accent : p.hover;
+        ui::rounded(dc, bounds, fill, fill, px(4));
+      }
       SelectObject(dc, action.text.empty() ? symbols : font);
-      auto iconColor = !action.enabled ? p.muted : action.checked || (hot && p.highContrast) ? p.onAccent : p.text;
+      auto iconColor = !action.enabled ? p.muted : accented || (hot && p.highContrast) ? p.onAccent : p.text;
       ui::text(dc, action.text.empty() ? std::wstring(1, actionGlyph(action.symbol)) : action.text, bounds, iconColor,
           DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
     }

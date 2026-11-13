@@ -5,12 +5,17 @@
 #include "quick_folders.h"
 #include "theme_scroll.h"
 #include "app_version.h"
+#include "update.h"
 #include <dwmapi.h>
+#include <appmodel.h>
 #include <shlobj.h>
 #include <array>
+#include <chrono>
 #include <cstring>
 #include <vector>
 #include <memory>
+#include <future>
+#include <thread>
 #include <windowsx.h>
 #define MessageBoxW ui::message
 namespace navigation {
@@ -215,6 +220,79 @@ static HWND body, themeChoice, settingsWindow, managerPage;
 static SettingsPage activePage = SettingsPage::Features;
 static UINT selectPageMessage() { return RegisterWindowMessageW(L"FolderNote.Settings.SelectPage.v1"); }
 static std::unique_ptr<ui::Theme> appearance;
+static constexpr int updateButton = 42;
+static constexpr UINT_PTR updateTimer = 42;
+struct UpdateResult {
+  std::optional<updater::Release> release;
+  std::wstring error;
+};
+static std::future<UpdateResult> updateWork;
+static bool installingUpdate = false;
+
+static bool modernInstallation() {
+  UINT32 packageLength = 0;
+  if (GetCurrentPackageFullName(&packageLength, nullptr) == ERROR_INSUFFICIENT_BUFFER) return true;
+  constexpr auto uninstall = L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\FolderNote";
+  if (RegGetValueW(HKEY_CURRENT_USER, uninstall, L"InstallLocation", RRF_RT_REG_SZ, nullptr, nullptr, nullptr) != ERROR_SUCCESS)
+    return false;
+  // The Win11 installer removes the classic verbs because its MSIX owns them.
+  HKEY key = nullptr;
+  auto result = RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Classes\\Directory\\shell\\FolderNote.Edit", 0, KEY_QUERY_VALUE, &key);
+  if (key) RegCloseKey(key);
+  return result == ERROR_FILE_NOT_FOUND || result == ERROR_PATH_NOT_FOUND;
+}
+static void startUpdateWork(HWND owner, std::optional<updater::Release> release = {}) {
+  const bool install = release.has_value();
+  try {
+    const bool modern = !install && modernInstallation();
+    std::packaged_task<UpdateResult()> task([release = std::move(release), modern] {
+      try {
+        if (release) updater::install(*release);
+        else return UpdateResult{updater::check(app::updateRepository, app::version, modern), {}};
+        return UpdateResult{};
+      } catch (const fn::Error &error) { return UpdateResult{{}, error.message}; }
+      catch (...) { return UpdateResult{{}, L"更新失败，请稍后重试。"}; }
+    });
+    auto future = task.get_future();
+    if (!SetTimer(owner, updateTimer, 100, nullptr)) fn::fail(L"无法启动更新检查");
+    std::thread(std::move(task)).detach();
+    updateWork = std::move(future);
+    installingUpdate = install;
+    HWND button = GetDlgItem(owner, updateButton);
+    SetWindowTextW(button, install ? L"正在下载并安装…" : L"正在检查更新…");
+    EnableWindow(button, FALSE);
+    if (install) {
+      EnableWindow(GetDlgItem(owner, IDOK), FALSE);
+      EnableWindow(GetDlgItem(owner, IDCANCEL), FALSE);
+    }
+  } catch (...) {
+    KillTimer(owner, updateTimer);
+    MessageBoxW(owner, L"无法启动更新，请重试。", L"FolderNote 更新", MB_OK | MB_ICONERROR);
+  }
+}
+static void finishUpdateWork(HWND owner) {
+  using namespace std::chrono_literals;
+  if (!updateWork.valid() || updateWork.wait_for(0ms) != std::future_status::ready) return;
+  KillTimer(owner, updateTimer);
+  auto result = updateWork.get();
+  const bool installerStarted = installingUpdate && result.error.empty();
+  installingUpdate = false;
+  HWND button = GetDlgItem(owner, updateButton);
+  SetWindowTextW(button, L"检查更新");
+  EnableWindow(button, TRUE);
+  EnableWindow(GetDlgItem(owner, IDOK), TRUE);
+  EnableWindow(GetDlgItem(owner, IDCANCEL), TRUE);
+  if (installerStarted) { DestroyWindow(owner); return; }
+  if (!result.error.empty()) {
+    MessageBoxW(owner, result.error.c_str(), L"FolderNote 更新", MB_OK | MB_ICONERROR);
+  } else if (result.release) {
+    auto prompt = L"发现 FolderNote " + result.release->version + L"。现在从 GitHub 下载并启动安装吗？";
+    if (MessageBoxW(owner, prompt.c_str(), L"FolderNote 更新", MB_YESNO | MB_ICONQUESTION) == IDYES)
+      startUpdateWork(owner, std::move(result.release));
+  } else {
+    MessageBoxW(owner, L"当前已是最新版本。", L"FolderNote 更新", MB_OK | MB_ICONINFORMATION);
+  }
+}
 static int scrollPosition = 0;
 static ui::ScrollBar settingsScroll;
 struct Placement { HWND window; int x, y, width, height; };
@@ -263,7 +341,8 @@ static void layoutSettings() {
   MoveWindow(GetDlgItem(settingsWindow, 35), scale(20), scale(20), scale(172), scale(32), TRUE);
   MoveWindow(GetDlgItem(settingsWindow, 36), scale(20), scale(57), scale(172), scale(22), TRUE);
   MoveWindow(GetDlgItem(settingsWindow, 30), scale(sidebar + 24), scale(27), width - scale(sidebar + 254), scale(32), TRUE);
-  MoveWindow(GetDlgItem(settingsWindow, 31), scale(20), height - scale(45), scale(176), scale(22), TRUE);
+  MoveWindow(GetDlgItem(settingsWindow, 31), scale(20), height - scale(76), scale(176), scale(22), TRUE);
+  MoveWindow(GetDlgItem(settingsWindow, updateButton), scale(20), height - scale(44), scale(168), scale(32), TRUE);
   for (int id : {40, 41}) MoveWindow(GetDlgItem(settingsWindow, id), scale(12), scale(103 + (id - 40) * 48), scale(184), scale(40), TRUE);
   MoveWindow(GetDlgItem(settingsWindow, 32), width - scale(210), scale(15), scale(186), scale(20), TRUE);
   MoveWindow(themeChoice, width - scale(210), scale(40), scale(186), scale(160), TRUE);
@@ -375,6 +454,7 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     HWND title = add(h, L"STATIC", L"功能设置", 0, 30);
     SendMessageW(title, WM_SETFONT, reinterpret_cast<WPARAM>(headingFont), TRUE);
     ui::muted(add(h, L"STATIC", app::versionLabel, SS_LEFT | SS_NOPREFIX, 31));
+    add(h, L"BUTTON", L"检查更新", WS_TABSTOP, updateButton);
     ui::muted(add(h, L"STATIC", L"外观主题", 0, 32));
     constexpr DWORD comboStyle = CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS | WS_TABSTOP;
     themeChoice = add(h, L"COMBOBOX", L"", comboStyle, 17);
@@ -427,6 +507,7 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     appearance->apply(h); quick::setManagerTheme(managerPage, appearance->mode); showPage(activePage); return 0;
   }
   case WM_COMMAND:
+    if (installingUpdate && (LOWORD(w) == IDOK || LOWORD(w) == IDCANCEL)) return 0;
     if (LOWORD(w) == IDOK) {
       try {
         const auto selection = SendMessageW(choice, CB_GETCURSEL, 0, 0);
@@ -458,8 +539,13 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
       showPage(LOWORD(w) == 40 ? SettingsPage::Features : SettingsPage::QuickFolders);
     } else if (LOWORD(w) == 13 && HIWORD(w) == BN_CLICKED) {
       try { copyDiagnostics(h); } catch (const fn::Error &e) { MessageBoxW(h, e.message.c_str(), L"FolderNote", MB_OK | MB_ICONERROR); }
+    } else if (LOWORD(w) == updateButton && HIWORD(w) == BN_CLICKED && !updateWork.valid()) {
+      if (*app::updateRepository) startUpdateWork(h);
+      else MessageBoxW(h, L"此构建尚未配置 GitHub 更新源。请使用 GitHub Releases 发布的安装包。", L"FolderNote 更新", MB_OK | MB_ICONINFORMATION);
     } else if (LOWORD(w) == IDCANCEL) DestroyWindow(h);
     return 0;
+  case WM_TIMER: if (w == updateTimer) { finishUpdateWork(h); return 0; } break;
+  case WM_CLOSE: if (installingUpdate) return 0; break;
   case WM_MEASUREITEM: reinterpret_cast<MEASUREITEMSTRUCT *>(l)->itemHeight = scale(26); return TRUE;
   case WM_VSCROLL: if (reinterpret_cast<HWND>(l) == settingsScroll.window()) settingsScroll.command(w); return 0;
   case WM_MOUSEWHEEL: if (activePage == SettingsPage::Features) settingsScroll.wheel(GET_WHEEL_DELTA_WPARAM(w)); return 0;
@@ -485,7 +571,7 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     SendMessageW(managerPage, WM_DPICHANGED_AFTERPARENT, 0, 0);
     layoutSettings(); return 0;
   }
-  case WM_DESTROY: PostQuitMessage(0); return 0;
+  case WM_DESTROY: KillTimer(h, updateTimer); updateWork = {}; PostQuitMessage(0); return 0;
   case WM_NCDESTROY: RemovePropW(h, app::settingsWindowTag); DeleteObject(font); DeleteObject(headingFont); body = managerPage = settingsWindow = nullptr; placements.clear(); break;
   }
   return DefWindowProcW(h, m, w, l);
@@ -518,7 +604,7 @@ int settings(HINSTANCE instance, SettingsPage page) {
       HWND dropped = nullptr;
       for (auto combo : {themeChoice, choice}) if (SendMessageW(combo, CB_GETDROPPEDSTATE, 0, 0)) dropped = combo;
       if (dropped) { SendMessageW(dropped, CB_SHOWDROPDOWN, FALSE, 0); continue; }
-      if (message.wParam == VK_ESCAPE) DestroyWindow(window);
+      if (message.wParam == VK_ESCAPE) SendMessageW(window, WM_CLOSE, 0, 0);
       else {
         HWND focused = GetFocus(); wchar_t clsName[32]{}; GetClassNameW(focused, clsName, ARRAYSIZE(clsName));
         if (!_wcsicmp(clsName, L"BUTTON")) SendMessageW(focused, BM_CLICK, 0, 0);

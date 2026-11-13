@@ -177,6 +177,45 @@ void transferIconTests(const std::wstring &path) {
     }
   }
 }
+void historyTabTests() {
+  using namespace quick;
+  const auto instance = GetModuleHandleW(nullptr);
+  const std::wstring pinned = L"C:\\置顶", recent = L"C:\\最近", frequent = L"C:\\常用";
+  for (UINT dpi : {96u, 144u, 192u}) {
+    Popup model; model.loaded = true;
+    model.state = {{pinned}, {pinned, recent}, {pinned, frequent}};
+    model.build({});
+    const int tabRow = 2;
+    check(model.root->items[tabRow].row == popup::Row::Tabs &&
+          model.root->items[tabRow].actions[0].checked &&
+          model.root->items[tabRow + 1].iconPath == recent,
+          "the default tab shows recent unpinned folders");
+    popup::Session session(instance, ui::ThemeMode::System);
+    auto &panel = session.create(model.root, {50, 50}, false);
+    session.dpi = dpi; session.populate(panel); session.place(panel, {50, 50}, false);
+    const HWND original = session.root();
+    auto hoverTab = [&](int action) {
+      RECT row{}; SendMessageW(panel.list, LB_GETITEMRECT, tabRow, reinterpret_cast<LPARAM>(&row));
+      const auto bounds = session.actionRect(model.root->items[tabRow], row, action);
+      SendMessageW(panel.list, WM_MOUSEMOVE, 0, MAKELPARAM((bounds.left + bounds.right) / 2, (bounds.top + bounds.bottom) / 2));
+    };
+    session.expand(0, tabRow + 1);
+    hoverTab(1);
+    check(!session.done && session.root() == original && session.panels.size() == 1 &&
+          model.root->items[tabRow].actions[1].checked &&
+          model.root->items[tabRow + 1].iconPath == frequent &&
+          model.root->items[tabRow + 2].iconPath == recent &&
+          model.root->items[tabRow + 3].symbol == popup::Symbol::More,
+          "hover switches to frequent folders in place and dismisses a stale submenu");
+    hoverTab(0);
+    check(model.root->items[tabRow + 1].iconPath == recent, "hover switches back to recent folders");
+    session.key(VK_RIGHT); session.key(VK_RETURN);
+    check(!session.done && model.root->items[tabRow + 1].iconPath == frequent, "keyboard can switch history tabs");
+    session.key(VK_DOWN); session.key(VK_RETURN);
+    check(session.done && model.commands.at(session.selected).path == frequent,
+          "selecting a folder after switching opens the visible destination");
+  }
+}
 int main() {
   CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
   int result = 0;
@@ -189,6 +228,7 @@ int main() {
     wchar_t temp[MAX_PATH]{}; check(GetTempPathW(ARRAYSIZE(temp), temp) != 0, "get existing local folder");
     const auto path = quick::normalize(temp); quick::pin(path, true);
     transferIconTests(path);
+    historyTabTests();
     for (auto mode : {quick::MenuMode::Copy, quick::MenuMode::Move}) {
       quick::Popup popup; popup.mode = mode; popup.selectedCount = 3; popup.canCopy = popup.canMove = true; popup.build(path);
       check(popup.root->items.front().title.empty() &&
@@ -207,6 +247,8 @@ int main() {
     check(quick::menu(GetModuleHandleW(nullptr), anchor, nullptr, {20, 20}) == 0, "desktop menu command succeeds");
     check(menusShown == 1 && opened == 1 && quick::same(openedPath, path), "ordinary desktop folder selection opens one Explorer window");
     check(!quick::load().history.empty() && quick::same(quick::load().history.front(), path), "successful desktop folder open is recorded");
+    check(!quick::load().frequent.empty() && quick::same(quick::load().frequent.front(), path),
+          "desktop folder selection counts without an Explorer observer");
     disableOnSelection = true;
     check(quick::menu(GetModuleHandleW(nullptr), anchor, nullptr, {20, 20}) == 0 && menusShown == 2 && opened == 1,
           "disabling the feature before command dispatch prevents opening Explorer");

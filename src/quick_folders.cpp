@@ -6,11 +6,16 @@
 #include <shlobj.h>
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
+#include <climits>
 #include <memory>
+#include <optional>
 #include <sddl.h>
 namespace quick {
 namespace {
 constexpr wchar_t dataKey[] = L"Software\\FolderNote\\QuickFolders";
+constexpr size_t frequencyLimit = 256;
+constexpr size_t registryValueLimit = 1024 * 1024;
 struct Key {
   HKEY value = nullptr;
   ~Key() { if (value) RegCloseKey(value); }
@@ -41,13 +46,12 @@ struct Lock {
   }
   ~Lock() { if (handle) { ReleaseMutex(handle); CloseHandle(handle); } }
 };
-std::vector<std::wstring> read(const wchar_t *name, size_t limit, bool *truncated = nullptr) {
-  if (truncated) *truncated = false;
+std::vector<std::wstring> readStrings(const wchar_t *name) {
   DWORD type = 0, size = 0;
   auto result = RegGetValueW(HKEY_CURRENT_USER, dataKey, name, RRF_RT_ANY, &type, nullptr, &size);
   if (result == ERROR_FILE_NOT_FOUND || result == ERROR_PATH_NOT_FOUND) return {};
   if (result) fn::fail(L"无法读取快速文件夹", result);
-  if (type != REG_MULTI_SZ || size < 4 || size % 2 || size > 1024 * 1024)
+  if (type != REG_MULTI_SZ || size < 4 || size % 2 || size > registryValueLimit)
     throw fn::Error{L"快速文件夹数据格式损坏，未覆盖原记录。"};
   std::vector<wchar_t> bytes(size / 2 + 2);
   result = RegGetValueW(HKEY_CURRENT_USER, dataKey, name, RRF_RT_REG_MULTI_SZ, nullptr, bytes.data(), &size);
@@ -60,10 +64,18 @@ std::vector<std::wstring> read(const wchar_t *name, size_t limit, bool *truncate
     const size_t begin = i;
     while (i < count && bytes[i]) ++i;
     if (i == count) throw fn::Error{L"快速文件夹数据不完整。"};
-    auto path = normalize(std::wstring(bytes.data() + begin, i - begin));
+    out.emplace_back(bytes.data() + begin, i - begin);
     ++i;
+  }
+  return out;
+}
+std::vector<std::wstring> read(const wchar_t *name, size_t limit, bool *truncated = nullptr) {
+  if (truncated) *truncated = false;
+  std::vector<std::wstring> out;
+  for (const auto &entry : readStrings(name)) {
+    auto path = normalize(entry);
     if (!path.empty() && std::none_of(out.begin(), out.end(), [&](const auto &p) { return same(p, path); })) {
-      if (out.size() < limit) out.push_back(path);
+      if (out.size() < limit) out.push_back(std::move(path));
       else if (truncated) *truncated = true;
     }
   }
@@ -74,12 +86,62 @@ void write(const wchar_t *name, const std::vector<std::wstring> &paths) {
   for (const auto &path : paths) { bytes.insert(bytes.end(), path.begin(), path.end()); bytes.push_back(0); }
   bytes.push_back(0);
   if (paths.empty()) bytes.push_back(0);
-  if (bytes.size() * 2 > 1024 * 1024) throw fn::Error{L"文件夹列表过大，请移除部分记录。"};
+  if (bytes.size() * sizeof(wchar_t) > registryValueLimit) throw fn::Error{L"文件夹列表过大，请移除部分记录。"};
   Key key;
   auto error = RegCreateKeyExW(HKEY_CURRENT_USER, dataKey, 0, nullptr, 0, KEY_SET_VALUE, nullptr, &key.value, nullptr);
   if (!error) error = RegSetValueExW(key.value, name, 0, REG_MULTI_SZ,
                                     reinterpret_cast<const BYTE *>(bytes.data()), static_cast<DWORD>(bytes.size() * 2));
   if (error) fn::fail(L"无法保存快速文件夹", error);
+}
+struct Frequency {
+  std::wstring path;
+  unsigned long count;
+  std::wstring encoded() const { return std::to_wstring(count) + L'\t' + path; }
+};
+std::vector<Frequency> readFrequency() {
+  std::vector<Frequency> entries;
+  for (const auto &entry : readStrings(L"VisitFrequency")) {
+    // A tab is invalid in a normalized path, so it can delimit the count.
+    auto separator = entry.find(L'\t');
+    if (separator == entry.npos || entry.find_first_not_of(L"0123456789") != separator)
+      throw fn::Error{L"访问次数数据格式损坏，未覆盖原记录。"};
+    errno = 0;
+    auto count = wcstoul(entry.c_str(), nullptr, 10);
+    auto path = normalize(entry.substr(separator + 1));
+    if (!count || errno == ERANGE || path.empty() || (!entries.empty() && entries.back().count < count))
+      throw fn::Error{L"访问次数数据格式损坏，未覆盖原记录。"};
+    entries.push_back({std::move(path), count});
+  }
+  return entries;
+}
+void recordFrequency(std::vector<Frequency> entries, const std::wstring &path) {
+  auto found = std::find_if(entries.begin(), entries.end(), [&](const auto &entry) { return same(entry.path, path); });
+  unsigned long count = 1;
+  if (found != entries.end()) {
+    count = found->count == ULONG_MAX ? ULONG_MAX : found->count + 1;
+    entries.erase(found);
+  }
+  // Higher counts come first. A newly visited folder leads others with the same count.
+  auto position = std::lower_bound(entries.begin(), entries.end(), count,
+      [](const auto &entry, auto visits) { return entry.count > visits; });
+  const auto updated = entries.insert(position, {path, count});
+  std::vector<std::wstring> values;
+  auto updatedValue = updated->encoded();
+  // Reserve space for the latest visit so a new folder can build a count even
+  // when the list already contains the maximum number of folders.
+  size_t remainingEntries = frequencyLimit - 1;
+  size_t remainingChars = registryValueLimit / sizeof(wchar_t) - updatedValue.size() - 2;
+  for (auto entry = entries.begin(); entry != entries.end(); ++entry) {
+    if (entry == updated) values.push_back(std::move(updatedValue));
+    else if (remainingEntries && entry->path.size() < remainingChars) {
+      auto value = entry->encoded();
+      if (value.size() >= remainingChars) continue;
+      remainingChars -= value.size() + 1;
+      --remainingEntries;
+      values.push_back(std::move(value));
+    }
+  }
+  write(L"VisitFrequency", values);
 }
 std::atomic<unsigned> pending{0};
 DWORD generation() {
@@ -87,26 +149,29 @@ DWORD generation() {
   RegGetValueW(HKEY_CURRENT_USER, dataKey, L"HistoryGeneration", RRF_RT_REG_DWORD, nullptr, &value, &bytes);
   return value;
 }
-void storeVisit(const std::wstring &value, bool queued, DWORD expected) {
+void storeVisit(const std::wstring &value, bool countVisit, std::optional<DWORD> expected = std::nullopt) {
   auto path = normalize(value);
   if (path.empty()) return;
   Lock lock;
-  if (queued && (generation() != expected || !navigation::quickEnabled())) return;
+  if (expected && (generation() != *expected || !navigation::quickEnabled())) return;
   bool truncated = false;
   auto items = read(L"History", historyLimit, &truncated);
+  auto frequency = countVisit ? readFrequency() : std::vector<Frequency>{};
   // Also shorten an older installation's longer history when its current
   // directory was already first, rather than retaining the old 200 entries.
-  if (!truncated && !items.empty() && same(items.front(), path)) return;
-  std::erase_if(items, [&](const auto &p) { return same(p, path); });
-  items.insert(items.begin(), path);
-  if (items.size() > historyLimit) items.resize(historyLimit);
-  write(L"History", items);
+  if (truncated || items.empty() || !same(items.front(), path)) {
+    std::erase_if(items, [&](const auto &p) { return same(p, path); });
+    items.insert(items.begin(), path);
+    if (items.size() > historyLimit) items.resize(historyLimit);
+    write(L"History", items);
+  }
+  if (countVisit) recordFrequency(std::move(frequency), path);
 }
 struct Visit { std::wstring path; HMODULE module; DWORD generation; };
 void CALLBACK record(PTP_CALLBACK_INSTANCE instance, void *argument) {
   std::unique_ptr<Visit> request(static_cast<Visit *>(argument));
   FreeLibraryWhenCallbackReturns(instance, request->module);
-  try { storeVisit(request->path, true, request->generation); } catch (...) { }
+  try { storeVisit(request->path, false, request->generation); } catch (...) { }
   --pending;
 }
 }
@@ -146,9 +211,17 @@ std::wstring normalize(const std::wstring &input) {
   for (const auto &part : parts) { if (root.back() != L'\\') root += L'\\'; root += part; }
   return root;
 }
-State load() { Lock lock; return {read(L"Pins", pinLimit), read(L"History", historyLimit)}; }
+State load() {
+  Lock lock;
+  State state{read(L"Pins", pinLimit), read(L"History", historyLimit), {}};
+  for (auto &entry : readFrequency()) state.frequent.push_back(std::move(entry.path));
+  return state;
+}
 void visit(const std::wstring &value) {
-  storeVisit(value, false, 0);
+  storeVisit(value, true);
+}
+void touchHistory(const std::wstring &path) {
+  storeVisit(path, false);
 }
 void visitAsync(const std::wstring &path) noexcept {
   if (path.empty() || pending.fetch_add(1) >= 16) { if (!path.empty()) --pending; return; }
@@ -190,6 +263,7 @@ void clearHistory() {
   auto error = RegSetKeyValueW(HKEY_CURRENT_USER, dataKey, L"HistoryGeneration", REG_DWORD, &next, sizeof(next));
   if (error) fn::fail(L"无法清空历史记录", error);
   write(L"History", {});
+  write(L"VisitFrequency", {});
 }
 std::wstring viewPath(IShellView *view) {
   using Microsoft::WRL::ComPtr;

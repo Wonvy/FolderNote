@@ -141,7 +141,7 @@ std::wstring label(const std::wstring &path) {
   auto title = std::filesystem::path(path).filename().native();
   return title.empty() ? path : title;
 }
-enum class Kind { Open, NewWindow, Pin, Unpin, Manage, Clear, Copy, Move };
+enum class Kind { Open, NewWindow, Pin, Unpin, Manage, Clear, Copy, Move, Recent, Frequent };
 struct Command { Kind kind; std::wstring path; };
 struct Popup {
   using Branch = popup::Branch;
@@ -157,6 +157,7 @@ struct Popup {
   bool canCopy = false, canMove = false;
   bool showCurrentName = false;
   bool loaded = false;
+  bool showFrequent = false;
   struct Known { std::wstring path, title; Symbol symbol; };
   std::vector<Known> known;
   bool pinned(const std::wstring &path) { return std::any_of(state.pins.begin(), state.pins.end(), [&](const auto &p) { return same(p, path); }); }
@@ -235,10 +236,27 @@ struct Popup {
     }
     if (state.pins.empty()) hint(*root, L"暂无置顶");
     for (const auto &path : state.pins) folder(*root, path);
-    separator(*root); heading(*root, L"最近访问");
-    unsigned shown = 0;
-    for (const auto &path : state.history) if (!pinned(path) && shown < 8) { folder(*root, path); ++shown; }
-    if (!shown) hint(*root, L"暂无记录");
+    separator(*root);
+    Item tabs; tabs.row = Row::Tabs;
+    tabs.actions = {
+        {command(Kind::Recent), Symbol::History, L"最近访问", true, !showFrequent, L"最近访问"},
+        {command(Kind::Frequent), Symbol::History, L"最多访问", true, showFrequent, L"最多访问"}};
+    root->items.push_back(std::move(tabs));
+    const size_t limit = showFrequent ? 10 : 8;
+    std::vector<std::wstring> shown;
+    auto addLocations = [&](const auto &paths) {
+      for (const auto &path : paths) {
+        if (shown.size() == limit) break;
+        if (pinned(path) || std::any_of(shown.begin(), shown.end(), [&](const auto &p) { return same(p, path); })) continue;
+        shown.push_back(path);
+      }
+    };
+    if (showFrequent) addLocations(state.frequent);
+    addLocations(state.history);
+    for (const auto &path : shown) {
+      folder(*root, path);
+    }
+    if (shown.empty()) hint(*root, L"暂无记录");
     auto history = std::make_shared<Branch>();
     heading(*history, L"历史记录 · 最近 20 条");
     for (const auto &path : state.history) folder(*history, path);
@@ -258,6 +276,10 @@ struct Popup {
       const auto found = commands.find(selected);
       if (found == commands.end()) return false;
       const auto kind = found->second.kind;
+      if (kind == Kind::Recent || kind == Kind::Frequent) {
+        showFrequent = kind == Kind::Frequent;
+        build(current); return true;
+      }
       if (kind != Kind::Copy && kind != Kind::Move) return false;
       if ((kind == Kind::Copy && !canCopy) || (kind == Kind::Move && !canMove)) return true;
       const auto requested = kind == Kind::Copy ? MenuMode::Copy : MenuMode::Move;
@@ -288,6 +310,7 @@ int menu(HINSTANCE instance, HWND target, HWND view, POINT point) {
     ComPtr<IShellItemArray> selection;
     DWORD selectedCount = 0;
     bool showCurrentName = false;
+    bool showFrequent = false;
     MenuMode mode = MenuMode::Navigate;
     bool repeat = true;
     while (repeat && navigation::quickEnabled()) {
@@ -333,11 +356,12 @@ int menu(HINSTANCE instance, HWND target, HWND view, POINT point) {
             }
             showCurrentName = detail::blankSurface(hitView, point);
           }
-          if (!current.empty()) visit(current);
+          if (!current.empty()) touchHistory(current);
         }
         if (!currentRequest() || GetForegroundWindow() != target) break;
         popup.mode = mode; popup.selectedCount = selectedCount;
         popup.showCurrentName = showCurrentName;
+        popup.showFrequent = showFrequent;
         popup.canCopy = transfer::supports(selection.Get(), MenuMode::Copy);
         popup.canMove = transfer::supports(selection.Get(), MenuMode::Move);
         popup.build(current);
@@ -345,6 +369,7 @@ int menu(HINSTANCE instance, HWND target, HWND view, POINT point) {
         if (!currentRequest() || GetForegroundWindow() != target) break;
         selected = popup::show(instance, point, popup.root, ui::configuredTheme(), target);
         mode = popup.mode;
+        showFrequent = popup.showFrequent;
       } // The hidden popup no longer owns the gate, even if its command is slow.
       if (!selected || !popup.commands.contains(selected) || !currentRequest()) break;
       auto command = popup.commands.at(selected);
@@ -352,7 +377,7 @@ int menu(HINSTANCE instance, HWND target, HWND view, POINT point) {
         pin(command.path, command.kind == Kind::Pin); repeat = true;
       } else if (command.kind == Kind::Manage) manage(instance);
       else if (command.kind == Kind::Clear) {
-        const auto answer = ui::message(nullptr, L"清空访问历史？置顶文件夹将保留。", L"快速文件夹", MB_YESNO | MB_ICONQUESTION);
+        const auto answer = ui::message(nullptr, L"清空访问历史和访问次数？置顶文件夹将保留。", L"快速文件夹", MB_YESNO | MB_ICONQUESTION);
         if (!currentRequest()) break;
         if (answer == IDYES) clearHistory();
         repeat = true;

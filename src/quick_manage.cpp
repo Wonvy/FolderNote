@@ -226,7 +226,7 @@ LRESULT CALLBACK managerProc(HWND window, UINT message, WPARAM w, LPARAM l) {
         auto path = state->data.pins[size_t(pinIndex)];
         if (id == 21) pin(path, false); else movePin(path, id == 22 ? -1 : 1);
       } else if (id == 24 && historyIndex >= 0 && size_t(historyIndex) < state->data.history.size()) pin(state->data.history[size_t(historyIndex)], true);
-      else if (id == 25 && ui::message(window, L"清空访问历史？置顶文件夹将保留。", L"快速文件夹", MB_YESNO | MB_ICONQUESTION) == IDYES) clearHistory();
+      else if (id == 25 && ui::message(window, L"清空访问历史和访问次数？置顶文件夹将保留。", L"快速文件夹", MB_YESNO | MB_ICONQUESTION) == IDYES) clearHistory();
       else return 0;
       state->refresh();
       if (id == 22 || id == 23) SendMessageW(state->pins, LB_SETCURSEL,

@@ -6,7 +6,7 @@
 
 namespace quick::popup {
 enum class Symbol { Folder, Desktop, Downloads, Documents, History, Star, Unpin, Settings, Trash, Window, More, Copy, Move };
-enum class Row { Action, Heading, Separator, Hint, Toolbar };
+enum class Row { Action, Heading, Separator, Hint, Toolbar, Tabs };
 struct IconAction {
   unsigned command; Symbol symbol; std::wstring title;
   bool enabled = true, checked = false;

@@ -137,16 +137,32 @@ cmake --build build-x86 --config Release --target LegacyDialogFixture
 
 版本号只在 `CMakeLists.txt` 的 `project(FolderNote VERSION ...)` 中维护。重新配置后，CMake 生成窗口版本文字、资源版本及 MSIX 清单版本。发布时同时更新 [版本记录](../CHANGELOG.md) 和受影响的说明；不要直接编辑 `build/generated/` 下的生成文件。
 
-### 通用版
+### 本地生成安装包
 
 完成 Release 构建和测试后：
 
 ```powershell
-cmake --install build --config Release --prefix dist/FolderNote
-Compress-Archive -Path dist/FolderNote -DestinationPath dist/FolderNote-win-x64.zip -Force
+.\packaging\build-release.ps1
 ```
 
-这里的 `cmake --install` 仅把运行文件和配置好的文档复制到指定目录，不会完成 Windows 菜单或导航扩展注册。通用包应包含 `FolderNote.exe`、两个 DLL、`Install.exe`、`Uninstall.exe` 和说明文件；使用者完整解压后运行 `Install.exe`。
+脚本在 `dist` 生成通用版、Windows 11 首层菜单测试版和 SHA-256 校验清单。通用版完整解压后运行 `Install.exe`，首层菜单测试版运行 `Install-Win11.exe`。
+
+### 首次发布到 GitHub
+
+在 GitHub 建立一个公开的空仓库，以便程序无需登录即可读取 Releases。现有 `origin` 可继续用于 NAS。在项目目录审阅 `git status` 和提交内容后，执行以下命令，将 `OWNER` 替换为自己的 GitHub 用户名或组织名。
+
+```powershell
+git add .github packaging src tests docs CMakeLists.txt README.md CHANGELOG.md
+git diff --cached --stat
+git diff --cached
+git commit -m "Release FolderNote 1.9.2"
+git remote add github https://github.com/OWNER/FolderNote.git
+git push github main
+git tag -a v1.9.2 -m "FolderNote 1.9.2"
+git push github v1.9.2
+```
+
+推送 `main` 会在 Actions 生成构建产物，推送与 CMake 版本一致的 `v<版本>` 标签后会自动发布 Releases。CI 将当前 GitHub 仓库写入发布版，设置窗口便能检查后续发布。本地若要启用同一更新源，构建前用 `cmake --preset windows-x64 -DFOLDERNOTE_UPDATE_REPOSITORY=OWNER/FolderNote` 配置。升级时从 Releases 下载与你当前安装类型相同的包。
 
 ### Windows 11 首层菜单测试包
 
