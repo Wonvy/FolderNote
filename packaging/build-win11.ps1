@@ -21,7 +21,7 @@ Copy-Item "$root\build\Release\Install-Win11.exe" $out
 Copy-Item "$root\build\Release\Uninstall.exe" $out
 Copy-Item "$root\build\Release\Install.exe","$root\build\Release\FolderNote.exe","$root\build\Release\FolderNoteShell.dll","$root\build\Release\FolderNoteNavigation.dll" $out
 Copy-Item "$PSScriptRoot\README-Win11.md" $out
-Copy-Item "$root\README.md" $out
+Copy-Item "$root\README.md","$root\README.en.md" $out
 Copy-Item "$root\CHANGELOG.md","$root\CONTRIBUTING.md" $out
 Copy-Item -LiteralPath "$root\docs" -Destination $out -Recurse -Force
 New-Item -ItemType Directory -Force "$out\packaging" | Out-Null

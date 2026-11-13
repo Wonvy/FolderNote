@@ -1,4 +1,5 @@
 #include "quick_folders.h"
+#include "language.h"
 #include "quick_legacy.h"
 #include "tabs_routing.h"
 #include "navigation.h"
@@ -220,8 +221,8 @@ void configureStartup(const std::wstring &exe, bool enabled) {
     auto error = RegOpenKeyExW(HKEY_CURRENT_USER, runKey, 0, KEY_SET_VALUE, &key);
     if (!error) {
       error = RegDeleteValueW(key, runName); RegCloseKey(key);
-      if (error != ERROR_SUCCESS && error != ERROR_FILE_NOT_FOUND) fn::fail(L"无法移除快速定位启动项", error);
-    } else if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND) fn::fail(L"无法更新快速定位启动项", error);
+      if (error != ERROR_SUCCESS && error != ERROR_FILE_NOT_FOUND) fn::fail(lang::text(L"无法移除快速定位启动项"), error);
+    } else if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND) fn::fail(lang::text(L"无法更新快速定位启动项"), error);
     return;
   }
   HKEY key = nullptr;
@@ -229,7 +230,7 @@ void configureStartup(const std::wstring &exe, bool enabled) {
   auto error = RegCreateKeyExW(HKEY_CURRENT_USER, runKey, 0, nullptr, 0, KEY_SET_VALUE, nullptr, &key, nullptr);
   if (!error) { error = RegSetValueExW(key, runName, 0, REG_SZ,
       reinterpret_cast<const BYTE *>(command.c_str()), static_cast<DWORD>((command.size() + 1) * sizeof(wchar_t))); RegCloseKey(key); }
-  if (error) fn::fail(L"选项已保存，但无法启用快速定位启动项", error);
+  if (error) fn::fail(lang::text(L"选项已保存，但无法启用快速定位启动项"), error);
 }
 void stopHelper(bool removeStartup) {
   // Close transient menus as well, including a hidden 1.6.1 popup waiting in
@@ -262,7 +263,7 @@ void syncHelper(const std::wstring &exe) {
   configureStartup(exe, true);
   STARTUPINFOW startup{sizeof(startup)}; PROCESS_INFORMATION process{};
   if (!CreateProcessW(exe.c_str(), command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process))
-    fn::fail(L"选项已保存，但无法启动文件夹后台组件");
+    fn::fail(lang::text(L"选项已保存，但无法启动文件夹后台组件"));
   CloseHandle(process.hThread); CloseHandle(process.hProcess);
 }
 int helper(HINSTANCE instance) {

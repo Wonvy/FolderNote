@@ -1,4 +1,5 @@
 #include "quick_folders.h"
+#include "language.h"
 #include "quick_popup.h"
 #include "quick_menu_gate.h"
 #include "quick_dialog.h"
@@ -172,23 +173,23 @@ struct Popup {
   }
   void folder(Branch &branch, const std::wstring &path, unsigned depth = 0) {
     auto children = std::make_shared<Branch>();
-    add(*children, mode == MenuMode::Copy ? L"复制到此文件夹" : mode == MenuMode::Move ? L"移动到此文件夹" : L"在新窗口打开",
+    add(*children, mode == MenuMode::Copy ? lang::text(L"复制到此文件夹") : mode == MenuMode::Move ? lang::text(L"移动到此文件夹") : lang::text(L"在新窗口打开"),
         mode == MenuMode::Navigate ? Kind::NewWindow : Kind::Open,
         mode == MenuMode::Copy ? Symbol::Copy : mode == MenuMode::Move ? Symbol::Move : Symbol::Window, path);
-    add(*children, pinned(path) ? L"取消置顶" : L"置顶此文件夹", pinned(path) ? Kind::Unpin : Kind::Pin, pinned(path) ? Symbol::Unpin : Symbol::Star, path);
+    add(*children, pinned(path) ? lang::text(L"取消置顶") : lang::text(L"置顶此文件夹"), pinned(path) ? Kind::Unpin : Kind::Pin, pinned(path) ? Symbol::Unpin : Symbol::Star, path);
     separator(*children);
-    if (depth >= 8) hint(*children, L"更深的目录请直接打开");
+    if (depth >= 8) hint(*children, lang::text(L"更深的目录请直接打开"));
     else {
-      hint(*children, L"正在读取子文件夹…");
+      hint(*children, lang::text(L"正在读取子文件夹…"));
       children->poll = [this, path, depth, listing = std::shared_ptr<Scan>{}](Branch &target) mutable {
         if (!listing) { listing = scan(path); return false; }
         std::unique_lock lock(listing->mutex);
         if (!listing->done) return false;
         target.items.resize(3);
-        if (listing->error && listing->error != ERROR_FILE_NOT_FOUND) hint(target, L"目录暂不可用或无权访问");
-        else if (listing->folders.empty()) hint(target, L"没有子文件夹");
+        if (listing->error && listing->error != ERROR_FILE_NOT_FOUND) hint(target, lang::text(L"目录暂不可用或无权访问"));
+        else if (listing->folders.empty()) hint(target, lang::text(L"没有子文件夹"));
         else for (const auto &child : listing->folders) folder(target, child, depth + 1);
-        if (listing->more) hint(target, L"更多内容请打开此文件夹");
+        if (listing->more) hint(target, lang::text(L"更多内容请打开此文件夹"));
         return true;
       };
     }
@@ -203,7 +204,7 @@ struct Popup {
     if (!loaded) {
       state = load();
       const KNOWNFOLDERID *ids[]{&FOLDERID_Desktop, &FOLDERID_Documents, &FOLDERID_Downloads};
-      const wchar_t *names[]{L"桌面", L"文档", L"下载"};
+      const wchar_t *names[]{lang::text(L"桌面"), lang::text(L"文档"), lang::text(L"下载")};
       const Symbol symbols[]{Symbol::Desktop, Symbol::Documents, Symbol::Downloads};
       for (size_t i = 0; i < 3; ++i) {
         PWSTR path = nullptr;
@@ -217,30 +218,31 @@ struct Popup {
       for (const auto &place : known) if (same(place.path, current)) { root->items.back().title = place.title; break; }
     }
     auto actionTitle = [&](MenuMode action, bool enabled) {
-      std::wstring title = action == MenuMode::Copy ? L"复制" : L"移动";
-      if (!enabled) return title + L"：所选项目不支持此操作";
-      return mode == action ? L"取消" + title + L"，返回快速定位" : title + L"所选项目到…";
+      const bool copying = action == MenuMode::Copy;
+      if (!enabled) return copying ? lang::text(L"复制：所选项目不支持此操作") : lang::text(L"移动：所选项目不支持此操作");
+      if (mode == action) return copying ? lang::text(L"取消复制，返回快速定位") : lang::text(L"取消移动，返回快速定位");
+      return copying ? lang::text(L"复制所选项目到…") : lang::text(L"移动所选项目到…");
     };
     if (selectedCount) {
       root->items.back().actions = {
-          {command(Kind::Copy), Symbol::Copy, actionTitle(MenuMode::Copy, canCopy), canCopy, mode == MenuMode::Copy, L"复制"},
-          {command(Kind::Move), Symbol::Move, actionTitle(MenuMode::Move, canMove), canMove, mode == MenuMode::Move, L"移动"}};
+          {command(Kind::Copy), Symbol::Copy, actionTitle(MenuMode::Copy, canCopy), canCopy, mode == MenuMode::Copy, lang::text(L"复制")},
+          {command(Kind::Move), Symbol::Move, actionTitle(MenuMode::Move, canMove), canMove, mode == MenuMode::Move, lang::text(L"移动")}};
       root->items.back().leadingActions = 2;
     }
     if (!current.empty()) root->items.back().actions.push_back({command(pinned(current) ? Kind::Unpin : Kind::Pin, current), pinned(current) ? Symbol::Unpin : Symbol::Star,
-        pinned(current) ? L"取消置顶当前文件夹" : L"置顶当前文件夹"});
+        pinned(current) ? lang::text(L"取消置顶当前文件夹") : lang::text(L"置顶当前文件夹")});
     if (root->items.back().actions.empty()) root->items.clear();
     else {
-      if (mode != MenuMode::Navigate) hint(*root, L"单击目标文件夹，悬停展开子目录");
+      if (mode != MenuMode::Navigate) hint(*root, lang::text(L"单击目标文件夹，悬停展开子目录"));
       separator(*root);
     }
-    if (state.pins.empty()) hint(*root, L"暂无置顶");
+    if (state.pins.empty()) hint(*root, lang::text(L"暂无置顶"));
     for (const auto &path : state.pins) folder(*root, path);
     separator(*root);
     Item tabs; tabs.row = Row::Tabs;
     tabs.actions = {
-        {command(Kind::Recent), Symbol::History, L"最近访问", true, !showFrequent, L"最近访问"},
-        {command(Kind::Frequent), Symbol::History, L"最多访问", true, showFrequent, L"最多访问"}};
+        {command(Kind::Recent), Symbol::History, lang::text(L"最近访问"), true, !showFrequent, lang::text(L"最近访问")},
+        {command(Kind::Frequent), Symbol::History, lang::text(L"最多访问"), true, showFrequent, lang::text(L"最多访问")}};
     root->items.push_back(std::move(tabs));
     const size_t limit = showFrequent ? 10 : 8;
     std::vector<std::wstring> shown;
@@ -256,21 +258,25 @@ struct Popup {
     for (const auto &path : shown) {
       folder(*root, path);
     }
-    if (shown.empty()) hint(*root, L"暂无记录");
+    if (shown.empty()) hint(*root, lang::text(L"暂无记录"));
     auto history = std::make_shared<Branch>();
-    heading(*history, L"历史记录 · 最近 20 条");
+    heading(*history, lang::text(L"历史记录 · 最近 20 条"));
     for (const auto &path : state.history) folder(*history, path);
-    if (state.history.empty()) hint(*history, L"暂无历史记录");
-    root->items.push_back({L"历史记录（最近 20 条）", 0, Symbol::More, history});
+    if (state.history.empty()) hint(*history, lang::text(L"暂无历史记录"));
+    root->items.push_back({lang::text(L"历史记录（最近 20 条）"), 0, Symbol::More, history});
     if (mode != MenuMode::Navigate) {
-      separator(*root); heading(*root, L"常用位置");
+      separator(*root); heading(*root, lang::text(L"常用位置"));
       for (const auto &place : known) folder(*root, place.path);
     }
     separator(*root);
     Item toolbar; toolbar.row = Row::Toolbar;
-    if (selectedCount) toolbar.title = mode == MenuMode::Navigate ? L"已选 " + std::to_wstring(selectedCount) + L" 项" :
-        (mode == MenuMode::Copy ? L"复制 " : L"移动 ") + std::to_wstring(selectedCount) + L" 项到…";
-    toolbar.actions = {{command(Kind::Manage), Symbol::Settings, L"管理置顶与历史"}, {command(Kind::Clear), Symbol::Trash, L"清空历史"}};
+    if (selectedCount) {
+      const auto count = std::to_wstring(selectedCount);
+      if (mode == MenuMode::Navigate) toolbar.title = lang::format(L"已选 {0} 项", {count});
+      else if (mode == MenuMode::Copy) toolbar.title = lang::format(L"复制 {0} 项到…", {count});
+      else toolbar.title = lang::format(L"移动 {0} 项到…", {count});
+    }
+    toolbar.actions = {{command(Kind::Manage), Symbol::Settings, lang::text(L"管理置顶与历史")}, {command(Kind::Clear), Symbol::Trash, lang::text(L"清空历史")}};
     root->items.push_back(std::move(toolbar));
     root->invoke = [this, current](unsigned selected) {
       const auto found = commands.find(selected);
@@ -305,7 +311,7 @@ int menu(HINSTANCE instance, HWND target, HWND view, POINT point) {
   };
   auto currentRequest = [&] { return request.current() && navigation::quickEnabled() && validTarget(); };
   try {
-    if (!request.valid()) fn::fail(L"无法准备快速文件夹菜单", request.error());
+    if (!request.valid()) fn::fail(lang::text(L"无法准备快速文件夹菜单"), request.error());
     std::wstring current;
     ComPtr<IShellItemArray> selection;
     DWORD selectedCount = 0;
@@ -320,7 +326,7 @@ int menu(HINSTANCE instance, HWND target, HWND view, POINT point) {
       {
         detail::MenuGate gate;
         if (!gate.acquire()) {
-          if (gate.error() != ERROR_TIMEOUT) fn::fail(L"无法打开快速文件夹菜单", gate.error());
+          if (gate.error() != ERROR_TIMEOUT) fn::fail(lang::text(L"无法打开快速文件夹菜单"), gate.error());
           break;
         }
         if (!validTarget() || GetForegroundWindow() != target || !navigation::quickEnabled()) break;
@@ -377,14 +383,14 @@ int menu(HINSTANCE instance, HWND target, HWND view, POINT point) {
         pin(command.path, command.kind == Kind::Pin); repeat = true;
       } else if (command.kind == Kind::Manage) manage(instance);
       else if (command.kind == Kind::Clear) {
-        const auto answer = ui::message(nullptr, L"清空访问历史和访问次数？置顶文件夹将保留。", L"快速文件夹", MB_YESNO | MB_ICONQUESTION);
+        const auto answer = ui::message(nullptr, lang::text(L"清空访问历史和访问次数？置顶文件夹将保留。"), lang::text(L"快速文件夹"), MB_YESNO | MB_ICONQUESTION);
         if (!currentRequest()) break;
         if (answer == IDYES) clearHistory();
         repeat = true;
       } else if (command.kind == Kind::Open || command.kind == Kind::NewWindow) {
         const bool available = directoryAvailable(command.path);
         if (!currentRequest()) break;
-        if (!available) throw fn::Error{L"该文件夹不存在、无权访问或响应超时。置顶记录已保留。"};
+        if (!available) throw fn::Error{lang::text(L"该文件夹不存在、无权访问或响应超时。置顶记录已保留。")};
         PIDLIST_ABSOLUTE parsed = nullptr;
         const auto parsedResult = SHParseDisplayName(command.path.c_str(), nullptr, &parsed, 0, nullptr);
         struct ParsedId {
@@ -393,15 +399,15 @@ int menu(HINSTANCE instance, HWND target, HWND view, POINT point) {
           PIDLIST_ABSOLUTE get() const noexcept { return value; }
         } id{parsed};
         if (!currentRequest()) break;
-        if (FAILED(parsedResult)) throw fn::Error{L"无法打开这个文件夹。"};
+        if (FAILED(parsedResult)) throw fn::Error{lang::text(L"无法打开这个文件夹。")};
         if (mode != MenuMode::Navigate) {
           if (!selection || !browserFor(target, view) || !transfer::supports(selection.Get(), mode)) break;
           ComPtr<IShellItem> destination;
           const auto created = SHCreateItemFromIDList(id.get(), IID_PPV_ARGS(&destination));
-          if (FAILED(created)) fn::fail(L"无法访问目标文件夹", static_cast<DWORD>(created));
+          if (FAILED(created)) fn::fail(lang::text(L"无法访问目标文件夹"), static_cast<DWORD>(created));
           if (!currentRequest()) break;
           const auto transferred = transfer::perform(target, selection.Get(), destination.Get(), mode, currentRequest);
-          if (FAILED(transferred)) fn::fail(L"无法完成复制 / 移动操作", static_cast<DWORD>(transferred));
+          if (FAILED(transferred)) fn::fail(lang::text(L"无法完成复制 / 移动操作"), static_cast<DWORD>(transferred));
           if (transferred == S_OK) visit(command.path);
           break;
         }
@@ -425,14 +431,14 @@ int menu(HINSTANCE instance, HWND target, HWND view, POINT point) {
           ok = true;
         }
         if (!currentRequest()) break;
-        if (!ok) throw fn::Error{L"未能在原窗口定位文件夹。请确认窗口或标签页未切换，且程序未以管理员权限运行。\n不支持的自定义文件对话框可使用“在新窗口打开”。"};
+        if (!ok) throw fn::Error{lang::text(L"未能在原窗口定位文件夹。请确认窗口或标签页未切换，且程序未以管理员权限运行。\n不支持的自定义文件对话框可使用“在新窗口打开”。")};
         visit(command.path);
       }
     }
   } catch (const fn::Error &error) {
     // A late failure from an obsolete request must not steal focus back.
     if ((!started || request.current()) && navigation::quickEnabled() && validTarget())
-      ui::message(nullptr, error.message.c_str(), L"快速文件夹", MB_OK | MB_ICONINFORMATION);
+      ui::message(nullptr, error.message.c_str(), lang::text(L"快速文件夹"), MB_OK | MB_ICONINFORMATION);
     result = 1;
   }
     catch (...) { result = 1; }

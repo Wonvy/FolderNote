@@ -1,4 +1,5 @@
 #include "quick_dialog.h"
+#include "language.h"
 #include "quick_folders.h"
 
 namespace quick::dialog {
@@ -71,14 +72,14 @@ NavigateResult navigate(HWND target, const std::wstring &path, const detail::Men
 
 const wchar_t *failureMessage(NavigateResult result) noexcept {
   switch (result) {
-    case NavigateResult::TargetChanged: return L"原对话框或焦点已经改变，已取消定位。请回到原对话框后重试。";
-    case NavigateResult::ActivationFailed: return L"未能激活原文件对话框。请回到该对话框后重试。";
-    case NavigateResult::ModifierPressed: return L"请松开 Ctrl、Shift 和 Alt 键后重试文件夹定位。";
-    case NavigateResult::InputBlocked: return L"无法操作文件对话框的地址栏。请确认目标程序未以管理员权限运行。";
-    case NavigateResult::AddressUnavailable: return L"未能找到文件对话框的地址栏。不支持的自定义对话框可使用“在新窗口打开”。";
-    case NavigateResult::AddressWriteFailed: return L"无法填写文件对话框的地址栏。请确认目标程序未以管理员权限运行。";
-    case NavigateResult::AddressSubmitFailed: return L"文件对话框未响应地址栏定位，请稍后重试。";
-    default: return L"未能在原文件对话框定位文件夹。";
+    case NavigateResult::TargetChanged: return lang::text(L"原对话框或焦点已经改变，已取消定位。请回到原对话框后重试。");
+    case NavigateResult::ActivationFailed: return lang::text(L"未能激活原文件对话框。请回到该对话框后重试。");
+    case NavigateResult::ModifierPressed: return lang::text(L"请松开 Ctrl、Shift 和 Alt 键后重试文件夹定位。");
+    case NavigateResult::InputBlocked: return lang::text(L"无法操作文件对话框的地址栏。请确认目标程序未以管理员权限运行。");
+    case NavigateResult::AddressUnavailable: return lang::text(L"未能找到文件对话框的地址栏。不支持的自定义对话框可使用“在新窗口打开”。");
+    case NavigateResult::AddressWriteFailed: return lang::text(L"无法填写文件对话框的地址栏。请确认目标程序未以管理员权限运行。");
+    case NavigateResult::AddressSubmitFailed: return lang::text(L"文件对话框未响应地址栏定位，请稍后重试。");
+    default: return lang::text(L"未能在原文件对话框定位文件夹。");
   }
 }
 }

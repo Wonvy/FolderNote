@@ -1,4 +1,5 @@
 #include "core.h"
+#include "language.h"
 #include "navigation.h"
 #include "navigation_registration.h"
 #include "resource.h"
@@ -37,7 +38,7 @@ static fn::fs::path settingsShortcut() {
 #else
   PWSTR programs = nullptr;
   if (FAILED(SHGetKnownFolderPath(FOLDERID_Programs, KF_FLAG_DEFAULT, nullptr, &programs)))
-    throw fn::Error{L"无法定位当前用户的开始菜单。"};
+    throw fn::Error{lang::text(L"无法定位当前用户的开始菜单。")};
   fn::fs::path path = fn::fs::path(programs) / L"FolderNote" / L"FolderNote 设置.lnk";
   CoTaskMemFree(programs);
   return path;
@@ -51,7 +52,7 @@ static void createSettingsShortcut(const fn::fs::path &active) {
   if (SUCCEEDED(hr)) {
     hr = link->SetPath((active / L"FolderNote.exe").c_str());
     if (SUCCEEDED(hr)) hr = link->SetArguments(L"--settings");
-    if (SUCCEEDED(hr)) hr = link->SetDescription(L"设置文件夹备注、双击导航、中键快速定位和外观主题");
+    if (SUCCEEDED(hr)) hr = link->SetDescription(lang::text(L"设置文件夹备注、双击导航、中键快速定位和外观主题"));
     if (SUCCEEDED(hr)) hr = link->SetIconLocation((active / L"FolderNote.exe").c_str(), -IDI_FOLDERNOTE);
     IPersistFile *file = nullptr;
     if (SUCCEEDED(hr)) hr = link->QueryInterface(IID_PPV_ARGS(&file));
@@ -59,7 +60,7 @@ static void createSettingsShortcut(const fn::fs::path &active) {
     if (file) file->Release();
     link->Release();
   }
-  if (FAILED(hr)) throw fn::Error{L"无法创建 FolderNote 设置的开始菜单入口。"};
+  if (FAILED(hr)) throw fn::Error{lang::text(L"无法创建 FolderNote 设置的开始菜单入口。")};
 }
 static void registerMenus(const fn::fs::path &active, bool modern) {
   const auto icon = L"\"" + (active / L"FolderNote.exe").native() + L"\",-" +
@@ -76,7 +77,7 @@ static void registerMenus(const fn::fs::path &active, bool modern) {
       removeKey(verb); // The package owns the first-level commands; avoid duplicates.
       continue;
     }
-    value(verb, nullptr, fn::titles[i]);
+    value(verb, nullptr, lang::text(fn::titles[i]));
     value(verb, L"Icon", icon);
     value(verb, L"MultiSelectModel", i == 0 ? L"Single" : L"Player");
     value(verb + L"\\command", L"DelegateExecute", fn::ids[i]);
@@ -99,12 +100,12 @@ static bool isVersionDirectory(const fn::fs::path& p) {
 static void ordinaryDirectory(const fn::fs::path& p) {
   DWORD a=GetFileAttributesW(p.c_str());
   if(a==INVALID_FILE_ATTRIBUTES || !(a&FILE_ATTRIBUTE_DIRECTORY) || (a&FILE_ATTRIBUTE_REPARSE_POINT))
-    throw fn::Error{L"安装目录不是普通文件夹，已停止操作："+p.native()};
+    throw fn::Error{lang::format(L"安装目录不是普通文件夹，已停止操作：{0}", {p.native()})};
 }
 static void removePayload(const fn::fs::path& p,std::wstring& remaining) {
   DWORD attrs=GetFileAttributesW(p.c_str());
   if(attrs==INVALID_FILE_ATTRIBUTES)return;
-  if(attrs&FILE_ATTRIBUTE_REPARSE_POINT){remaining+=p.native()+L"（目录链接，未处理）\n";return;}
+  if(attrs&FILE_ATTRIBUTE_REPARSE_POINT){remaining+=lang::format(L"{0}（目录链接，未处理）\n", {p.native()});return;}
   for(auto name:payloadNames)if(!DeleteFileW((p/name).c_str())) {
     DWORD code=GetLastError();if(code!=ERROR_FILE_NOT_FOUND&&code!=ERROR_PATH_NOT_FOUND)remaining+=(p/name).native()+L"\n";
   }
@@ -112,12 +113,12 @@ static void removePayload(const fn::fs::path& p,std::wstring& remaining) {
 }
 static fn::fs::path stageVersion(const fn::fs::path& source,const fn::fs::path& root) {
   for(auto name:payloadNames)if(GetFileAttributesW((source/name).c_str())==INVALID_FILE_ATTRIBUTES)
-    throw fn::Error{L"安装包不完整，请完整解压后运行 Install.exe。"};
+    throw fn::Error{lang::text(L"安装包不完整，请完整解压后运行 Install.exe。")};
   fn::fs::create_directories(root);ordinaryDirectory(root);
   auto versions=root/L"Versions";fn::fs::create_directory(versions);ordinaryDirectory(versions);
-  GUID id; if(FAILED(CoCreateGuid(&id)))throw fn::Error{L"无法生成安装版本标识。"};
+  GUID id; if(FAILED(CoCreateGuid(&id)))throw fn::Error{lang::text(L"无法生成安装版本标识。")};
   wchar_t token[40];StringFromGUID2(id,token,40);auto version=versions/token;
-  if(!fn::fs::create_directory(version))throw fn::Error{L"版本目录已经存在，安装未继续。"};
+  if(!fn::fs::create_directory(version))throw fn::Error{lang::text(L"版本目录已经存在，安装未继续。")};
   try {for(auto name:payloadNames)if(!CopyFileW((source/name).c_str(),(version/name).c_str(),TRUE))fn::fail(L"无法复制新版程序文件");}
   catch(...){std::wstring unused;removePayload(version,unused);throw;}
   return version;
@@ -189,10 +190,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
     if (uninstall &&
         MessageBoxW(nullptr,
 #ifdef FOLDERNOTE_UNINSTALL_ONLY
-                    L"卸载当前用户的 FolderNote（通用版及 Win11 "
-                    L"首层菜单版），移除双击导航扩展及右键菜单？\n\n移除自动加载注册可能需要管理员授权。所有文件夹中的备注都会保留。",
+                    lang::text(L"卸载当前用户的 FolderNote（通用版及 Win11 "
+                    L"首层菜单版），移除双击导航扩展及右键菜单？\n\n移除自动加载注册可能需要管理员授权。所有文件夹中的备注都会保留。"),
 #else
-                    L"移除 FolderNote 和右键菜单？已保存的文件夹备注会保留。",
+                    lang::text(L"移除 FolderNote 和右键菜单？已保存的文件夹备注会保留。"),
 #endif
                     L"FolderNote", MB_YESNO | MB_ICONQUESTION) != IDYES) {
       LocalFree(args);
@@ -261,24 +262,22 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
       RemoveDirectoryW(dest.c_str());
 #ifdef FOLDERNOTE_UNINSTALL_ONLY
       if (!modernRemoved)
-        throw fn::Error{L"通用版卸载已执行，但 Win11 应用包未能移除。请在 Windows 设置 → "
-                        L"应用中卸载“FolderNote 文件夹备注”。备注数据未删除。"};
+        throw fn::Error{lang::text(L"通用版卸载已执行，但 Win11 应用包未能移除。请在 Windows 设置 → "
+                        L"应用中卸载“FolderNote 文件夹备注”。备注数据未删除。")};
 #endif
       if (!remaining.empty())
         result = 2;
-      MessageBoxW(nullptr,
-                  remaining.empty() ? L"已卸载。所有文件夹备注均已保留。"
-                                    : (L"右键菜单已移除，文件夹备注已保留。以下程序文件仍在使"
-                                       L"用，请关闭相关窗口或注销后删除：\n" +
-                                       remaining)
-                                          .c_str(),
-                  L"FolderNote", MB_OK | MB_ICONINFORMATION);
+      const std::wstring message = remaining.empty()
+          ? lang::text(L"已卸载。所有文件夹备注均已保留。")
+          : lang::format(L"右键菜单已移除，文件夹备注已保留。以下程序文件仍在使用，请关闭相关窗口或注销后删除：\n{0}",
+                         {remaining});
+      MessageBoxW(nullptr, message.c_str(), L"FolderNote", MB_OK | MB_ICONINFORMATION);
     } else {
       auto source = self.parent_path();
       for (auto name : {L"FolderNote.exe", L"FolderNoteShell.dll", L"FolderNoteNavigation.dll", L"Uninstall.exe"})
         if (GetFileAttributesW((source / name).c_str()) == INVALID_FILE_ATTRIBUTES)
-          throw fn::Error{L"请完整解压安装包，保持 Install.exe、FolderNote.exe、"
-                          L"FolderNoteShell.dll、FolderNoteNavigation.dll 和 Uninstall.exe 在同一文件夹。"};
+          throw fn::Error{lang::text(L"请完整解压安装包，保持 Install.exe、FolderNote.exe、"
+                          L"FolderNoteShell.dll、FolderNoteNavigation.dll 和 Uninstall.exe 在同一文件夹。")};
       navreg::ensureMachine(self);
       auto active=stageVersion(source,dest);
       const auto icon = L"\"" + (active / L"FolderNote.exe").native() + L"\",-" +
@@ -289,7 +288,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
       createSettingsShortcut(active);
       std::wstring u = L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstal"
                        L"l\\FolderNote";
-      value(u, L"DisplayName", L"FolderNote 系统工具");
+      value(u, L"DisplayName", lang::text(L"FolderNote 系统工具"));
       value(u, L"DisplayVersion", app::version);
       value(u, L"DisplayIcon", icon);
       value(u, L"UninstallString", L"\"" + (active / L"Uninstall.exe").native() + L"\"");
@@ -300,16 +299,16 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
       quick::syncHelper((active / L"FolderNote.exe").native());
 #endif
       MessageBoxW(nullptr,
-                  L"安装完成。从开始菜单搜索“FolderNote 设置”调整功能和主题。首次安装默认开启双击返回上一级，备注和中键快速定位默认关闭。覆盖升级保留已有选择、备注、置顶和历史记录。\n\n"
+                  lang::text(L"安装完成。从开始菜单搜索“FolderNote 设置”调整功能和主题。首次安装默认开启双击返回上一级，备注和中键快速定位默认关闭。覆盖升级保留已有选择、备注、置顶和历史记录。\n\n"
                   L"新版使用独立目录，不受旧文件占用影响。安装器不会注销或重启资源管理器；请关闭并重新打开文件夹窗口以加载新版扩展。\n\n"
-                  L"通用版右键菜单在 Windows 11 的“显示更多选项”中；首层菜单请使用 Win11 安装包。",
+                  L"通用版右键菜单在 Windows 11 的“显示更多选项”中；首层菜单请使用 Win11 安装包。"),
                   L"FolderNote", MB_OK | MB_ICONINFORMATION);
     }
   } catch (const fn::Error &e) {
-    MessageBoxW(nullptr, e.message.c_str(), L"FolderNote 操作未完成", MB_OK | MB_ICONERROR);
+    MessageBoxW(nullptr, e.message.c_str(), lang::text(L"FolderNote 操作未完成"), MB_OK | MB_ICONERROR);
     result = 1;
   } catch (...) {
-    MessageBoxW(nullptr, L"安装或卸载失败，请检查文件权限。", L"FolderNote", MB_OK | MB_ICONERROR);
+    MessageBoxW(nullptr, lang::text(L"安装或卸载失败，请检查文件权限。"), L"FolderNote", MB_OK | MB_ICONERROR);
     result = 1;
   }
   LocalFree(args);

@@ -1,4 +1,5 @@
 #include "update.h"
+#include "language.h"
 #include "core.h"
 #include <array>
 #include <bcrypt.h>
@@ -37,12 +38,12 @@ std::array<unsigned, 3> versionParts(std::wstring_view version) {
   std::array<unsigned, 3> parts{};
   for (size_t i = 0; i < parts.size(); ++i) {
     auto end = version.find(L'.');
-    if ((end == version.npos) != (i == parts.size() - 1)) throw fn::Error{invalidRelease};
+    if ((end == version.npos) != (i == parts.size() - 1)) throw fn::Error{lang::text(invalidRelease)};
     auto part = version.substr(0, end);
     if (part.empty() || part.size() > 5 || part.find_first_not_of(L"0123456789") != part.npos)
-      throw fn::Error{invalidRelease};
+      throw fn::Error{lang::text(invalidRelease)};
     for (auto digit : part) parts[i] = parts[i] * 10 + static_cast<unsigned>(digit - L'0');
-    if (parts[i] > 65535) throw fn::Error{invalidRelease};
+    if (parts[i] > 65535) throw fn::Error{lang::text(invalidRelease)};
     version.remove_prefix(part.size() + (end != version.npos ? 1 : 0));
   }
   return parts;
@@ -61,7 +62,7 @@ void get(const std::wstring &url, size_t limit, DWORD deadlineMs, Read read) {
   if (!WinHttpCrackUrl(url.c_str(), 0, 0, &parts) || parts.nScheme != INTERNET_SCHEME_HTTPS ||
       parts.nPort != INTERNET_DEFAULT_HTTPS_PORT || parts.dwUserNameLength || parts.dwPasswordLength ||
       !parts.dwHostNameLength || !parts.dwUrlPathLength)
-    throw fn::Error{L"更新下载地址无效。"};
+    throw fn::Error{lang::text(L"更新下载地址无效。")};
 
   auto deadline = GetTickCount64() + deadlineMs;
   const std::wstring host(parts.lpszHostName, parts.dwHostNameLength);
@@ -72,34 +73,34 @@ void get(const std::wstring &url, size_t limit, DWORD deadlineMs, Read read) {
   HttpHandle session{WinHttpOpen(L"FolderNote Update", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
                                 WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0)};
   if (!session.value || !WinHttpSetTimeouts(session.value, 5000, 5000, 10000, 10000))
-    fn::fail(L"无法准备 GitHub 连接");
+    fn::fail(lang::text(L"无法准备 GitHub 连接"));
   HttpHandle connection{WinHttpConnect(session.value, host.c_str(), parts.nPort, 0)};
-  if (!connection.value) fn::fail(L"无法连接 GitHub");
+  if (!connection.value) fn::fail(lang::text(L"无法连接 GitHub"));
   HttpHandle request{WinHttpOpenRequest(connection.value, L"GET", path.c_str(), nullptr,
                                        WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE)};
-  if (!request.value) fn::fail(L"无法准备 GitHub 请求");
+  if (!request.value) fn::fail(lang::text(L"无法准备 GitHub 请求"));
   DWORD redirects = 5, policy = WINHTTP_OPTION_REDIRECT_POLICY_DISALLOW_HTTPS_TO_HTTP;
   if (!WinHttpSetOption(request.value, WINHTTP_OPTION_REDIRECT_POLICY, &policy, sizeof(policy)) ||
       !WinHttpSetOption(request.value, WINHTTP_OPTION_MAX_HTTP_AUTOMATIC_REDIRECTS, &redirects, sizeof(redirects)) ||
       !WinHttpSendRequest(request.value, headers, headers ? DWORD(-1) : 0,
                           WINHTTP_NO_REQUEST_DATA, 0, 0, 0) ||
-      !WinHttpReceiveResponse(request.value, nullptr)) fn::fail(L"无法从 GitHub 获取更新");
+      !WinHttpReceiveResponse(request.value, nullptr)) fn::fail(lang::text(L"无法从 GitHub 获取更新"));
   DWORD status = 0, bytes = sizeof(status);
   if (!WinHttpQueryHeaders(request.value, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
                            WINHTTP_HEADER_NAME_BY_INDEX, &status, &bytes, WINHTTP_NO_HEADER_INDEX))
-    fn::fail(L"无法读取 GitHub 响应");
-  if (status == 404) throw fn::Error{L"GitHub 上找不到公开发布或对应的安装包。"};
-  if (status != 200) throw fn::Error{L"GitHub 请求失败（HTTP " + std::to_wstring(status) + L"）。"};
+    fn::fail(lang::text(L"无法读取 GitHub 响应"));
+  if (status == 404) throw fn::Error{lang::text(L"GitHub 上找不到公开发布或对应的安装包。")};
+  if (status != 200) throw fn::Error{lang::format(L"GitHub 请求失败（HTTP {0}）。", {std::to_wstring(status)})};
 
   std::array<char, 16384> buffer;
   size_t total = 0;
   for (;;) {
-    if (GetTickCount64() >= deadline) throw fn::Error{L"下载 GitHub 更新超时。"};
+    if (GetTickCount64() >= deadline) throw fn::Error{lang::text(L"下载 GitHub 更新超时。")};
     DWORD received = 0;
     if (!WinHttpReadData(request.value, buffer.data(), static_cast<DWORD>(buffer.size()), &received))
-      fn::fail(L"下载 GitHub 更新时连接中断");
+      fn::fail(lang::text(L"下载 GitHub 更新时连接中断"));
     if (!received) break;
-    if (received > limit - total) throw fn::Error{L"GitHub 返回的更新文件过大。"};
+    if (received > limit - total) throw fn::Error{lang::text(L"GitHub 返回的更新文件过大。")};
     read(buffer.data(), received);
     total += received;
   }
@@ -113,7 +114,7 @@ struct Runtime {
 std::wstring jsonString(IJsonObject *object, const wchar_t *name) {
   HString value;
   if (FAILED(object->GetNamedString(HStringReference(name).Get(), value.GetAddressOf())))
-    throw fn::Error{invalidRelease};
+    throw fn::Error{lang::text(invalidRelease)};
   unsigned length = 0;
   const auto data = value.GetRawBuffer(&length);
   return std::wstring(data, length);
@@ -122,10 +123,10 @@ std::wstring jsonString(IJsonObject *object, const wchar_t *name) {
 std::wstring wideUtf8(const std::string &value) {
   const auto size = static_cast<int>(value.size());
   const auto chars = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), size, nullptr, 0);
-  if (!chars) throw fn::Error{invalidRelease};
+  if (!chars) throw fn::Error{lang::text(invalidRelease)};
   std::wstring wide(chars, L'\0');
   if (!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), size, wide.data(), chars))
-    throw fn::Error{invalidRelease};
+    throw fn::Error{lang::text(invalidRelease)};
   return wide;
 }
 
@@ -143,19 +144,19 @@ std::wstring downloadDigest(const std::wstring &url, const fn::fs::path &path) {
   Sha256 digest;
   if (BCryptOpenAlgorithmProvider(&digest.algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0) ||
       BCryptCreateHash(digest.algorithm, &digest.hash, nullptr, 0, nullptr, 0, 0))
-    throw fn::Error{L"无法初始化更新校验。"};
+    throw fn::Error{lang::text(L"无法初始化更新校验。")};
   std::ofstream file(path, std::ios::binary);
-  if (!file) throw fn::Error{L"无法写入临时安装包。"};
+  if (!file) throw fn::Error{lang::text(L"无法写入临时安装包。")};
   get(url, packageLimit, 180000, [&](char *buffer, DWORD length) {
-    if (!file.write(buffer, length)) throw fn::Error{L"无法保存临时安装包。"};
+    if (!file.write(buffer, length)) throw fn::Error{lang::text(L"无法保存临时安装包。")};
     if (BCryptHashData(digest.hash, reinterpret_cast<PUCHAR>(buffer), length, 0))
-      throw fn::Error{L"无法校验更新安装包。"};
+      throw fn::Error{lang::text(L"无法校验更新安装包。")};
   });
   file.close();
-  if (!file) throw fn::Error{L"无法保存临时安装包。"};
+  if (!file) throw fn::Error{lang::text(L"无法保存临时安装包。")};
   std::array<UCHAR, 32> hash{};
   if (BCryptFinishHash(digest.hash, hash.data(), static_cast<ULONG>(hash.size()), 0))
-    throw fn::Error{L"无法校验更新安装包。"};
+    throw fn::Error{lang::text(L"无法校验更新安装包。")};
   constexpr wchar_t hex[] = L"0123456789abcdef";
   std::wstring encoded;
   for (auto byte : hash) { encoded += hex[byte >> 4]; encoded += hex[byte & 15]; }
@@ -168,9 +169,9 @@ struct Staging {
     GUID guid{};
     wchar_t token[40]{};
     if (FAILED(CoCreateGuid(&guid)) || !StringFromGUID2(guid, token, ARRAYSIZE(token)))
-      throw fn::Error{L"无法准备更新目录。"};
+      throw fn::Error{lang::text(L"无法准备更新目录。")};
     path = fn::fs::temp_directory_path() / (std::wstring(L"FolderNote-Update-") + token);
-    if (!CreateDirectoryW(path.c_str(), nullptr)) fn::fail(L"无法创建更新目录");
+    if (!CreateDirectoryW(path.c_str(), nullptr)) fn::fail(lang::text(L"无法创建更新目录"));
   }
   ~Staging() {
     if (path.empty()) return;
@@ -206,7 +207,7 @@ void run(const fn::fs::path &program, const fn::fs::path &workingDirectory, cons
 void extract(const fn::fs::path &directory, bool win11Package) {
   wchar_t system[MAX_PATH]{};
   auto length = GetSystemDirectoryW(system, ARRAYSIZE(system));
-  if (!length || length >= ARRAYSIZE(system)) throw fn::Error{L"找不到 Windows 解压组件。"};
+  if (!length || length >= ARRAYSIZE(system)) throw fn::Error{lang::text(L"找不到 Windows 解压组件。")};
   const auto powershell = fn::fs::path(system) / L"WindowsPowerShell/v1.0/powershell.exe";
   // Use only fixed filenames. Extracting selected entries prevents paths from
   // the archive from escaping staging or introducing files beside the installer.
@@ -222,12 +223,12 @@ void extract(const fn::fs::path &directory, bool win11Package) {
             L"$total+=$entry.Length; if ($total -gt 200MB) { throw 'Installer files are too large' }; "
             L"[IO.Compression.ZipFileExtensions]::ExtractToFile($entry,[IO.Path]::Combine($directory,$name),$false) "
             L"} } finally { $zip.Dispose() }\"";
-  run(powershell, directory, script, L"无法解压更新安装包。", true);
+  run(powershell, directory, script, lang::text(L"无法解压更新安装包。"), true);
 }
 } // namespace
 
 std::optional<Release> check(const std::wstring &repository, const std::wstring &currentVersion, bool win11Package) {
-  if (!repositoryName(repository)) throw fn::Error{L"当前构建没有有效的 GitHub 更新仓库。"};
+  if (!repositoryName(repository)) throw fn::Error{lang::text(L"当前构建没有有效的 GitHub 更新仓库。")};
   std::string content;
   get(L"https://api.github.com/repos/" + repository + L"/releases/latest", metadataLimit, 20000,
       [&](const char *buffer, DWORD size) { content.append(buffer, size); });
@@ -236,49 +237,49 @@ std::optional<Release> check(const std::wstring &repository, const std::wstring 
   if ((FAILED(runtime.status) && runtime.status != RPC_E_CHANGED_MODE) ||
       FAILED(RoGetActivationFactory(HStringReference(RuntimeClass_Windows_Data_Json_JsonObject).Get(),
                                     IID_PPV_ARGS(&parser))))
-    throw fn::Error{L"无法读取 GitHub 发布信息。"};
+    throw fn::Error{lang::text(L"无法读取 GitHub 发布信息。")};
   const auto wide = wideUtf8(content);
   HString body;
   ComPtr<IJsonObject> object;
   if (FAILED(body.Set(wide.data(), static_cast<unsigned>(wide.size()))) ||
-      FAILED(parser->Parse(body.Get(), &object))) throw fn::Error{invalidRelease};
+      FAILED(parser->Parse(body.Get(), &object))) throw fn::Error{lang::text(invalidRelease)};
   const auto tag = jsonString(object.Get(), L"tag_name");
-  if (!tag.starts_with(L'v')) throw fn::Error{invalidRelease};
+  if (!tag.starts_with(L'v')) throw fn::Error{lang::text(invalidRelease)};
   const auto version = tag.substr(1);
   if (versionParts(version) <= versionParts(currentVersion)) return {};
   ComPtr<IJsonArray> assets;
   ComPtr<ABI::Windows::Foundation::Collections::IVector<IJsonValue *>> entries;
   unsigned count = 0;
   if (FAILED(object->GetNamedArray(HStringReference(L"assets").Get(), &assets)) ||
-      FAILED(assets.As(&entries)) || FAILED(entries->get_Size(&count))) throw fn::Error{invalidRelease};
+      FAILED(assets.As(&entries)) || FAILED(entries->get_Size(&count))) throw fn::Error{lang::text(invalidRelease)};
   for (unsigned i = 0; i < count; ++i) {
     ComPtr<IJsonObject> asset;
-    if (FAILED(assets->GetObjectAt(i, &asset))) throw fn::Error{invalidRelease};
+    if (FAILED(assets->GetObjectAt(i, &asset))) throw fn::Error{lang::text(invalidRelease)};
     if (jsonString(asset.Get(), L"name") != packageName(win11Package)) continue;
     auto url = jsonString(asset.Get(), L"browser_download_url");
     const auto expected = L"https://github.com/" + repository + L"/releases/download/" + tag + L"/" + packageName(win11Package);
     if (CompareStringOrdinal(url.c_str(), static_cast<int>(url.size()), expected.c_str(),
-                             static_cast<int>(expected.size()), TRUE) != CSTR_EQUAL) throw fn::Error{invalidRelease};
+                             static_cast<int>(expected.size()), TRUE) != CSTR_EQUAL) throw fn::Error{lang::text(invalidRelease)};
     auto digest = jsonString(asset.Get(), L"digest");
     if (!digest.starts_with(L"sha256:") || !validDigest(std::wstring_view(digest).substr(7)))
-      throw fn::Error{L"GitHub 发布缺少有效的 SHA-256 校验值。"};
+      throw fn::Error{lang::text(L"GitHub 发布缺少有效的 SHA-256 校验值。")};
     return Release{version, std::move(url), digest.substr(7), win11Package};
   }
-  throw fn::Error{L"GitHub 发布缺少适用的安装包。"};
+  throw fn::Error{lang::text(L"GitHub 发布缺少适用的安装包。")};
 }
 
 void install(const Release &release) {
   Staging staging;
   const auto digest = downloadDigest(release.downloadUrl, staging.path / L"update.zip");
   if (_wcsicmp(digest.c_str(), release.sha256.c_str()) != 0)
-    throw fn::Error{L"安装包 SHA-256 校验失败，请重新下载。"};
+    throw fn::Error{lang::text(L"安装包 SHA-256 校验失败，请重新下载。")};
   extract(staging.path, release.win11Package);
   if (release.win11Package) {
     run(staging.path / L"Install-Win11.exe", staging.path, L"--parent " + std::to_wstring(GetCurrentProcessId()),
-        L"无法启动更新安装。", false, false);
+        lang::text(L"无法启动更新安装。"), false, false);
     // MSIX replacement waits for this process to close. Its detached installer
     // still needs the unpacked files, so leave staging in the temporary directory.
     staging.path.clear();
-  } else run(staging.path / L"Install.exe", staging.path, L"", L"更新安装未完成。");
+  } else run(staging.path / L"Install.exe", staging.path, L"", lang::text(L"更新安装未完成。"));
 }
 }

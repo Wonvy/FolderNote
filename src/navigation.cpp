@@ -6,6 +6,8 @@
 #include "theme_scroll.h"
 #include "app_version.h"
 #include "update.h"
+#include "language.h"
+#include <commdlg.h>
 #include <dwmapi.h>
 #include <appmodel.h>
 #include <shlobj.h>
@@ -128,10 +130,10 @@ struct SettingKeys {
 
 static void applySettings(bool notes, Action action, Action preferred, bool quick, bool dialogs, ui::ThemeMode theme, bool tabs, bool preferNewTab, bool saveConfiguration) {
   if (action != Action::Off && action != Action::Parent && action != Action::Back)
-    throw fn::Error{L"请选择有效的双击操作。"};
+    throw fn::Error{lang::text(L"请选择有效的双击操作。")};
   if (preferred != Action::Parent && preferred != Action::Back)
-    throw fn::Error{L"请选择有效的双击操作。"};
-  if (DWORD(theme) > 2) throw fn::Error{L"请选择有效的主题。"};
+    throw fn::Error{lang::text(L"请选择有效的双击操作。")};
+  if (DWORD(theme) > 2) throw fn::Error{lang::text(L"请选择有效的主题。")};
   SettingKeys keys;
   LSTATUS error = ERROR_SUCCESS;
   std::array<SettingValue, 11> saved;
@@ -184,7 +186,7 @@ static void applySettings(bool notes, Action action, Action preferred, bool quic
       for (const auto &previous : saved)
         restored = previous.restore() == ERROR_SUCCESS && restored;
       if (!restored)
-        throw fn::Error{L"设置未能完整保存或恢复，请重新打开设置检查功能开关。"};
+        throw fn::Error{lang::text(L"设置未能完整保存或恢复，请重新打开设置检查功能开关。")};
       fn::fail(L"设置未保存，已恢复原有开关", error);
     }
     value.changed = true;
@@ -220,6 +222,45 @@ static HWND body, themeChoice, settingsWindow, managerPage;
 static SettingsPage activePage = SettingsPage::Features;
 static UINT selectPageMessage() { return RegisterWindowMessageW(L"FolderNote.Settings.SelectPage.v1"); }
 static std::unique_ptr<ui::Theme> appearance;
+static constexpr int languageChoice = 43, languageExport = 44, languageImport = 45;
+static bool reopenForLanguage = false;
+struct SettingsDraft {
+  std::array<LRESULT, 6> toggles;
+  LRESULT action;
+  ui::ThemeMode theme;
+};
+static std::optional<SettingsDraft> languageDraft;
+
+static void refreshLanguageMenus() {
+  for (size_t i = 0; i < std::size(fn::verbs); ++i) {
+    auto path = std::wstring(L"Software\\Classes\\Directory\\shell\\") + fn::verbs[i];
+    HKEY key = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, path.c_str(), 0, KEY_SET_VALUE, &key) != ERROR_SUCCESS) continue;
+    auto title = lang::text(fn::titles[i]);
+    RegSetValueExW(key, nullptr, 0, REG_SZ, reinterpret_cast<const BYTE *>(title),
+                   static_cast<DWORD>((wcslen(title) + 1) * sizeof(wchar_t)));
+    RegCloseKey(key);
+  }
+  SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
+}
+
+static std::wstring languagePath(HWND owner, bool importing) {
+  std::wstring path(32768, L'\0');
+  if (!importing) wcscpy_s(path.data(), path.size(), L"FolderNote-language.xml");
+  OPENFILENAMEW dialog{sizeof(dialog)};
+  dialog.hwndOwner = owner;
+  dialog.lpstrFilter = L"XML (*.xml)\0*.xml\0\0";
+  dialog.lpstrFile = path.data();
+  dialog.nMaxFile = static_cast<DWORD>(path.size());
+  dialog.lpstrDefExt = L"xml";
+  dialog.Flags = OFN_NOCHANGEDIR | OFN_PATHMUSTEXIST | (importing ? OFN_FILEMUSTEXIST : OFN_OVERWRITEPROMPT);
+  if (!(importing ? GetOpenFileNameW(&dialog) : GetSaveFileNameW(&dialog))) {
+    if (CommDlgExtendedError()) throw std::runtime_error("File picker failed");
+    return {};
+  }
+  path.resize(wcslen(path.c_str()));
+  return path;
+}
 static constexpr int updateButton = 42;
 static constexpr UINT_PTR updateTimer = 42;
 struct UpdateResult {
@@ -251,7 +292,7 @@ static void startUpdateWork(HWND owner, std::optional<updater::Release> release 
         else return UpdateResult{updater::check(app::updateRepository, app::version, modern), {}};
         return UpdateResult{};
       } catch (const fn::Error &error) { return UpdateResult{{}, error.message}; }
-      catch (...) { return UpdateResult{{}, L"更新失败，请稍后重试。"}; }
+      catch (...) { return UpdateResult{{}, lang::text(L"更新失败，请稍后重试。")}; }
     });
     auto future = task.get_future();
     if (!SetTimer(owner, updateTimer, 100, nullptr)) fn::fail(L"无法启动更新检查");
@@ -259,15 +300,17 @@ static void startUpdateWork(HWND owner, std::optional<updater::Release> release 
     updateWork = std::move(future);
     installingUpdate = install;
     HWND button = GetDlgItem(owner, updateButton);
-    SetWindowTextW(button, install ? L"正在下载并安装…" : L"正在检查更新…");
+    SetWindowTextW(button, install ? lang::text(L"正在下载并安装…") : lang::text(L"正在检查更新…"));
     EnableWindow(button, FALSE);
     if (install) {
       EnableWindow(GetDlgItem(owner, IDOK), FALSE);
       EnableWindow(GetDlgItem(owner, IDCANCEL), FALSE);
+      EnableWindow(GetDlgItem(owner, languageChoice), FALSE);
+      EnableWindow(GetDlgItem(owner, languageImport), FALSE);
     }
   } catch (...) {
     KillTimer(owner, updateTimer);
-    MessageBoxW(owner, L"无法启动更新，请重试。", L"FolderNote 更新", MB_OK | MB_ICONERROR);
+    MessageBoxW(owner, lang::text(L"无法启动更新，请重试。"), lang::text(L"FolderNote 更新"), MB_OK | MB_ICONERROR);
   }
 }
 static void finishUpdateWork(HWND owner) {
@@ -278,19 +321,21 @@ static void finishUpdateWork(HWND owner) {
   const bool installerStarted = installingUpdate && result.error.empty();
   installingUpdate = false;
   HWND button = GetDlgItem(owner, updateButton);
-  SetWindowTextW(button, L"检查更新");
+  SetWindowTextW(button, lang::text(L"检查更新"));
   EnableWindow(button, TRUE);
   EnableWindow(GetDlgItem(owner, IDOK), TRUE);
   EnableWindow(GetDlgItem(owner, IDCANCEL), TRUE);
+  EnableWindow(GetDlgItem(owner, languageChoice), TRUE);
+  EnableWindow(GetDlgItem(owner, languageImport), TRUE);
   if (installerStarted) { DestroyWindow(owner); return; }
   if (!result.error.empty()) {
-    MessageBoxW(owner, result.error.c_str(), L"FolderNote 更新", MB_OK | MB_ICONERROR);
+    MessageBoxW(owner, result.error.c_str(), lang::text(L"FolderNote 更新"), MB_OK | MB_ICONERROR);
   } else if (result.release) {
-    auto prompt = L"发现 FolderNote " + result.release->version + L"。现在从 GitHub 下载并启动安装吗？";
-    if (MessageBoxW(owner, prompt.c_str(), L"FolderNote 更新", MB_YESNO | MB_ICONQUESTION) == IDYES)
+    auto prompt = lang::format(L"发现 FolderNote {0}。现在从 GitHub 下载并启动安装吗？", {result.release->version});
+    if (MessageBoxW(owner, prompt.c_str(), lang::text(L"FolderNote 更新"), MB_YESNO | MB_ICONQUESTION) == IDYES)
       startUpdateWork(owner, std::move(result.release));
   } else {
-    MessageBoxW(owner, L"当前已是最新版本。", L"FolderNote 更新", MB_OK | MB_ICONINFORMATION);
+    MessageBoxW(owner, lang::text(L"当前已是最新版本。"), lang::text(L"FolderNote 更新"), MB_OK | MB_ICONINFORMATION);
   }
 }
 static int scrollPosition = 0;
@@ -322,7 +367,7 @@ static void copyDiagnostics(HWND owner) {
     GlobalFree(memory);
     fn::fail(L"无法复制诊断信息");
   }
-  MessageBoxW(owner, L"诊断信息已复制，可粘贴给开发者排查。", L"FolderNote", MB_OK | MB_ICONINFORMATION);
+  MessageBoxW(owner, lang::text(L"诊断信息已复制，可粘贴给开发者排查。"), L"FolderNote", MB_OK | MB_ICONINFORMATION);
 }
 static void layoutBody() {
   if (!body) return;
@@ -344,6 +389,10 @@ static void layoutSettings() {
   MoveWindow(GetDlgItem(settingsWindow, 31), scale(20), height - scale(76), scale(176), scale(22), TRUE);
   MoveWindow(GetDlgItem(settingsWindow, updateButton), scale(20), height - scale(44), scale(168), scale(32), TRUE);
   for (int id : {40, 41}) MoveWindow(GetDlgItem(settingsWindow, id), scale(12), scale(103 + (id - 40) * 48), scale(184), scale(40), TRUE);
+  MoveWindow(GetDlgItem(settingsWindow, 46), scale(20), scale(213), scale(172), scale(22), TRUE);
+  MoveWindow(GetDlgItem(settingsWindow, languageChoice), scale(20), scale(237), scale(168), scale(130), TRUE);
+  MoveWindow(GetDlgItem(settingsWindow, languageExport), scale(20), scale(275), scale(168), scale(32), TRUE);
+  MoveWindow(GetDlgItem(settingsWindow, languageImport), scale(20), scale(315), scale(168), scale(32), TRUE);
   MoveWindow(GetDlgItem(settingsWindow, 32), width - scale(210), scale(15), scale(186), scale(20), TRUE);
   MoveWindow(themeChoice, width - scale(210), scale(40), scale(186), scale(160), TRUE);
   int bodyHeight = std::max(scale(40), height - scale(166));
@@ -363,7 +412,7 @@ static void showPage(SettingsPage page) {
   if (page == SettingsPage::QuickFolders) quick::refreshManagerPage(managerPage);
   ShowWindow(body, page == SettingsPage::Features ? SW_SHOWNA : SW_HIDE);
   ShowWindow(managerPage, page == SettingsPage::QuickFolders ? SW_SHOWNA : SW_HIDE);
-  SetWindowTextW(GetDlgItem(settingsWindow, 30), page == SettingsPage::Features ? L"功能设置" : L"置顶与历史");
+  SetWindowTextW(GetDlgItem(settingsWindow, 30), page == SettingsPage::Features ? lang::text(L"功能设置") : lang::text(L"置顶与历史"));
   for (int id : {40, 41}) InvalidateRect(GetDlgItem(settingsWindow, id), nullptr, TRUE);
   layoutSettings();
 }
@@ -426,7 +475,7 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
       if (selected || (item->itemState & (ODS_SELECTED | ODS_FOCUS | ODS_HOTLIGHT))) ui::rounded(item->hDC, rect, p.hover, p.hover, scale(6));
       if (selected) { RECT marker{rect.left, rect.top + scale(10), rect.left + scale(3), rect.bottom - scale(10)}; ui::rounded(item->hDC, marker, p.accent, p.accent, scale(1)); }
       rect.left += scale(16); auto old = SelectObject(item->hDC, font);
-      ui::text(item->hDC, item->CtlID == 40 ? L"功能设置" : L"置顶与历史", rect, selected && p.highContrast ? p.onAccent : p.text);
+      ui::text(item->hDC, item->CtlID == 40 ? lang::text(L"功能设置") : lang::text(L"置顶与历史"), rect, selected && p.highContrast ? p.onAccent : p.text);
       SelectObject(item->hDC, old);
       if ((item->itemState & ODS_FOCUS) && !(item->itemState & ODS_NOFOCUSRECT)) DrawFocusRect(item->hDC, &rect);
       return TRUE;
@@ -446,22 +495,36 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     };
     HWND logo = add(h, L"STATIC", L"FolderNote", 0, 35);
     SendMessageW(logo, WM_SETFONT, reinterpret_cast<WPARAM>(headingFont), TRUE);
-    ui::muted(add(h, L"STATIC", L"系统工具", 0, 36));
+    ui::muted(add(h, L"STATIC", lang::text(L"系统工具"), 0, 36));
     for (int id : {40, 41}) {
-      auto button = add(h, L"BUTTON", id == 40 ? L"功能设置" : L"置顶与历史", BS_OWNERDRAW | WS_TABSTOP, id);
+      auto button = add(h, L"BUTTON", id == 40 ? lang::text(L"功能设置") : lang::text(L"置顶与历史"), BS_OWNERDRAW | WS_TABSTOP, id);
       SetWindowSubclass(button, sidebarProc, 1, 0);
     }
-    HWND title = add(h, L"STATIC", L"功能设置", 0, 30);
+    HWND title = add(h, L"STATIC", lang::text(L"功能设置"), 0, 30);
     SendMessageW(title, WM_SETFONT, reinterpret_cast<WPARAM>(headingFont), TRUE);
-    ui::muted(add(h, L"STATIC", app::versionLabel, SS_LEFT | SS_NOPREFIX, 31));
-    add(h, L"BUTTON", L"检查更新", WS_TABSTOP, updateButton);
-    ui::muted(add(h, L"STATIC", L"外观主题", 0, 32));
+    const auto version = lang::format(L"版本 {0} · x64", {app::version});
+    ui::muted(add(h, L"STATIC", version.c_str(), SS_LEFT | SS_NOPREFIX, 31));
+    add(h, L"BUTTON", lang::text(L"检查更新"), WS_TABSTOP, updateButton);
+    ui::muted(add(h, L"STATIC", lang::text(L"外观主题"), 0, 32));
     constexpr DWORD comboStyle = CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS | WS_TABSTOP;
+    ui::muted(add(h, L"STATIC", lang::text(L"界面语言"), 0, 46));
+    HWND language = add(h, L"COMBOBOX", L"", comboStyle, languageChoice);
+    SendMessageW(language, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"简体中文"));
+    SendMessageW(language, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"English"));
+    auto languageSettings = lang::settings();
+    if (!languageSettings.customName.empty())
+      SendMessageW(language, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(languageSettings.customName.c_str()));
+    auto selectedLanguage = languageSettings.choice;
+    if (selectedLanguage == lang::Choice::Custom && languageSettings.customName.empty()) selectedLanguage = lang::Choice::English;
+    SendMessageW(language, CB_SETCURSEL, static_cast<unsigned>(selectedLanguage), 0);
+    SendMessageW(language, CB_SETITEMHEIGHT, WPARAM(-1), scale(26));
+    add(h, L"BUTTON", lang::text(L"导出语言模板"), WS_TABSTOP, languageExport);
+    add(h, L"BUTTON", lang::text(L"导入语言文件"), WS_TABSTOP, languageImport);
     themeChoice = add(h, L"COMBOBOX", L"", comboStyle, 17);
-    for (auto titleText : {L"跟随系统", L"浅色", L"深色"}) SendMessageW(themeChoice, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(titleText));
+    for (auto titleText : {lang::text(L"跟随系统"), lang::text(L"浅色"), lang::text(L"深色")}) SendMessageW(themeChoice, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(titleText));
     SendMessageW(themeChoice, CB_SETCURSEL, DWORD(appearance->mode), 0);
     SendMessageW(themeChoice, CB_SETITEMHEIGHT, WPARAM(-1), scale(26));
-    body = CreateWindowExW(WS_EX_CONTROLPARENT, L"FolderNote.Settings.Content", L"功能设置",
+    body = CreateWindowExW(WS_EX_CONTROLPARENT, L"FolderNote.Settings.Content", lang::text(L"功能设置"),
         WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN, 0, 0, 0, 0, h, nullptr, GetModuleHandleW(nullptr), nullptr);
     settingsScroll.create(h, 34, *appearance, [](int position) { scrollPosition = position; layoutBody(); });
     managerPage = quick::createManagerPage(GetModuleHandleW(nullptr), h, appearance->mode);
@@ -471,47 +534,88 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
       ui::surface(c); if (quiet) ui::muted(c); return c;
     };
     constexpr DWORD checkStyle = BS_AUTOCHECKBOX | BS_NOTIFY | WS_TABSTOP;
-    notesCheck = field(L"BUTTON", L"文件夹备注", checkStyle, 40, 14, -40, 26, 11);
+    notesCheck = field(L"BUTTON", lang::text(L"文件夹备注"), checkStyle, 40, 14, -40, 26, 11);
     SendMessageW(notesCheck, BM_SETCHECK, notesEnabled() ? BST_CHECKED : BST_UNCHECKED, 0);
-    field(L"STATIC", L"开启后在文件夹右键菜单中添加、编辑和修复备注。\n关闭只隐藏入口，已有备注会保留。", 0, 68, 45, -40, 38, 0, true);
-    navigationCheck = field(L"BUTTON", L"双击空白处导航", checkStyle, 40, 112, -40, 26, 12);
+    field(L"STATIC", lang::text(L"开启后在文件夹右键菜单中添加、编辑和修复备注。\n关闭只隐藏入口，已有备注会保留。"), 0, 68, 45, -40, 38, 0, true);
+    navigationCheck = field(L"BUTTON", lang::text(L"双击空白处导航"), checkStyle, 40, 112, -40, 26, 12);
     const auto action = configuredAction();
     SendMessageW(navigationCheck, BM_SETCHECK, action != Action::Off ? BST_CHECKED : BST_UNCHECKED, 0);
     choice = field(L"COMBOBOX", L"", comboStyle, 68, 146, -40, 180, 10);
-    for (auto titleText : {L"返回上一级文件夹", L"后退到上一次浏览的位置"}) SendMessageW(choice, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(titleText));
+    for (auto titleText : {lang::text(L"返回上一级文件夹"), lang::text(L"后退到上一次浏览的位置")}) SendMessageW(choice, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(titleText));
     SendMessageW(choice, CB_SETCURSEL, preferredAction() == Action::Back ? 1 : 0, 0);
     SendMessageW(choice, CB_SETITEMHEIGHT, WPARAM(-1), scale(26));
     EnableWindow(choice, action != Action::Off);
-    field(L"STATIC", L"在资源管理器文件列表的空白处双击。", 0, 68, 190, -40, 22, 0, true);
-    quickCheck = field(L"BUTTON", L"中键快速定位", checkStyle, 40, 246, -40, 26, 14);
+    field(L"STATIC", lang::text(L"在资源管理器文件列表的空白处双击。"), 0, 68, 190, -40, 22, 0, true);
+    quickCheck = field(L"BUTTON", lang::text(L"中键快速定位"), checkStyle, 40, 246, -40, 26, 14);
     SendMessageW(quickCheck, BM_SETCHECK, quickEnabled() ? BST_CHECKED : BST_UNCHECKED, 0);
-    dialogCheck = field(L"BUTTON", L"同时支持文件与文件夹选择对话框", checkStyle, 68, 278, -40, 26, 15);
+    dialogCheck = field(L"BUTTON", lang::text(L"同时支持文件与文件夹选择对话框"), checkStyle, 68, 278, -40, 26, 15);
     SendMessageW(dialogCheck, BM_SETCHECK, dialogQuickEnabled() ? BST_CHECKED : BST_UNCHECKED, 0); EnableWindow(dialogCheck, quickEnabled());
-    field(L"STATIC", L"桌面和资源管理器中均可使用，悬停展开子目录。\n启用后运行后台组件，快速访问常用和最近打开的文件夹。", 0, 68, 309, -40, 38, 0, true);
-    field(L"STATIC", L"选中项目后按中键，点击“复制”或“移动”，\n再选择目标文件夹；在空白处按中键也可使用。", 0, 68, 352, -40, 38, 0, true);
-    field(L"BUTTON", L"置顶与历史 →", WS_TABSTOP, 68, 402, 170, 28, 16);
+    field(L"STATIC", lang::text(L"桌面和资源管理器中均可使用，悬停展开子目录。\n启用后运行后台组件，快速访问常用和最近打开的文件夹。"), 0, 68, 309, -40, 38, 0, true);
+    field(L"STATIC", lang::text(L"选中项目后按中键，点击“复制”或“移动”，\n再选择目标文件夹；在空白处按中键也可使用。"), 0, 68, 352, -40, 38, 0, true);
+    field(L"BUTTON", lang::text(L"置顶与历史 →"), WS_TABSTOP, 68, 402, 220, 28, 16);
     tabsCheck = preferNewTabCheck = nullptr;
     if (tabsSupported()) {
-      tabsCheck = field(L"BUTTON", L"资源管理器多标签（Windows 10）", checkStyle, 40, 462, -40, 26, 18);
+      tabsCheck = field(L"BUTTON", lang::text(L"资源管理器多标签（Windows 10）"), checkStyle, 40, 462, -40, 26, 18);
       SendMessageW(tabsCheck, BM_SETCHECK, tabsEnabled() ? BST_CHECKED : BST_UNCHECKED, 0);
-      field(L"STATIC", L"悬停标签：滚轮切换，中键关闭；右键可新建和设置。\n保存后显示或隐藏标签栏；升级后请重新打开文件夹窗口。", 0, 68, 494, -40, 40, 0, true);
-      preferNewTabCheck = field(L"BUTTON", L"始终在新标签中打开文件夹", checkStyle, 68, 548, -40, 26, 21);
+      field(L"STATIC", lang::text(L"悬停标签：滚轮切换，中键关闭；右键可新建和设置。\n保存后显示或隐藏标签栏；升级后请重新打开文件夹窗口。"), 0, 68, 494, -40, 40, 0, true);
+      preferNewTabCheck = field(L"BUTTON", lang::text(L"始终在新标签中打开文件夹"), checkStyle, 68, 548, -40, 26, 21);
       SendMessageW(preferNewTabCheck, BM_SETCHECK, preferNewTabEnabled() ? BST_CHECKED : BST_UNCHECKED, 0);
       EnableWindow(preferNewTabCheck, tabsEnabled());
-      field(L"STATIC", L"首个窗口正常打开；桌面或其他软件另开文件夹时\n优先使用新标签；标签右键仍可开新窗口。", 0, 96, 580, -40, 40, 0, true);
+      field(L"STATIC", lang::text(L"首个窗口正常打开；桌面或其他软件另开文件夹时\n优先使用新标签；标签右键仍可开新窗口。"), 0, 96, 580, -40, 40, 0, true);
     }
-    ui::muted(add(h, L"STATIC", L"功能设置保存后应用 · 置顶与历史修改立即保存", 0, 33));
-    add(h, L"BUTTON", L"复制诊断信息", WS_TABSTOP, 13);
-    add(h, L"BUTTON", L"保存", WS_TABSTOP | BS_DEFPUSHBUTTON, IDOK);
-    add(h, L"BUTTON", L"取消", WS_TABSTOP, IDCANCEL);
+    ui::muted(add(h, L"STATIC", lang::text(L"功能设置保存后应用 · 置顶与历史修改立即保存"), 0, 33));
+    add(h, L"BUTTON", lang::text(L"复制诊断信息"), WS_TABSTOP, 13);
+    add(h, L"BUTTON", lang::text(L"保存"), WS_TABSTOP | BS_DEFPUSHBUTTON, IDOK);
+    add(h, L"BUTTON", lang::text(L"取消"), WS_TABSTOP, IDCANCEL);
+    if (languageDraft) {
+      std::array checks{notesCheck, navigationCheck, quickCheck, dialogCheck, tabsCheck, preferNewTabCheck};
+      for (size_t i = 0; i < checks.size(); ++i)
+        if (checks[i]) SendMessageW(checks[i], BM_SETCHECK, languageDraft->toggles[i], 0);
+      SendMessageW(choice, CB_SETCURSEL, languageDraft->action, 0);
+      appearance->reset(languageDraft->theme);
+      SendMessageW(themeChoice, CB_SETCURSEL, DWORD(appearance->mode), 0);
+      EnableWindow(choice, languageDraft->toggles[1] == BST_CHECKED);
+      EnableWindow(dialogCheck, languageDraft->toggles[2] == BST_CHECKED);
+      if (preferNewTabCheck) EnableWindow(preferNewTabCheck, languageDraft->toggles[4] == BST_CHECKED);
+      languageDraft.reset();
+    }
     appearance->apply(h); quick::setManagerTheme(managerPage, appearance->mode); showPage(activePage); return 0;
   }
   case WM_COMMAND:
     if (installingUpdate && (LOWORD(w) == IDOK || LOWORD(w) == IDCANCEL)) return 0;
+    if ((LOWORD(w) == languageChoice && HIWORD(w) == CBN_SELCHANGE) ||
+        ((LOWORD(w) == languageExport || LOWORD(w) == languageImport) && HIWORD(w) == BN_CLICKED)) {
+      const int id = LOWORD(w);
+      try {
+        if (id == languageChoice) {
+          auto selection = SendDlgItemMessageW(h, languageChoice, CB_GETCURSEL, 0, 0);
+          if (selection < 0 || selection > 2 || static_cast<lang::Choice>(selection) == lang::settings().choice) return 0;
+          lang::select(static_cast<lang::Choice>(selection));
+        } else {
+          auto path = languagePath(h, id == languageImport);
+          if (path.empty()) return 0;
+          if (id == languageExport) { lang::exportFile(path); return 0; }
+          lang::importFile(path);
+        }
+        refreshLanguageMenus();
+        SettingsDraft draft{{}, SendMessageW(choice, CB_GETCURSEL, 0, 0), appearance->mode};
+        std::array checks{notesCheck, navigationCheck, quickCheck, dialogCheck, tabsCheck, preferNewTabCheck};
+        for (size_t i = 0; i < checks.size(); ++i)
+          if (checks[i]) draft.toggles[i] = SendMessageW(checks[i], BM_GETCHECK, 0, 0);
+        languageDraft = draft;
+        reopenForLanguage = true;
+        DestroyWindow(h);
+      } catch (...) {
+        SendDlgItemMessageW(h, languageChoice, CB_SETCURSEL, static_cast<unsigned>(lang::settings().choice), 0);
+        MessageBoxW(h, id == languageImport ? lang::text(L"无法导入语言文件。请使用有效的 FolderNote XML 语言模板。") :
+            lang::text(L"无法保存语言设置或模板。"), L"FolderNote", MB_OK | MB_ICONERROR);
+      }
+      return 0;
+    }
     if (LOWORD(w) == IDOK) {
       try {
         const auto selection = SendMessageW(choice, CB_GETCURSEL, 0, 0);
-        if (selection != 0 && selection != 1) throw fn::Error{L"请选择有效的双击操作。"};
+        if (selection != 0 && selection != 1) throw fn::Error{lang::text(L"请选择有效的双击操作。")};
         const auto preferred = selection == 1 ? Action::Back : Action::Parent;
         const auto action = SendMessageW(navigationCheck, BM_GETCHECK, 0, 0) == BST_CHECKED ? preferred : Action::Off;
         saveSettings(SendMessageW(notesCheck, BM_GETCHECK, 0, 0) == BST_CHECKED, action, preferred,
@@ -521,7 +625,7 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             preferNewTabCheck ? SendMessageW(preferNewTabCheck, BM_GETCHECK, 0, 0) == BST_CHECKED : preferNewTabEnabled());
         ui::notifyThemeChanged(); reload(); auto tabsStatus = syncTabs(); quick::syncHelper(quick::executable());
         if (tabsSupported() && tabsEnabled() && tabsStatus.windows && tabsStatus.visible == 0) {
-          MessageBoxW(h, L"设置已保存，已打开的文件夹窗口尚未显示标签栏。\n请关闭后重新打开文件夹窗口。标签栏由这里的开关控制，无需在资源管理器菜单中勾选。\n仍未显示时，可复制诊断信息查看加载状态。", L"FolderNote 多标签", MB_OK | MB_ICONINFORMATION);
+          MessageBoxW(h, lang::text(L"设置已保存，已打开的文件夹窗口尚未显示标签栏。\n请关闭后重新打开文件夹窗口。标签栏由这里的开关控制，无需在资源管理器菜单中勾选。\n仍未显示时，可复制诊断信息查看加载状态。"), lang::text(L"FolderNote 多标签"), MB_OK | MB_ICONINFORMATION);
         } else DestroyWindow(h);
       } catch (const fn::Error &e) { MessageBoxW(h, e.message.c_str(), L"FolderNote", MB_OK | MB_ICONERROR); }
     } else if (LOWORD(w) == 17 && HIWORD(w) == CBN_SELCHANGE) {
@@ -541,7 +645,7 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
       try { copyDiagnostics(h); } catch (const fn::Error &e) { MessageBoxW(h, e.message.c_str(), L"FolderNote", MB_OK | MB_ICONERROR); }
     } else if (LOWORD(w) == updateButton && HIWORD(w) == BN_CLICKED && !updateWork.valid()) {
       if (*app::updateRepository) startUpdateWork(h);
-      else MessageBoxW(h, L"此构建尚未配置 GitHub 更新源。请使用 GitHub Releases 发布的安装包。", L"FolderNote 更新", MB_OK | MB_ICONINFORMATION);
+      else MessageBoxW(h, lang::text(L"此构建尚未配置 GitHub 更新源。请使用 GitHub Releases 发布的安装包。"), lang::text(L"FolderNote 更新"), MB_OK | MB_ICONINFORMATION);
     } else if (LOWORD(w) == IDCANCEL) DestroyWindow(h);
     return 0;
   case WM_TIMER: if (w == updateTimer) { finishUpdateWork(h); return 0; } break;
@@ -561,7 +665,7 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     EnumChildWindows(h, [](HWND child, LPARAM value) -> BOOL { SendMessageW(child, WM_SETFONT, value, TRUE); return TRUE; }, reinterpret_cast<LPARAM>(font));
     SendMessageW(GetDlgItem(h, 30), WM_SETFONT, reinterpret_cast<WPARAM>(headingFont), TRUE);
     SendMessageW(GetDlgItem(h, 35), WM_SETFONT, reinterpret_cast<WPARAM>(headingFont), TRUE);
-    for (auto combo : {themeChoice, choice}) {
+    for (auto combo : {themeChoice, choice, GetDlgItem(h, languageChoice)}) {
       SendMessageW(combo, CB_SETITEMHEIGHT, WPARAM(-1), scale(26));
       for (int i = 0; i < SendMessageW(combo, CB_GETCOUNT, 0, 0); ++i) SendMessageW(combo, CB_SETITEMHEIGHT, i, scale(26));
     }
@@ -591,29 +695,34 @@ int settings(HINSTANCE instance, SettingsPage page) {
   cls.hCursor = LoadCursorW(nullptr, IDC_ARROW); cls.lpszClassName = L"FolderNote.Settings.Content"; RegisterClassW(&cls);
   cls.lpfnWndProc = settingsProc; cls.hIcon = LoadIconW(instance, MAKEINTRESOURCEW(IDI_FOLDERNOTE));
   cls.lpszClassName = L"FolderNote.Settings"; RegisterClassW(&cls);
-  appearance = std::make_unique<ui::Theme>(); dpi = GetDpiForSystem();
-  const RECT work = ui::mouseWorkArea();
-  HWND window = CreateWindowExW(WS_EX_CONTROLPARENT, cls.lpszClassName, L"FolderNote 系统工具设置",
-      WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_MAXIMIZEBOX | WS_CLIPCHILDREN,
-      work.left, work.top, scale(980), scale(660), nullptr, nullptr, instance, nullptr);
-  if (!window) { appearance.reset(); return 1; }
-  ui::centerLogical(window, work, 980, 660); ShowWindow(window, SW_SHOW); SetFocus(GetDlgItem(window, page == SettingsPage::Features ? 40 : 41));
-  MSG message{};
-  while (GetMessageW(&message, nullptr, 0, 0) > 0) {
-    if (message.message == WM_KEYDOWN && (message.wParam == VK_ESCAPE || message.wParam == VK_RETURN)) {
-      HWND dropped = nullptr;
-      for (auto combo : {themeChoice, choice}) if (SendMessageW(combo, CB_GETDROPPEDSTATE, 0, 0)) dropped = combo;
-      if (dropped) { SendMessageW(dropped, CB_SHOWDROPDOWN, FALSE, 0); continue; }
-      if (message.wParam == VK_ESCAPE) SendMessageW(window, WM_CLOSE, 0, 0);
-      else {
-        HWND focused = GetFocus(); wchar_t clsName[32]{}; GetClassNameW(focused, clsName, ARRAYSIZE(clsName));
-        if (!_wcsicmp(clsName, L"BUTTON")) SendMessageW(focused, BM_CLICK, 0, 0);
-        else if (activePage == SettingsPage::Features) SendMessageW(window, WM_COMMAND, MAKEWPARAM(IDOK, BN_CLICKED), 0);
+  do {
+    reopenForLanguage = false;
+    appearance = std::make_unique<ui::Theme>(); dpi = GetDpiForSystem();
+    const RECT work = ui::mouseWorkArea();
+    HWND window = CreateWindowExW(WS_EX_CONTROLPARENT, cls.lpszClassName, lang::text(L"FolderNote 系统工具设置"),
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_MAXIMIZEBOX | WS_CLIPCHILDREN,
+        work.left, work.top, scale(980), scale(660), nullptr, nullptr, instance, nullptr);
+    if (!window) { appearance.reset(); languageDraft.reset(); return 1; }
+    ui::centerLogical(window, work, 980, 660); ShowWindow(window, SW_SHOW); SetFocus(GetDlgItem(window, activePage == SettingsPage::Features ? 40 : 41));
+    MSG message{};
+    while (GetMessageW(&message, nullptr, 0, 0) > 0) {
+      if (message.message == WM_KEYDOWN && (message.wParam == VK_ESCAPE || message.wParam == VK_RETURN)) {
+        HWND dropped = nullptr;
+        for (auto combo : {themeChoice, choice, GetDlgItem(window, languageChoice)})
+          if (SendMessageW(combo, CB_GETDROPPEDSTATE, 0, 0)) dropped = combo;
+        if (dropped) { SendMessageW(dropped, CB_SHOWDROPDOWN, FALSE, 0); continue; }
+        if (message.wParam == VK_ESCAPE) SendMessageW(window, WM_CLOSE, 0, 0);
+        else {
+          HWND focused = GetFocus(); wchar_t clsName[32]{}; GetClassNameW(focused, clsName, ARRAYSIZE(clsName));
+          if (!_wcsicmp(clsName, L"BUTTON")) SendMessageW(focused, BM_CLICK, 0, 0);
+          else if (activePage == SettingsPage::Features) SendMessageW(window, WM_COMMAND, MAKEWPARAM(IDOK, BN_CLICKED), 0);
+        }
+        continue;
       }
-      continue;
+      if (!IsDialogMessageW(window, &message)) { TranslateMessage(&message); DispatchMessageW(&message); }
     }
-    if (!IsDialogMessageW(window, &message)) { TranslateMessage(&message); DispatchMessageW(&message); }
-  }
-  appearance.reset(); return 0;
+    appearance.reset();
+  } while (reopenForLanguage);
+  return 0;
 }
 } // namespace navigation

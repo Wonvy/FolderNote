@@ -1,4 +1,5 @@
 #include "quick_folders.h"
+#include "language.h"
 #include "core.h"
 #include "window_position.h"
 #include "quick_icons.h"
@@ -169,18 +170,18 @@ LRESULT CALLBACK managerProc(HWND window, UINT message, WPARAM w, LPARAM l) {
         state->controls.push_back(control);
         SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(state->font), TRUE); return control;
       };
-      add(L"STATIC", L"置顶文件夹（最多 64 个）", 0, 30);
-      add(L"STATIC", L"历史记录（最近 20 条）", 0, 31);
+      add(L"STATIC", lang::text(L"置顶文件夹（最多 64 个）"), 0, 30);
+      add(L"STATIC", lang::text(L"历史记录（最近 20 条）"), 0, 31);
       DWORD listStyle = WS_TABSTOP | WS_CLIPCHILDREN | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT | LBS_OWNERDRAWFIXED | LBS_HASSTRINGS;
-      state->pins = add(L"LISTBOX", L"置顶文件夹", listStyle, 10);
-      state->history = add(L"LISTBOX", L"历史记录", listStyle, 11);
+      state->pins = add(L"LISTBOX", lang::text(L"置顶文件夹"), listStyle, 10);
+      state->history = add(L"LISTBOX", lang::text(L"历史记录"), listStyle, 11);
       state->prepareList(state->pins, window); state->prepareList(state->history, window);
-      add(L"BUTTON", L"添加…", WS_TABSTOP, 20);
-      add(L"BUTTON", L"移除", WS_TABSTOP, 21);
-      add(L"BUTTON", L"上移", WS_TABSTOP, 22);
-      add(L"BUTTON", L"下移", WS_TABSTOP, 23);
-      add(L"BUTTON", L"置顶所选", WS_TABSTOP, 24);
-      add(L"BUTTON", L"清空历史…", WS_TABSTOP, 25);
+      add(L"BUTTON", lang::text(L"添加…"), WS_TABSTOP, 20);
+      add(L"BUTTON", lang::text(L"移除"), WS_TABSTOP, 21);
+      add(L"BUTTON", lang::text(L"上移"), WS_TABSTOP, 22);
+      add(L"BUTTON", lang::text(L"下移"), WS_TABSTOP, 23);
+      add(L"BUTTON", lang::text(L"置顶所选"), WS_TABSTOP, 24);
+      add(L"BUTTON", lang::text(L"清空历史…"), WS_TABSTOP, 25);
       state->theme.apply(window); state->layout(window); state->refresh(); return 0;
     }
     if (message == WM_SETTINGCHANGE || message == WM_THEMECHANGED) {
@@ -212,10 +213,10 @@ LRESULT CALLBACK managerProc(HWND window, UINT message, WPARAM w, LPARAM l) {
       if (id == 20) {
         Microsoft::WRL::ComPtr<IFileOpenDialog> dialog;
         if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog))))
-          throw fn::Error{L"无法打开文件夹选择窗口。"};
+          throw fn::Error{lang::text(L"无法打开文件夹选择窗口。")};
         DWORD options = 0; dialog->GetOptions(&options);
         dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
-        dialog->SetTitle(L"选择要置顶的文件夹");
+        dialog->SetTitle(lang::text(L"选择要置顶的文件夹"));
         if (SUCCEEDED(dialog->Show(window))) {
           Microsoft::WRL::ComPtr<IShellItem> item; PWSTR path = nullptr;
           if (SUCCEEDED(dialog->GetResult(&item)) && SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) {
@@ -226,7 +227,7 @@ LRESULT CALLBACK managerProc(HWND window, UINT message, WPARAM w, LPARAM l) {
         auto path = state->data.pins[size_t(pinIndex)];
         if (id == 21) pin(path, false); else movePin(path, id == 22 ? -1 : 1);
       } else if (id == 24 && historyIndex >= 0 && size_t(historyIndex) < state->data.history.size()) pin(state->data.history[size_t(historyIndex)], true);
-      else if (id == 25 && ui::message(window, L"清空访问历史和访问次数？置顶文件夹将保留。", L"快速文件夹", MB_YESNO | MB_ICONQUESTION) == IDYES) clearHistory();
+      else if (id == 25 && ui::message(window, lang::text(L"清空访问历史和访问次数？置顶文件夹将保留。"), lang::text(L"快速文件夹"), MB_YESNO | MB_ICONQUESTION) == IDYES) clearHistory();
       else return 0;
       state->refresh();
       if (id == 22 || id == 23) SendMessageW(state->pins, LB_SETCURSEL,
@@ -237,10 +238,10 @@ LRESULT CALLBACK managerProc(HWND window, UINT message, WPARAM w, LPARAM l) {
     if (message == WM_DESTROY) { state->done = true; state->icons.reset(); if (state->tips) DestroyWindow(state->tips); state->tips = nullptr; return 0; }
   } catch (const fn::Error &error) {
     if (message == WM_CREATE) return -1;
-    ui::message(window, error.message.c_str(), L"快速文件夹", MB_OK | MB_ICONERROR);
+    ui::message(window, error.message.c_str(), lang::text(L"快速文件夹"), MB_OK | MB_ICONERROR);
   } catch (...) {
     if (message == WM_CREATE) return -1;
-    ui::message(window, L"操作未完成，请稍后重试。", L"快速文件夹", MB_OK | MB_ICONERROR);
+    ui::message(window, lang::text(L"操作未完成，请稍后重试。"), lang::text(L"快速文件夹"), MB_OK | MB_ICONERROR);
   }
   return DefWindowProcW(window, message, w, l);
 }
@@ -250,7 +251,7 @@ HWND createManagerPage(HINSTANCE instance, HWND parent, ui::ThemeMode theme) {
   cls.lpszClassName = L"FolderNote.QuickFolders.ManagerPage";
   cls.hCursor = LoadCursorW(nullptr, IDC_ARROW);
   RegisterClassW(&cls);
-  return CreateWindowExW(WS_EX_CONTROLPARENT, cls.lpszClassName, L"置顶与历史",
+  return CreateWindowExW(WS_EX_CONTROLPARENT, cls.lpszClassName, lang::text(L"置顶与历史"),
       WS_CHILD | WS_CLIPCHILDREN, 0, 0, 700, 400, parent, nullptr, instance, &theme);
 }
 void setManagerTheme(HWND window, ui::ThemeMode mode) {
@@ -269,7 +270,7 @@ int manage(HINSTANCE, HWND owner, ui::ThemeMode) {
   if (!GetModuleFileNameW(nullptr, path, ARRAYSIZE(path))) return 1;
   auto result = ShellExecuteW(owner, L"open", path, L"--quick-manage", nullptr, SW_SHOWNORMAL);
   if (reinterpret_cast<INT_PTR>(result) <= 32) {
-    ui::message(owner, L"无法打开 FolderNote 设置，请从开始菜单重试。", L"FolderNote", MB_OK | MB_ICONERROR);
+    ui::message(owner, lang::text(L"无法打开 FolderNote 设置，请从开始菜单重试。"), L"FolderNote", MB_OK | MB_ICONERROR);
     return 1;
   }
   return 0;

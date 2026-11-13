@@ -1,4 +1,5 @@
 #include "quick_folders.h"
+#include "language.h"
 #include "navigation.h"
 #include "navigation_registration.h"
 #include "core.h"
@@ -25,7 +26,7 @@ struct Lock {
   Lock() {
     // A user-specific mutex protects read/modify/write across Explorer processes.
     HANDLE token = nullptr;
-    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) fn::fail(L"无法读取用户信息");
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) fn::fail(lang::text(L"无法读取用户信息"));
     DWORD size = 0;
     GetTokenInformation(token, TokenUser, nullptr, 0, &size);
     std::vector<BYTE> bytes(size);
@@ -33,15 +34,15 @@ struct Lock {
     CloseHandle(token);
     LPWSTR sid = nullptr;
     if (!ok || !ConvertSidToStringSidW(reinterpret_cast<TOKEN_USER *>(bytes.data())->User.Sid, &sid))
-      fn::fail(L"无法读取用户信息");
+      fn::fail(lang::text(L"无法读取用户信息"));
     auto name = std::wstring(L"Local\\FolderNote.QuickFolders.") + sid;
     LocalFree(sid);
     handle = CreateMutexW(nullptr, FALSE, name.c_str());
-    if (!handle) fn::fail(L"无法读取快速文件夹");
+    if (!handle) fn::fail(lang::text(L"无法读取快速文件夹"));
     DWORD result = WaitForSingleObject(handle, 1000);
     if (result != WAIT_OBJECT_0 && result != WAIT_ABANDONED) {
       CloseHandle(handle); handle = nullptr;
-      throw fn::Error{L"快速文件夹正在更新，请稍后重试。"};
+      throw fn::Error{lang::text(L"快速文件夹正在更新，请稍后重试。")};
     }
   }
   ~Lock() { if (handle) { ReleaseMutex(handle); CloseHandle(handle); } }
@@ -50,20 +51,20 @@ std::vector<std::wstring> readStrings(const wchar_t *name) {
   DWORD type = 0, size = 0;
   auto result = RegGetValueW(HKEY_CURRENT_USER, dataKey, name, RRF_RT_ANY, &type, nullptr, &size);
   if (result == ERROR_FILE_NOT_FOUND || result == ERROR_PATH_NOT_FOUND) return {};
-  if (result) fn::fail(L"无法读取快速文件夹", result);
+  if (result) fn::fail(lang::text(L"无法读取快速文件夹"), result);
   if (type != REG_MULTI_SZ || size < 4 || size % 2 || size > registryValueLimit)
-    throw fn::Error{L"快速文件夹数据格式损坏，未覆盖原记录。"};
+    throw fn::Error{lang::text(L"快速文件夹数据格式损坏，未覆盖原记录。")};
   std::vector<wchar_t> bytes(size / 2 + 2);
   result = RegGetValueW(HKEY_CURRENT_USER, dataKey, name, RRF_RT_REG_MULTI_SZ, nullptr, bytes.data(), &size);
-  if (result) fn::fail(L"无法读取快速文件夹", result);
+  if (result) fn::fail(lang::text(L"无法读取快速文件夹"), result);
   const size_t count = size / 2;
   if (count < 2 || bytes[count - 1] || bytes[count - 2])
-    throw fn::Error{L"快速文件夹数据不完整，未覆盖原记录。"};
+    throw fn::Error{lang::text(L"快速文件夹数据不完整，未覆盖原记录。")};
   std::vector<std::wstring> out;
   for (size_t i = 0; i < count && bytes[i];) {
     const size_t begin = i;
     while (i < count && bytes[i]) ++i;
-    if (i == count) throw fn::Error{L"快速文件夹数据不完整。"};
+    if (i == count) throw fn::Error{lang::text(L"快速文件夹数据不完整。")};
     out.emplace_back(bytes.data() + begin, i - begin);
     ++i;
   }
@@ -86,12 +87,12 @@ void write(const wchar_t *name, const std::vector<std::wstring> &paths) {
   for (const auto &path : paths) { bytes.insert(bytes.end(), path.begin(), path.end()); bytes.push_back(0); }
   bytes.push_back(0);
   if (paths.empty()) bytes.push_back(0);
-  if (bytes.size() * sizeof(wchar_t) > registryValueLimit) throw fn::Error{L"文件夹列表过大，请移除部分记录。"};
+  if (bytes.size() * sizeof(wchar_t) > registryValueLimit) throw fn::Error{lang::text(L"文件夹列表过大，请移除部分记录。")};
   Key key;
   auto error = RegCreateKeyExW(HKEY_CURRENT_USER, dataKey, 0, nullptr, 0, KEY_SET_VALUE, nullptr, &key.value, nullptr);
   if (!error) error = RegSetValueExW(key.value, name, 0, REG_MULTI_SZ,
                                     reinterpret_cast<const BYTE *>(bytes.data()), static_cast<DWORD>(bytes.size() * 2));
-  if (error) fn::fail(L"无法保存快速文件夹", error);
+  if (error) fn::fail(lang::text(L"无法保存快速文件夹"), error);
 }
 struct Frequency {
   std::wstring path;
@@ -104,12 +105,12 @@ std::vector<Frequency> readFrequency() {
     // A tab is invalid in a normalized path, so it can delimit the count.
     auto separator = entry.find(L'\t');
     if (separator == entry.npos || entry.find_first_not_of(L"0123456789") != separator)
-      throw fn::Error{L"访问次数数据格式损坏，未覆盖原记录。"};
+      throw fn::Error{lang::text(L"访问次数数据格式损坏，未覆盖原记录。")};
     errno = 0;
     auto count = wcstoul(entry.c_str(), nullptr, 10);
     auto path = normalize(entry.substr(separator + 1));
     if (!count || errno == ERANGE || path.empty() || (!entries.empty() && entries.back().count < count))
-      throw fn::Error{L"访问次数数据格式损坏，未覆盖原记录。"};
+      throw fn::Error{lang::text(L"访问次数数据格式损坏，未覆盖原记录。")};
     entries.push_back({std::move(path), count});
   }
   return entries;
@@ -236,13 +237,13 @@ void visitAsync(const std::wstring &path) noexcept {
 }
 void pin(const std::wstring &value, bool enabled) {
   auto path = normalize(value);
-  if (path.empty()) throw fn::Error{L"请选择有效的文件夹路径。"};
+  if (path.empty()) throw fn::Error{lang::text(L"请选择有效的文件夹路径。")};
   Lock lock;
   auto items = read(L"Pins", pinLimit);
   auto found = std::find_if(items.begin(), items.end(), [&](const auto &p) { return same(p, path); });
   if (enabled) {
     if (found != items.end()) return;
-    if (items.size() >= pinLimit) throw fn::Error{L"最多可置顶 64 个文件夹。"};
+    if (items.size() >= pinLimit) throw fn::Error{lang::text(L"最多可置顶 64 个文件夹。")};
     items.push_back(path);
   } else if (found != items.end()) items.erase(found);
   write(L"Pins", items);
@@ -261,7 +262,7 @@ void clearHistory() {
   Lock lock;
   DWORD next = generation() + 1;
   auto error = RegSetKeyValueW(HKEY_CURRENT_USER, dataKey, L"HistoryGeneration", REG_DWORD, &next, sizeof(next));
-  if (error) fn::fail(L"无法清空历史记录", error);
+  if (error) fn::fail(lang::text(L"无法清空历史记录"), error);
   write(L"History", {});
   write(L"VisitFrequency", {});
 }
@@ -289,7 +290,7 @@ std::wstring executable() {
   }
   auto process = fn::modulePath();
   if (_wcsicmp(process.filename().c_str(), L"FolderNote.exe") == 0) return process.native();
-  throw fn::Error{L"未找到已安装的 FolderNote，请重新安装后再试。"};
+  throw fn::Error{lang::text(L"未找到已安装的 FolderNote，请重新安装后再试。")};
 }
 void launchMenu(HWND target, HWND view, POINT point) {
   auto exe = executable();
@@ -297,7 +298,7 @@ void launchMenu(HWND target, HWND view, POINT point) {
                  L" " + std::to_wstring(reinterpret_cast<UINT_PTR>(view)) + L" " + std::to_wstring(point.x) + L" " + std::to_wstring(point.y);
   STARTUPINFOW startup{sizeof(startup)}; PROCESS_INFORMATION process{};
   if (!CreateProcessW(exe.c_str(), command.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &startup, &process))
-    fn::fail(L"无法打开快速文件夹菜单");
+    fn::fail(lang::text(L"无法打开快速文件夹菜单"));
   AllowSetForegroundWindow(process.dwProcessId);
   CloseHandle(process.hThread); CloseHandle(process.hProcess);
 }

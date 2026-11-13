@@ -1,4 +1,5 @@
 #include "core.h"
+#include "language.h"
 #include "navigation.h"
 #include "quick_folders.h"
 #include <climits>
@@ -85,8 +86,8 @@ static void layout() {
   MoveWindow(edit, px(24), px(102), width - px(48), px(operation == 0 ? 32 : 110), TRUE);
   MoveWindow(hint, px(24), px(operation == 0 ? 146 : 222), width - px(48), px(22), TRUE);
   int y = operation == 0 ? 186 : 262;
-  MoveWindow(saveButton, width - px(224), px(y), px(96), px(32), TRUE);
-  MoveWindow(clearButton, width - px(116), px(y), px(96), px(32), TRUE);
+  MoveWindow(saveButton, width - px(292), px(y), px(128), px(32), TRUE);
+  MoveWindow(clearButton, width - px(152), px(y), px(128), px(32), TRUE);
 }
 struct Result {
   std::wstring summary, failures, saveError;
@@ -100,14 +101,14 @@ static void finishSave(bool clear) {
     std::wstring s(len + 1, L'\0');
     GetWindowTextW(edit, s.data(), len + 1);
     s.resize(len);
-    if (clear && MessageBoxW(window, L"清除这个文件夹的备注？", L"FolderNote",
+    if (clear && MessageBoxW(window, lang::text(L"清除这个文件夹的备注？"), L"FolderNote",
                              MB_YESNO | MB_ICONQUESTION) != IDYES)
       return;
     busy = true;
     EnableWindow(saveButton, FALSE);
     EnableWindow(clearButton, FALSE);
     EnableWindow(edit, FALSE);
-    SetWindowTextW(statusText, L"正在保存备注并更新列表…");
+    SetWindowTextW(statusText, lang::text(L"正在保存备注并更新列表…"));
     std::thread([folder = paths[0], value = clear ? std::wstring{} : s, target = window] {
       auto r = std::make_unique<Result>();
       r->single = true;
@@ -119,7 +120,7 @@ static void finishSave(bool clear) {
       } catch (const fn::Error &e) {
         r->saveError = e.message;
       } catch (...) {
-        r->saveError = L"保存失败，请检查路径和权限。";
+        r->saveError = lang::text(L"保存失败，请检查路径和权限。");
       }
       if (SUCCEEDED(initialized))
         CoUninitialize();
@@ -134,7 +135,7 @@ static void finishSave(bool clear) {
     EnableWindow(clearButton, TRUE);
     EnableWindow(edit, TRUE);
     SetWindowTextW(statusText, paths[0].c_str());
-    error(L"保存失败，请检查路径和权限。");
+    error(lang::text(L"保存失败，请检查路径和权限。"));
   }
 }
 static void runBatch() {
@@ -178,18 +179,18 @@ static void runBatch() {
         r->failures += p + L"\r\n" + e.message + L"\r\n\r\n";
       } catch (...) {
         ++failed;
-        r->failures += p + L"：处理失败。\r\n";
+        r->failures += lang::format(L"{0}：处理失败。", {p}) + L"\r\n";
       }
     }
     if (SUCCEEDED(initialized)) {
       fn::refreshOpenViews(changed);
       CoUninitialize();
     }
-    r->summary =
-        (operation == 1 ? L"已处理 " : L"已恢复 ") + std::to_wstring(repaired) +
-        L"，原本正常 " + std::to_wstring(normal) + L"\r\n无备注文件 " +
-        std::to_wstring(missingFile) + L"，无备注 " +
-        std::to_wstring(missingNote) + L"，失败 " + std::to_wstring(failed);
+    r->summary = lang::format(
+        operation == 1 ? L"已处理 {0}，原本正常 {1}\r\n无备注文件 {2}，无备注 {3}，失败 {4}"
+                       : L"已恢复 {0}，原本正常 {1}\r\n无备注文件 {2}，无备注 {3}，失败 {4}",
+        {std::to_wstring(repaired), std::to_wstring(normal), std::to_wstring(missingFile),
+         std::to_wstring(missingNote), std::to_wstring(failed)});
     if (!PostMessageW(window, WM_APP, 0, (LPARAM)r))
       delete r;
   }).detach();
@@ -204,13 +205,14 @@ static LRESULT CALLBACK proc(HWND h, UINT m, WPARAM w, LPARAM l) {
     dpi = GetDpiForWindow(h);
     font = ui::makeFont(dpi); headingFont = ui::makeFont(dpi, 21, FW_SEMIBOLD);
     appearance = std::make_unique<ui::Theme>();
-    heading = control(L"STATIC", operation == 0 ? L"文件夹备注" : L"批量处理", SS_LEFT, 20);
+    heading = control(L"STATIC", lang::text(operation == 0 ? L"文件夹备注" : L"批量处理"), SS_LEFT, 20);
     SendMessageW(heading, WM_SETFONT, reinterpret_cast<WPARAM>(headingFont), TRUE);
-    hint = control(L"STATIC", operation == 0 ? L"最多 500 个字符 · Enter 保存 · Esc 取消" : L"仅处理选中的文件夹，不会扫描子目录", SS_LEFT, 21);
+    hint = control(L"STATIC", lang::text(operation == 0 ? L"最多 500 个字符 · Enter 保存 · Esc 取消" :
+                                                        L"仅处理选中的文件夹，不会扫描子目录"), SS_LEFT, 21);
     ui::muted(hint);
     statusText = control(L"STATIC",
                          operation == 0 ? paths[0].c_str()
-                                        : L"正在处理所选文件夹，请稍候…",
+                                        : lang::text(L"正在处理所选文件夹，请稍候…"),
                          SS_LEFT, 10);
     ui::muted(statusText);
     edit = control(L"EDIT", L"",
@@ -218,9 +220,9 @@ static LRESULT CALLBACK proc(HWND h, UINT m, WPARAM w, LPARAM l) {
                                      ? ES_AUTOHSCROLL
                                      : ES_MULTILINE | ES_READONLY | WS_VSCROLL),
                    11);
-    saveButton = control(L"BUTTON", operation == 0 ? L"保存" : L"复制失败项",
+    saveButton = control(L"BUTTON", lang::text(operation == 0 ? L"保存" : L"复制失败项"),
                          WS_TABSTOP | BS_DEFPUSHBUTTON, IDOK);
-    clearButton = control(L"BUTTON", operation == 0 ? L"清除备注" : L"关闭",
+    clearButton = control(L"BUTTON", lang::text(operation == 0 ? L"清除备注" : L"关闭"),
                           WS_TABSTOP, 12);
     titleTheme();
     if (operation == 0) {
@@ -293,7 +295,7 @@ static LRESULT CALLBACK proc(HWND h, UINT m, WPARAM w, LPARAM l) {
     }
     failures = r->failures;
     SetWindowTextW(statusText, r->summary.c_str());
-    SetWindowTextW(edit, failures.empty() ? L"处理完成。" : failures.c_str());
+    SetWindowTextW(edit, failures.empty() ? lang::text(L"处理完成。") : failures.c_str());
     EnableWindow(saveButton, !failures.empty());
     EnableWindow(clearButton, TRUE);
     delete r;
@@ -351,30 +353,28 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
       else if (op == L"--repair")
         operation = 2;
       else
-        throw fn::Error{L"未知命令。"};
+        throw fn::Error{lang::text(L"未知命令。")};
       for (int i = 2; i < argc; ++i)
         paths.push_back(argv[i]);
     } else {
       MessageBoxW(
           nullptr,
-          L"请在文件夹上右键选择“添加/"
+          lang::text(L"请在文件夹上右键选择“添加/"
           L"编辑备注”或“修复文件夹备注”。\n\n首次使用请运行 Install.exe "
           L"安装右键菜单。\n资源管理器切换到详细信息视图，右键列标题并勾选“备注"
-          L"”。",
+          L"”。"),
           L"FolderNote", MB_OK);
       LocalFree(argv);
       CoUninitialize();
       return 0;
     }
     if (!navigation::notesEnabled())
-      throw fn::Error{L"文件夹备注功能已关闭。请在 FolderNote 设置中开启后重试。"};
+      throw fn::Error{lang::text(L"文件夹备注功能已关闭。请在 FolderNote 设置中开启后重试。")};
     if (paths.empty() || (operation == 0 && paths.size() != 1))
-      throw fn::Error{L"编辑备注时请选择一个文件夹。"};
+      throw fn::Error{lang::text(L"编辑备注时请选择一个文件夹。")};
     if (operation == 1 &&
         MessageBoxW(nullptr,
-                    (L"清除所选 " + std::to_wstring(paths.size()) +
-                     L" 个文件夹的备注？")
-                        .c_str(),
+                    lang::format(L"清除所选 {0} 个文件夹的备注？", {std::to_wstring(paths.size())}).c_str(),
                     L"FolderNote", MB_YESNO | MB_ICONQUESTION) != IDYES) {
       LocalFree(argv);
       CoUninitialize();
@@ -393,7 +393,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
     const RECT targetWork=ui::mouseWorkArea();
     window = CreateWindowExW(
         WS_EX_CONTROLPARENT, wc.lpszClassName,
-        operation == 0 ? L"文件夹备注 — FolderNote" : L"批量处理 — FolderNote",
+        lang::text(operation == 0 ? L"文件夹备注 — FolderNote" : L"批量处理 — FolderNote"),
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, targetWork.left,
         targetWork.top, px(580), px(operation == 0 ? 278 : 354), nullptr,
         nullptr, inst, nullptr);
@@ -422,7 +422,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
   } catch (const fn::Error &e) {
     error(e.message);
   } catch (...) {
-    error(L"无法完成操作。");
+    error(lang::text(L"无法完成操作。"));
   }
   LocalFree(argv);
   CoUninitialize();

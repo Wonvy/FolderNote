@@ -4,6 +4,7 @@
 #include "../src/navigation.cpp"
 #include <iostream>
 #include <stdexcept>
+#include <fstream>
 
 namespace {
 int checks = 0;
@@ -195,11 +196,43 @@ void scenarios() {
   SendMessageW(reopened.window, WM_COMMAND, MAKEWPARAM(IDCANCEL, BN_CLICKED), 0);
   check(navigation::preferNewTabEnabled(), "cancel leaves previously saved new-tab choice untouched");
 }
+void languages() {
+  lang::select(lang::Choice::English);
+  {
+    Hub hub;
+    check(windowText(GetDlgItem(hub.window, navigation::languageExport)) == L"Export language template" &&
+          windowText(GetDlgItem(hub.window, IDOK)) == L"Save", "English settings labels load");
+  }
+  wchar_t directory[MAX_PATH]{}, file[MAX_PATH]{};
+  check(GetTempPathW(ARRAYSIZE(directory), directory) && GetTempFileNameW(directory, L"fnl", 0, file),
+        "create temporary XML");
+  struct Temp { const wchar_t *path; ~Temp() { DeleteFileW(path); } } cleanup{file};
+  lang::exportFile(file);
+  std::string xml;
+  {
+    std::ifstream input(std::filesystem::path(file), std::ios::binary);
+    xml.assign(std::istreambuf_iterator<char>(input), {});
+  }
+  auto label = xml.find(">Export language template</message>");
+  check(label != xml.npos, "template contains an editable UI message");
+  xml.replace(label + 1, std::string_view("Export language template").size(), "Translator &amp; tools");
+  std::ofstream(std::filesystem::path(file), std::ios::binary) << xml;
+  lang::importFile(file);
+  check(lang::settings().choice == lang::Choice::Custom &&
+        std::wstring_view(lang::text(L"导出语言模板")) == L"Translator & tools", "import activates an escaped translation");
+  std::ofstream(std::filesystem::path(file), std::ios::binary) << "<!DOCTYPE language><language/>";
+  bool rejected = false;
+  try { lang::importFile(file); } catch (const std::exception &) { rejected = true; }
+  check(rejected && std::wstring_view(lang::text(L"导出语言模板")) == L"Translator & tools",
+        "invalid XML leaves the active pack intact");
+  lang::select(lang::Choice::Chinese);
+  check(std::wstring_view(lang::text(L"导出语言模板")) == L"导出语言模板", "built-in Chinese can be restored");
+}
 }
 int main() {
   CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
   int result = 0;
-  try { Registry registry; scenarios(); std::cout << "PASS " << checks << " unified settings assertions: embedded routing, drafts, fixed version, scaling, cleanup\n"; }
+  try { Registry registry; scenarios(); languages(); std::cout << "PASS " << checks << " settings assertions including language round trip\n"; }
   catch (const std::exception &error) { std::cerr << "FAIL " << checks << ": " << error.what() << "\n"; result = 1; }
   CoUninitialize(); return result;
 }

@@ -1,4 +1,5 @@
 #include "core.h"
+#include "language.h"
 #include "navigation.h"
 #include "resource.h"
 #include <atomic>
@@ -52,7 +53,11 @@ public:
   ULONG STDMETHODCALLTYPE AddRef() override { return ++refs; }
   HRESULT STDMETHODCALLTYPE GetTitle(IShellItemArray*, PWSTR* p) override {
     if (!p) return E_POINTER;
-    return SHStrDupW(op == settingsOperation ? L"FolderNote 设置" : fn::titles[op], p);
+    try {
+      return SHStrDupW(lang::text(op == settingsOperation ? L"FolderNote 设置" : fn::titles[op]), p);
+    } catch (...) {
+      return E_FAIL;
+    }
   }
   HRESULT STDMETHODCALLTYPE GetIcon(IShellItemArray *, PWSTR *p) override {
     if (!p)

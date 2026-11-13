@@ -1,4 +1,5 @@
 #include "navigation_registration.h"
+#include "language.h"
 #include "explorer_tabs.h"
 #include <sddl.h>
 #include <shellapi.h>
@@ -6,7 +7,7 @@
 namespace navreg {
 static std::wstring ownerPath(const std::wstring &sid) {
   if (!validSid(sid))
-    throw fn::Error{L"安装用户标识无效，已停止注册导航扩展。"};
+    throw fn::Error{lang::text(L"安装用户标识无效，已停止注册导航扩展。")};
   return std::wstring(machineKey) + L"\\Owners\\" + sid;
 }
 
@@ -145,7 +146,7 @@ void unregisterMachine(const std::wstring &sid) {
 
 static void elevate(const fn::fs::path &helper, bool install, const std::wstring &sid) {
   if (!validSid(sid))
-    throw fn::Error{L"安装用户标识无效。"};
+    throw fn::Error{lang::text(L"安装用户标识无效。")};
   std::wstring arguments = install ? L"--register-navigation " : L"--unregister-navigation ";
   arguments += sid;
   SHELLEXECUTEINFOW execute{sizeof(execute)};
@@ -157,13 +158,13 @@ static void elevate(const fn::fs::path &helper, bool install, const std::wstring
   if (!ShellExecuteExW(&execute))
     fn::fail(L"导航扩展的管理员授权未完成");
   if (!execute.hProcess)
-    throw fn::Error{L"无法确认导航扩展注册结果。"};
+    throw fn::Error{lang::text(L"无法确认导航扩展注册结果。")};
   WaitForSingleObject(execute.hProcess, INFINITE);
   DWORD result = 1;
   GetExitCodeProcess(execute.hProcess, &result);
   CloseHandle(execute.hProcess);
   if (result)
-    throw fn::Error{L"导航扩展注册未完成，请重新运行安装或卸载程序并允许管理员授权。"};
+    throw fn::Error{lang::text(L"导航扩展注册未完成，请重新运行安装或卸载程序并允许管理员授权。")};
 }
 
 void ensureMachine(const fn::fs::path &helper) {
@@ -173,7 +174,7 @@ void ensureMachine(const fn::fs::path &helper) {
   if (!machineRegistered(sid) || legacyToolbarRegistered()) {
     elevate(helper, true, sid);
     if (!machineRegistered(sid) || legacyToolbarRegistered())
-      throw fn::Error{L"导航扩展注册结果未通过检查。"};
+      throw fn::Error{lang::text(L"导航扩展注册结果未通过检查。")};
   }
 }
 
@@ -203,8 +204,9 @@ void registerUser(const fn::fs::path &directory) {
   if (error)
     fn::fail(L"无法注册当前用户导航扩展", error);
   }
-  constexpr wchar_t title[] = L"FolderNote 文件夹标签";
-  auto error = RegSetKeyValueW(HKEY_CURRENT_USER, tabs::userKey, nullptr, REG_SZ, title, sizeof(title));
+  const auto *title = lang::text(L"FolderNote 文件夹标签");
+  auto error = RegSetKeyValueW(HKEY_CURRENT_USER, tabs::userKey, nullptr, REG_SZ, title,
+                               static_cast<DWORD>((wcslen(title) + 1) * sizeof(wchar_t)));
   if (error) fn::fail(L"无法注册标签工具栏名称", error);
 }
 

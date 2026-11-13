@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="592" viewBox="0 0 980 592" role="img" aria-labelledby="title" lang="en-US">
+  <title id="title">FolderNote Settings</title>
+  <g font-family="Segoe UI, Microsoft YaHei, PingFang SC, Noto Sans CJK SC, sans-serif">
+    <rect x="0.5" y="0.5" width="979" height="591" rx="9" fill="#f4f6f9" stroke="#d7dfe9"/>
+    <text x="18" y="24" font-size="13" font-weight="400" fill="#202a38" text-anchor="start">FolderNote Settings</text>
+    <path d="M883 20 h9 m27-4 h8 v8 h-8z m35 0 8 8 m0-8-8 8" fill="none" stroke="#516071" stroke-width="1.15" stroke-linecap="round"/>
+    <path d="M1 38 h978 M214 38 v553" stroke="#e1e5ec" fill="none"/>
+    <text x="20" y="91" font-size="25" font-weight="650" fill="#202a38" text-anchor="start">FolderNote</text>
+    <text x="20" y="114" font-size="14" font-weight="400" fill="#516071" text-anchor="start">System Tools</text>
+    <rect x="12" y="139" width="190" height="40" rx="5" fill="#e7f0fe" stroke="none"/>
+    <rect x="12" y="149" width="3" height="20" rx="1" fill="#1769d1" stroke="none"/>
+    <text x="28" y="164" font-size="15" font-weight="600" fill="#202a38" text-anchor="start">Features</text>
+    <text x="28" y="209" font-size="15" font-weight="400" fill="#202a38" text-anchor="start">Pinned and History</text>
+    <text x="20" y="263" font-size="14" font-weight="400" fill="#516071" text-anchor="start">Language</text>
+    <rect x="20" y="275" width="176" height="34" rx="4" fill="#ffffff" stroke="#d7dfe9"/>
+    <text x="32" y="297" font-size="14" font-weight="400" fill="#202a38" text-anchor="start">English</text>
+    <path d="M173 289 l4 4 4-4" fill="none" stroke="#516071" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="20" y="321" width="176" height="34" rx="4" fill="#ffffff" stroke="#d7dfe9"/>
+    <text x="108" y="343" font-size="14" font-weight="400" fill="#202a38" text-anchor="middle">Export language template</text>
+    <rect x="20" y="365" width="176" height="34" rx="4" fill="#ffffff" stroke="#d7dfe9"/>
+    <text x="108" y="387" font-size="14" font-weight="400" fill="#202a38" text-anchor="middle">Import language file</text>
+    <text x="20" y="525" font-size="14" font-weight="400" fill="#516071" text-anchor="start">Version 1.9.2 · x64</text>
+    <rect x="20" y="540" width="176" height="34" rx="4" fill="#ffffff" stroke="#d7dfe9"/>
+    <text x="108" y="562" font-size="14" font-weight="400" fill="#202a38" text-anchor="middle">Check for Updates</text>
+    <text x="237" y="89" font-size="25" font-weight="650" fill="#202a38" text-anchor="start">Features</text>
+    <text x="776" y="68" font-size="14" font-weight="400" fill="#516071" text-anchor="start">Appearance</text>
+    <rect x="776" y="78" width="180" height="34" rx="4" fill="#ffffff" stroke="#d7dfe9"/>
+    <text x="788" y="100" font-size="14" font-weight="400" fill="#202a38" text-anchor="start">Follow system</text>
+    <path d="M933 92 l4 4 4-4" fill="none" stroke="#516071" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="237" y="133" width="719" height="82" rx="8" fill="#ffffff" stroke="#d7dfe9"/>
+    <rect x="257" y="151" width="16" height="16" rx="3" fill="#ffffff" stroke="#516071"/>
+    <text x="283" y="164" font-size="15" font-weight="600" fill="#202a38" text-anchor="start">Folder Notes</text>
+    <text x="283" y="190" font-size="14" font-weight="400" fill="#516071" text-anchor="start">Add, edit, clear, and repair notes from a folder’s context menu.</text>
+    <rect x="237" y="226" width="719" height="111" rx="8" fill="#ffffff" stroke="#d7dfe9"/>
+    <rect x="257" y="244" width="16" height="16" rx="3" fill="#1769d1" stroke="#1769d1"/>
+    <path d="M261 252 l3 3 5-6" fill="none" stroke="#ffffff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="283" y="257" font-size="15" font-weight="600" fill="#202a38" text-anchor="start">Double-click Empty Space</text>
+    <rect x="283" y="270" width="384" height="34" rx="4" fill="#ffffff" stroke="#d7dfe9"/>
+    <text x="295" y="292" font-size="14" font-weight="400" fill="#202a38" text-anchor="start">Go up one level</text>
+    <path d="M644 284 l4 4 4-4" fill="none" stroke="#516071" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="283" y="323" font-size="14" font-weight="400" fill="#516071" text-anchor="start">Double-click empty space in the File Explorer file list.</text>
+    <rect x="237" y="348" width="719" height="153" rx="8" fill="#ffffff" stroke="#d7dfe9"/>
+    <rect x="257" y="366" width="16" height="16" rx="3" fill="#1769d1" stroke="#1769d1"/>
+    <path d="M261 374 l3 3 5-6" fill="none" stroke="#ffffff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="283" y="379" font-size="15" font-weight="600" fill="#202a38" text-anchor="start">Middle-click Folder Menu</text>
+    <rect x="283" y="392" width="16" height="16" rx="3" fill="#1769d1" stroke="#1769d1"/>
+    <path d="M287 400 l3 3 5-6" fill="none" stroke="#ffffff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="309" y="405" font-size="15" font-weight="600" fill="#202a38" text-anchor="start">Also support file and folder selection dialogs</text>
+    <text x="283" y="431" font-size="14" font-weight="400" fill="#516071" text-anchor="start">Open pinned, recent, or frequent folders. Hover to browse subfolders.</text>
+    <rect x="283" y="446" width="179" height="34" rx="4" fill="#ffffff" stroke="#d7dfe9"/>
+    <text x="372.5" y="468" font-size="14" font-weight="400" fill="#202a38" text-anchor="middle">Pinned and History →</text>
+    <rect x="237" y="540" width="158" height="34" rx="4" fill="#ffffff" stroke="#d7dfe9"/>
+    <text x="316" y="562" font-size="14" font-weight="400" fill="#202a38" text-anchor="middle">Copy Diagnostics</text>
+    <rect x="770" y="540" width="86" height="34" rx="4" fill="#1769d1" stroke="#1769d1"/>
+    <text x="813" y="562" font-size="14" font-weight="400" fill="#ffffff" text-anchor="middle">Save</text>
+    <rect x="870" y="540" width="86" height="34" rx="4" fill="#ffffff" stroke="#d7dfe9"/>
+    <text x="913" y="562" font-size="14" font-weight="400" fill="#202a38" text-anchor="middle">Cancel</text>
+  </g>
+</svg>

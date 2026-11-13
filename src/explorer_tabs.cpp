@@ -1,3 +1,4 @@
+#include "language.h"
 #include "explorer_tabs.h"
 #include "tabs_model.h"
 #include "tabs_routing.h"
@@ -63,7 +64,7 @@ Location location(PCIDLIST_ABSOLUTE id) {
   PWSTR text = nullptr;
   if (SUCCEEDED(SHGetNameFromIDList(id, SIGDN_NORMALDISPLAY, &text))) { value.name = text; CoTaskMemFree(text); }
   if (SUCCEEDED(SHGetNameFromIDList(id, SIGDN_FILESYSPATH, &text))) { value.path = text; CoTaskMemFree(text); }
-  if (value.name.empty()) value.name = L"文件夹";
+  if (value.name.empty()) value.name = lang::text(L"文件夹");
   return value;
 }
 Location current(IShellBrowser *browser) {
@@ -391,14 +392,14 @@ class Band final : public IDeskBand2, public IObjectWithSite, public IPersistStr
     const auto sender = window;
     const auto exemption = routing::enabled() ? routing::bypass(sender, routing::bypassAdd, id) : 0;
     if (routing::enabled() && routing::helperWindow() && !exemption) {
-      ui::message(frame, L"无法创建独立窗口，请稍后重试。", L"FolderNote", MB_OK | MB_ICONERROR); return;
+      ui::message(frame, lang::text(L"无法创建独立窗口，请稍后重试。"), L"FolderNote", MB_OK | MB_ICONERROR); return;
     }
     SHELLEXECUTEINFOW launch{sizeof(launch)};
     launch.hwnd = frame; launch.fMask = SEE_MASK_IDLIST | SEE_MASK_FLAG_NO_UI;
     launch.lpVerb = L"opennewwindow"; launch.lpIDList = const_cast<ITEMIDLIST *>(id); launch.nShow = SW_SHOWNORMAL;
     if (!ShellExecuteExW(&launch)) {
       if (exemption) routing::bypass(sender, routing::bypassCancel, nullptr, exemption);
-      ui::message(frame, L"无法在新窗口打开此文件夹。", L"FolderNote", MB_OK | MB_ICONERROR);
+      ui::message(frame, lang::text(L"无法在新窗口打开此文件夹。"), L"FolderNote", MB_OK | MB_ICONERROR);
     }
   }
   void layout(bool repaint = false) {
@@ -524,7 +525,7 @@ class Band final : public IDeskBand2, public IObjectWithSite, public IPersistStr
         launch.lpParameters = L"--settings"; launch.nShow = SW_SHOWNORMAL;
         if (ShellExecuteExW(&launch)) return;
       } catch (...) { }
-      ui::message(frame, L"无法打开 FolderNote 设置，请从开始菜单重试；若程序文件已被移除，请重新安装。", L"FolderNote", MB_OK | MB_ICONERROR);
+      ui::message(frame, lang::text(L"无法打开 FolderNote 设置，请从开始菜单重试；若程序文件已被移除，请重新安装。"), L"FolderNote", MB_OK | MB_ICONERROR);
       return;
     }
     if (changing || model.items.empty() || !navigation::tabsEnabled()) return;
@@ -556,18 +557,18 @@ class Band final : public IDeskBand2, public IObjectWithSite, public IPersistStr
     if (all) {
       for (size_t i = 0; i < model.items.size(); ++i) AppendMenuW(menu, MF_STRING | (i == model.active ? MF_CHECKED : 0), Select + i, model.items[i].name.c_str());
     } else {
-      AppendMenuW(menu, MF_STRING | (model.items.size() >= Model::limit ? MF_GRAYED : 0), New, L"新建标签");
+      AppendMenuW(menu, MF_STRING | (model.items.size() >= Model::limit ? MF_GRAYED : 0), New, lang::text(L"新建标签"));
       bool valid = selected >= 0 && size_t(selected) < model.items.size();
-      AppendMenuW(menu, MF_STRING | (!valid || model.items.size() >= Model::limit ? MF_GRAYED : 0), Duplicate, L"复制标签");
-      AppendMenuW(menu, MF_STRING | (valid ? 0 : MF_GRAYED), NewWindow, L"在新窗口打开");
-      AppendMenuW(menu, MF_STRING | (!valid || model.items[selected].path.empty() ? MF_GRAYED : 0), CopyPath, L"复制文件夹路径");
+      AppendMenuW(menu, MF_STRING | (!valid || model.items.size() >= Model::limit ? MF_GRAYED : 0), Duplicate, lang::text(L"复制标签"));
+      AppendMenuW(menu, MF_STRING | (valid ? 0 : MF_GRAYED), NewWindow, lang::text(L"在新窗口打开"));
+      AppendMenuW(menu, MF_STRING | (!valid || model.items[selected].path.empty() ? MF_GRAYED : 0), CopyPath, lang::text(L"复制文件夹路径"));
       AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
       bool closable = valid && model.items.size() > 1;
-      AppendMenuW(menu, MF_STRING | (closable ? 0 : MF_GRAYED), Close, L"关闭标签");
-      AppendMenuW(menu, MF_STRING | (closable ? 0 : MF_GRAYED), CloseOthers, L"关闭其他标签");
-      AppendMenuW(menu, MF_STRING | (model.closed.empty() ? MF_GRAYED : 0), Restore, L"恢复刚关闭的标签");
+      AppendMenuW(menu, MF_STRING | (closable ? 0 : MF_GRAYED), Close, lang::text(L"关闭标签"));
+      AppendMenuW(menu, MF_STRING | (closable ? 0 : MF_GRAYED), CloseOthers, lang::text(L"关闭其他标签"));
+      AppendMenuW(menu, MF_STRING | (model.closed.empty() ? MF_GRAYED : 0), Restore, lang::text(L"恢复刚关闭的标签"));
       AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-      AppendMenuW(menu, MF_STRING, Settings, L"设置");
+      AppendMenuW(menu, MF_STRING, Settings, lang::text(L"设置"));
     }
     auto choice = TrackPopupMenuEx(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, point.x, point.y, window, nullptr); DestroyMenu(menu);
     if (choice) run(all ? Select : choice, all ? choice - Select : selected >= 0 ? size_t(selected) : model.active);
@@ -982,14 +983,14 @@ public:
       site = std::move(newSite); browser = std::move(newBrowser); web = std::move(newWeb); input = std::move(newInput);
       stage = L"create-band-window";
       WNDCLASSW cls{}; cls.hInstance = codeModule(); cls.lpfnWndProc = proc; cls.lpszClassName = bandClass; cls.hCursor = LoadCursorW(nullptr, IDC_ARROW); RegisterClassW(&cls);
-      window = CreateWindowExW(WS_EX_CONTROLPARENT, bandClass, L"FolderNote 文件夹标签", WS_CHILD | WS_CLIPCHILDREN,
+      window = CreateWindowExW(WS_EX_CONTROLPARENT, bandClass, lang::text(L"FolderNote 文件夹标签"), WS_CHILD | WS_CLIPCHILDREN,
           0, 0, 400, 34, parent, nullptr, codeModule(), this);
       if (!window) { detach(); return finish(E_FAIL); }
       dpi = GetDpiForWindow(window);
       INITCOMMONCONTROLSEX controls{sizeof(controls), ICC_TAB_CLASSES}; InitCommonControlsEx(&controls);
-      tabs = CreateWindowW(WC_TABCONTROLW, L"文件夹标签", WS_CHILD | WS_VISIBLE | WS_TABSTOP | TCS_FIXEDWIDTH | TCS_FOCUSONBUTTONDOWN | TCS_OWNERDRAWFIXED | TCS_TOOLTIPS,
+      tabs = CreateWindowW(WC_TABCONTROLW, lang::text(L"文件夹标签"), WS_CHILD | WS_VISIBLE | WS_TABSTOP | TCS_FIXEDWIDTH | TCS_FOCUSONBUTTONDOWN | TCS_OWNERDRAWFIXED | TCS_TOOLTIPS,
           0, 0, 1, 1, window, reinterpret_cast<HMENU>(1), codeModule(), nullptr);
-      overflow = CreateWindowW(L"BUTTON", L"所有标签", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, 0, 0, 1, 1, window, reinterpret_cast<HMENU>(3), codeModule(), nullptr);
+      overflow = CreateWindowW(L"BUTTON", lang::text(L"所有标签"), WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, 0, 0, 1, 1, window, reinterpret_cast<HMENU>(3), codeModule(), nullptr);
       if (!tabs || !overflow) { detach(); return finish(E_FAIL); }
       SetWindowSubclass(tabs, tabProc, 1, reinterpret_cast<DWORD_PTR>(this)); fonts();
       SetPropW(frame, windowProperty, window);

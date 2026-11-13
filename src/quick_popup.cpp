@@ -1,4 +1,5 @@
 #include "quick_popup.h"
+#include "language.h"
 #include "window_position.h"
 #include "core.h"
 #include "quick_icons.h"
@@ -176,10 +177,10 @@ struct Session {
     for (const auto &item : panel.branch->items) {
       std::wstring accessible = item.title;
       for (const auto &action : item.actions) {
-        if (!accessible.empty()) accessible += L"；";
+        if (!accessible.empty()) accessible += lang::text(L"；");
         accessible += action.title;
-        if (!action.enabled) accessible += L"（不可用）";
-        else if (action.checked) accessible += L"（已选）";
+        if (!action.enabled) accessible += lang::text(L"（不可用）");
+        else if (action.checked) accessible += lang::text(L"（已选）");
       }
       int row = static_cast<int>(SendMessageW(panel.list, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(accessible.c_str())));
       SendMessageW(panel.list, LB_SETITEMHEIGHT, row, height(item));
@@ -407,7 +408,7 @@ struct Session {
       SelectObject(dc, action.text.empty() ? symbols : font);
       auto iconColor = !action.enabled ? p.muted : accented || (hot && p.highContrast) ? p.onAccent : p.text;
       ui::text(dc, action.text.empty() ? std::wstring(1, actionGlyph(action.symbol)) : action.text, bounds, iconColor,
-          DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+          DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
     }
     SelectObject(dc, old);
   }
@@ -625,7 +626,7 @@ LRESULT CALLBACK panelProc(HWND window, UINT message, WPARAM w, LPARAM l) {
 Panel &Session::create(std::shared_ptr<Branch> branch, POINT point, bool child, RECT parent) {
   auto panel = std::make_unique<Panel>(); panel->session = this; panel->branch = std::move(branch); panel->level = panels.size();
   auto *value = panel.get();
-  panel->window = CreateWindowExW(WS_EX_TOOLWINDOW | (child ? WS_EX_NOACTIVATE : 0), panelClass, L"快速文件夹",
+  panel->window = CreateWindowExW(WS_EX_TOOLWINDOW | (child ? WS_EX_NOACTIVATE : 0), panelClass, lang::text(L"快速文件夹"),
       WS_POPUP | WS_CLIPCHILDREN, point.x, point.y, 1, 1, child ? root() : nullptr, nullptr, instance, value);
   if (!panel->window) throw std::bad_alloc();
   if (!child) {
@@ -634,7 +635,7 @@ Panel &Session::create(std::shared_ptr<Branch> branch, POINT point, bool child, 
     SHSTOCKICONINFO icon{sizeof(icon)};
     if (SUCCEEDED(SHGetStockIconInfo(SIID_FOLDER, SHGSI_ICON | SHGSI_SMALLICON, &icon))) folder = icon.hIcon;
   }
-  panel->list = CreateWindowExW(0, L"LISTBOX", L"文件夹位置", WS_CHILD | WS_VISIBLE | WS_TABSTOP | LBS_OWNERDRAWVARIABLE | LBS_HASSTRINGS | LBS_NOINTEGRALHEIGHT | LBS_NOTIFY,
+  panel->list = CreateWindowExW(0, L"LISTBOX", lang::text(L"文件夹位置"), WS_CHILD | WS_VISIBLE | WS_TABSTOP | LBS_OWNERDRAWVARIABLE | LBS_HASSTRINGS | LBS_NOINTEGRALHEIGHT | LBS_NOTIFY,
       0, 0, 1, 1, panel->window, reinterpret_cast<HMENU>(1), instance, nullptr);
   if (!panel->list) { DestroyWindow(panel->window); throw std::bad_alloc(); }
   SendMessageW(panel->list, WM_SETFONT, reinterpret_cast<WPARAM>(font), FALSE);
@@ -659,7 +660,7 @@ unsigned show(HINSTANCE instance, POINT point, std::shared_ptr<Branch> root, ui:
   Session session(instance, theme); auto &panel = session.create(std::move(root), point, false);
   session.anchor = anchor;
   ContextWatch watch(session);
-  if (!watch.ready()) throw fn::Error{L"无法启动快速菜单的窗口交互，请关闭后重新开启中键快速定位。"};
+  if (!watch.ready()) throw fn::Error{lang::text(L"无法启动快速菜单的窗口交互，请关闭后重新开启中键快速定位。")};
   if (!IsWindow(anchor) || GetForegroundWindow() != anchor) return 0;
   // Show first, without requesting or requiring a foreground handoff. A real
   // click can activate the menu normally; arrows/Esc also work before that.
