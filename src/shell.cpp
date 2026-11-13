@@ -81,7 +81,7 @@ public:
     DWORD count=0; *state=ECS_HIDDEN;
     // Compatibility for a cached 1.4.0 menu: Settings now lives in Start.
     if (op == settingsOperation) return S_OK;
-    if (!navigation::notesEnabled()) return S_OK;
+    if (!navigation::notesEnabled() || navigation::noteCommandHidden(op)) return S_OK;
     if(items&&SUCCEEDED(items->GetCount(&count))&&count&&(op!=0||count==1))*state=ECS_ENABLED;
     return S_OK;
   }
@@ -120,7 +120,7 @@ public:
         return launch(L"--settings");
       // A menu can remain open while settings change. Recheck before creating
       // a request or launching a note operation from that stale menu.
-      if (!navigation::notesEnabled())
+      if (!navigation::notesEnabled() || navigation::noteCommandHidden(op))
         return E_ACCESSDENIED;
       if (!selection)
         return E_FAIL;

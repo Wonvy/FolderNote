@@ -149,17 +149,18 @@ cmake --build build-x86 --config Release --target LegacyDialogFixture
 
 ### 首次发布到 GitHub
 
-在 GitHub 建立一个公开的空仓库，以便程序无需登录即可读取 Releases。现有 `origin` 可继续用于 NAS。在项目目录审阅 `git status` 和提交内容后，执行以下命令，将 `OWNER` 替换为自己的 GitHub 用户名或组织名。
+在 GitHub 建立一个公开仓库，以便程序无需登录即可读取 Releases。在项目目录审阅 `git status` 和提交内容后，执行以下命令，将 `OWNER` 替换为自己的 GitHub 用户名或组织名。已有 `github` 远程仓库时，跳过添加远程仓库的命令。
 
 ```powershell
-git add .github packaging src tests docs CMakeLists.txt README.md CHANGELOG.md
+$version = (Get-Item .\build\Release\FolderNote.exe).VersionInfo.ProductVersion
+git add .github packaging src tests docs CMakeLists.txt README.md README.en.md CHANGELOG.md
 git diff --cached --stat
 git diff --cached
-git commit -m "Release FolderNote 1.9.2"
+git commit -m "Release FolderNote $version"
 git remote add github https://github.com/OWNER/FolderNote.git
-git push github main
-git tag -a v1.9.2 -m "FolderNote 1.9.2"
-git push github v1.9.2
+git push -u github main
+git tag -a "v$version" -m "FolderNote $version"
+git push github "v$version"
 ```
 
 推送 `main` 会在 Actions 生成构建产物，推送与 CMake 版本一致的 `v<版本>` 标签后会自动发布 Releases。CI 将当前 GitHub 仓库写入发布版，设置窗口便能检查后续发布。本地若要启用同一更新源，构建前用 `cmake --preset windows-x64 -DFOLDERNOTE_UPDATE_REPOSITORY=OWNER/FolderNote` 配置。升级时从 Releases 下载与你当前安装类型相同的包。

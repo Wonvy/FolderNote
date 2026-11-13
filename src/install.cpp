@@ -1,5 +1,7 @@
 #include "core.h"
 #include "language.h"
+#include "context_commands.h"
+#include "context_inventory.h"
 #include "navigation.h"
 #include "navigation_registration.h"
 #include "resource.h"
@@ -230,6 +232,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
       quick::stopHelper();
 #endif
       navreg::unregisterUser();
+      context::unregisterCommands();
+      const auto unresolvedContextMenus = context::restoreAll();
 #ifdef FOLDERNOTE_UNINSTALL_ONLY
       bool modernRemoved = removeModernPackage();
 #endif
@@ -267,10 +271,15 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
 #endif
       if (!remaining.empty())
         result = 2;
-      const std::wstring message = remaining.empty()
+      std::wstring message = remaining.empty()
           ? lang::text(L"已卸载。所有文件夹备注均已保留。")
           : lang::format(L"右键菜单已移除，文件夹备注已保留。以下程序文件仍在使用，请关闭相关窗口或注销后删除：\n{0}",
                          {remaining});
+      if (unresolvedContextMenus) {
+        message += L"\n\n";
+        message += lang::text(L"部分右键菜单已被其他程序修改，原有恢复记录仍保留。");
+        result = 2;
+      }
       MessageBoxW(nullptr, message.c_str(), L"FolderNote", MB_OK | MB_ICONINFORMATION);
     } else {
       auto source = self.parent_path();
@@ -285,6 +294,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
       navigation::stopLegacy();
       navreg::registerUser(active);
       registerMenus(active, navigationOnly);
+      context::registerCommands(active / L"FolderNote.exe");
       createSettingsShortcut(active);
       std::wstring u = L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstal"
                        L"l\\FolderNote";

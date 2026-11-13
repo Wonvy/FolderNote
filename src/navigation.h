@@ -14,6 +14,8 @@ struct Click {
 bool isDoubleClick(const Click &first, const Click &second, UINT interval, int width, int height);
 Action configuredAction();
 bool notesEnabled();
+bool noteCommandHidden(int operation);
+void setNoteCommandHidden(int operation, bool hidden);
 bool quickEnabled();
 bool dialogQuickEnabled();
 bool tabsSupported();
@@ -32,6 +34,6 @@ std::wstring diagnostics();
 void stopLegacy();
 void stop();
 void reload();
-enum class SettingsPage { Features, QuickFolders };
+enum class SettingsPage { Features, QuickFolders, ContextMenus, Preferences };
 int settings(HINSTANCE instance, SettingsPage page = SettingsPage::Features);
 } // namespace navigation

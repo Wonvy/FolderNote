@@ -2,22 +2,23 @@
 
 [简体中文](README.md) · [English](README.en.md)
 
-**Windows File Explorer tools · Version 1.9.2 · x64**
+**Windows File Explorer tools · Version 1.9.3 · x64**
 
-FolderNote adds folder notes, double-click navigation, a middle-click folder menu, and tabs for Windows 10. Each feature has its own switch in a native Win32 settings window. No separate C++ runtime installation is required.
+FolderNote adds context menu management, folder notes, double-click navigation, a middle-click folder menu, and tabs for Windows 10. Each feature has its own switch in a native Win32 settings window. No separate C++ runtime installation is required.
 
 [User guide (Chinese)](docs/USER_GUIDE.md) · [Development and builds (Chinese)](docs/DEVELOPMENT.md) · [Changelog (Chinese)](CHANGELOG.md) · [Contributing (Chinese)](CONTRIBUTING.md)
 
 ## Interface preview
 
-![Illustration of FolderNote settings in English](docs/previews/settings-en-US.svg)
+![FolderNote Context Menu Manager in English](docs/previews/settings-en-US.png)
 
-Settings illustration · [View the Simplified Chinese interface](docs/previews/settings-zh-CN.svg)
+[View the Simplified Chinese interface](docs/previews/settings-zh-CN.png)
 
 ## Features
 
 | Feature | How to use it | Default |
 | --- | --- | --- |
+| Context Menu Manager | Browse existing menus by Explorer object, hide or restore supported entries, and create ordered FolderNote commands. | Off |
 | Folder notes | Add, edit, clear, or repair notes from a folder's context menu. Show notes in the Comments column in File Explorer. | Off |
 | Double-click empty space | Go up one level or configure the gesture to go back. | Go up one level |
 | Middle-click folder menu | Open pinned, recent, and frequently used folders on the desktop or in File Explorer. Hover over folders to browse subfolders. You can also enable the menu in file and folder dialogs. | Off |
@@ -25,16 +26,22 @@ Settings illustration · [View the Simplified Chinese interface](docs/previews/s
 | Tabs on Windows 10 | Create, duplicate, close, and reopen tabs. Scroll over the tab bar to switch tabs or middle-click a tab to close it. | Off |
 | Open folders in new tabs | Route new folder windows to tabs in an existing window on Windows 10. A tab's context menu also offers Open in New Window. | Off |
 | Appearance | Use a light, dark, or system theme with DPI scaling and the folders' own icons. | Follow system |
-| Interface language | Choose Simplified Chinese or English, export a translation template, or import a custom XML language file. | Switch in the settings sidebar |
+| Interface language | Choose Simplified Chinese or English, export a translation template, or import a custom XML language file. | Settings tab |
 
 Windows 11 uses its built-in File Explorer tabs. The Windows 10 option to open folders in tabs opens the first window normally and applies to subsequent folder opens. If an existing window cannot accept the folder, File Explorer opens a separate window.
 
 In a build published on GitHub, choose **Check for Updates** at the bottom left of the settings window. After you confirm, FolderNote downloads and verifies the matching installer package and launches the installer.
 
+## Manage context menus
+
+Choose **Context Menu Manager** in the settings sidebar. Browse menus for files, extensions, folders, folder backgrounds, drives, and the desktop, plus the **New**, **Send to**, and **Open with** submenus. Select a row to view its source. The eye icon hides or restores supported entries.
+
+Add programs, websites, or CMD and PowerShell commands under **Custom commands**. You can limit commands to a folder or file extension and set their order in the FolderNote submenu. See the [user guide](docs/USER_GUIDE.md#右键菜单管理) for the supported changes and how to restore them.
+
 ## Install and get started
 
 1. Extract the entire installer archive. Run `Install.exe` for the standard edition or `Install-Win11.exe` for the Windows 11 first-level context menu test edition. Keep the EXE, DLL, and MSIX files together. The first installation may request administrator approval to register the navigation extension.
-2. Find **FolderNote** in the Start menu or open `FolderNote.exe`. Use the sidebar to switch between the feature settings and the pinned folders and history page. The running version appears at the bottom left.
+2. Find **FolderNote** in the Start menu or open `FolderNote.exe`. Use the sidebar to switch between Features, Pins and history, Context Menu Manager, and Settings. The running version appears at the bottom left.
 3. Enable the features you want and save. To display notes, add the **Comments** column to File Explorer's Details view.
 4. Close and reopen File Explorer windows after installing or upgrading. If Explorer still has the old extension loaded, wait for any file operations to finish before restarting Explorer.
 
@@ -42,7 +49,7 @@ The standard edition uses the folder context menu on Windows 10 and **Show more 
 
 ## Translate the interface
 
-1. Open **FolderNote settings** and choose English or Simplified Chinese from the **Language** list in the sidebar.
+1. Open **FolderNote Settings**, select the **Settings** tab and choose English or Simplified Chinese from the **Language** list.
 2. To create another language, click **Export language template** or [download the XML template](docs/FolderNote-language.xml). Edit the XML's `name` attribute and translated strings in a text editor. Keep entry IDs and placeholders such as `{0}` intact. Missing entries use English.
 3. Save the file as UTF-8 with an `.xml` extension and click **Import language file** to apply the translation.
 4. Close and reopen File Explorer windows to see the localized context menus.
@@ -78,4 +85,4 @@ Binaries go to `build/Release/`. Run `packaging/build-release.ps1` after the Rel
 
 ## Compatibility
 
-FolderNote targets Windows 10 and 11 on x64. Automated tests exercise folder navigation, the middle-click menu, folder selection, and copy and move operations. The unsigned Windows 11 first-level context menu package is intended for testing. See the [user guide](docs/USER_GUIDE.md) for supported configurations and troubleshooting.
+FolderNote targets Windows 10 and 11 on x64. Version 1.9.3 passed all 24 CTest tests on Windows 10 22H2, covering context menu inventory, hiding and restoring entries, the settings interface, language selection, folder navigation, the middle-click menu, and file transfers. The unsigned Windows 11 first-level context menu package is intended for testing. See the [user guide](docs/USER_GUIDE.md) for supported configurations and troubleshooting.

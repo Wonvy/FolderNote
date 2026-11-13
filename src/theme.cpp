@@ -26,7 +26,7 @@ LRESULT CALLBACK controlProc(HWND window, UINT message, WPARAM w, LPARAM l, UINT
     TRACKMOUSEEVENT track{sizeof(track), TME_LEAVE, window, 0}; TrackMouseEvent(&track);
     InvalidateRect(window, nullptr, FALSE);
   }
-  if (message == WM_PAINT && (button || combo)) {
+  if (message == WM_PAINT && (combo || (button && (GetWindowLongPtrW(window, GWL_STYLE) & BS_TYPEMASK) != BS_OWNERDRAW))) {
     PAINTSTRUCT paint{}; HDC dc = BeginPaint(window, &paint);
     RECT rect{}; GetClientRect(window, &rect);
     auto oldFont = SelectObject(dc, reinterpret_cast<HFONT>(SendMessageW(window, WM_GETFONT, 0, 0)));

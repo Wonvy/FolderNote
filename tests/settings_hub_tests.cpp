@@ -2,9 +2,12 @@
 // Compile the actual settings controller so page routing and layout are tested
 // without starting Explorer, helpers, or a second interactive settings process.
 #include "../src/navigation.cpp"
+#include "../src/context_inventory.h"
+#include "../src/context_commands.h"
 #include <iostream>
 #include <stdexcept>
 #include <fstream>
+#include <shellapi.h>
 
 namespace {
 int checks = 0;
@@ -69,8 +72,9 @@ void inspectVersion(HWND window) {
   HWND update = GetDlgItem(window, navigation::updateButton);
   auto updateBounds = childBounds(update, window);
   check(visibleStyle(update) && windowText(update) == L"检查更新" &&
-        updateBounds.top >= bounds.bottom && updateBounds.bottom <= client.bottom &&
-        updateBounds.right <= navigation::scale(208), "update button stays visible below the version");
+        updateBounds.left >= bounds.right && updateBounds.top <= bounds.top && updateBounds.bottom >= bounds.bottom &&
+        updateBounds.bottom <= client.bottom && updateBounds.right <= navigation::scale(navigation::settingsSidebarWidth),
+        "update icon and version share one row");
   check(bounds.left >= 0 && bounds.top >= 0 && bounds.right <= client.right && bounds.bottom <= client.bottom,
         "version stays inside resized settings window");
   auto secondTab = childBounds(GetDlgItem(window, 41), window);
@@ -106,6 +110,15 @@ void inspectNewTabOption() {
 }
 void scenarios() {
   Hub hub;
+  navigation::showPage(navigation::SettingsPage::Preferences);
+  check(visibleStyle(GetDlgItem(hub.window, navigation::languageChoice)) && visibleStyle(navigation::themeChoice),
+        "language and theme controls are visible on Preferences");
+  navigation::showPage(navigation::SettingsPage::ContextMenus);
+  check(!visibleStyle(GetDlgItem(hub.window, navigation::languageChoice)) && !visibleStyle(navigation::themeChoice),
+        "preferences are hidden on other pages");
+  check(visibleStyle(navigation::contextPage) && GetParent(navigation::contextPage) == hub.window &&
+        !visibleStyle(navigation::body) && !visibleStyle(navigation::managerPage),
+        "context manager is an embedded settings page");
   navigation::showPage(navigation::SettingsPage::Features);
   check(visibleStyle(navigation::body) && !visibleStyle(navigation::managerPage), "only feature page initially visible");
   check(!navigation::notesEnabled(), "isolated notes default remains off");
@@ -228,11 +241,142 @@ void languages() {
   lang::select(lang::Choice::Chinese);
   check(std::wstring_view(lang::text(L"导出语言模板")) == L"导出语言模板", "built-in Chinese can be restored");
 }
+void contextInventory() {
+  constexpr auto verb = L"Software\\Classes\\Directory\\shell\\ExampleFixture";
+  constexpr auto command = L"Software\\Classes\\Directory\\shell\\ExampleFixture\\command";
+  const wchar_t name[] = L"Fixture command";
+  const wchar_t commandLine[] = L"\"C:\\Windows\\System32\\notepad.exe\" \"%1\"";
+  check(RegSetKeyValueW(HKEY_CURRENT_USER, verb, nullptr, REG_SZ, name, sizeof(name)) == ERROR_SUCCESS &&
+        RegSetKeyValueW(HKEY_CURRENT_USER, command, nullptr, REG_SZ, commandLine, sizeof(commandLine)) == ERROR_SUCCESS,
+        "register an isolated folder command");
+  auto read = [&] {
+    auto entries = context::inventory(context::Scene::Folder);
+    auto item = std::find_if(entries.begin(), entries.end(), [&](const auto &entry) { return entry.registryKey == verb; });
+    check(item != entries.end(), "inventory finds the isolated folder command");
+    return *item;
+  };
+  auto item = read();
+  check(item.canHide && item.canEdit && !item.hidden, "a user static command supports reversible changes");
+  context::setHidden(item, true);
+  item = read();
+  check(item.hidden && item.managed, "hiding an existing command saves its restore state");
+  context::setAppearance(item, L"Renamed fixture", L"");
+  check(read().label == L"Renamed fixture", "edited command label is visible");
+  check(context::restoreAll() == 0, "restore all resolves the managed record");
+  item = read();
+  check(!item.hidden && item.label == name, "restoring recovers label and visibility");
+  constexpr auto cascade = L"Software\\Classes\\Directory\\shell\\ExampleCascade";
+  const wchar_t subCommands[] = L"Fixture.First;Fixture.Second";
+  check(RegSetKeyValueW(HKEY_CURRENT_USER, cascade, L"SubCommands", REG_SZ, subCommands, sizeof(subCommands)) == ERROR_SUCCESS,
+        "register an isolated static cascade without a default command");
+  auto readCascade = [&] {
+    auto entries = context::inventory(context::Scene::Folder);
+    auto result = std::find_if(entries.begin(), entries.end(), [&](const auto &entry) { return entry.registryKey == cascade; });
+    check(result != entries.end(), "inventory finds the isolated cascade");
+    return *result;
+  };
+  auto group = readCascade();
+  check(group.canHide && group.command.empty() && group.cascadeChildren == std::vector<std::wstring>{L"Fixture.First", L"Fixture.Second"},
+        "a static cascade is recognized from its child list without a command");
+  context::setHidden(group, true);
+  group = readCascade();
+  check(group.hidden && group.managed, "static cascade visibility is reversible");
+  context::restore(group);
+  check(!readCascade().hidden, "restoring a cascade removes only its visibility marker");
+  constexpr auto extended = L"Software\\Classes\\Directory\\shell\\ExampleExtendedCascade";
+  constexpr auto extendedChild = L"Software\\Classes\\Directory\\shell\\ExampleExtendedCascade\\shell\\ExampleAction\\command";
+  const wchar_t extendedTarget[] = L"Directory\\shell\\ExampleExtendedCascade";
+  check(RegSetKeyValueW(HKEY_CURRENT_USER, extended, L"ExtendedSubCommandsKey", REG_SZ,
+                        extendedTarget, sizeof(extendedTarget)) == ERROR_SUCCESS &&
+        RegSetKeyValueW(HKEY_CURRENT_USER, extendedChild, nullptr, REG_SZ, commandLine, sizeof(commandLine)) == ERROR_SUCCESS,
+        "register an isolated cascade with an inline subcommand");
+  auto readExtended = [&] {
+    auto entries = context::inventory(context::Scene::Folder);
+    auto result = std::find_if(entries.begin(), entries.end(), [&](const auto &entry) { return entry.registryKey == extended; });
+    check(result != entries.end(), "inventory finds the extended cascade");
+    return *result;
+  };
+  auto extendedGroup = readExtended();
+  check(extendedGroup.canHide && extendedGroup.children.size() == 1 && extendedGroup.children[0].label == L"ExampleAction",
+        "inline cascade is manageable and its leaf command is discoverable");
+  context::setHidden(extendedGroup, true);
+  extendedGroup = readExtended();
+  check(extendedGroup.hidden && extendedGroup.children[0].hidden && extendedGroup.managed,
+        "hiding the cascade marks its child as hidden and records ownership");
+  context::setHidden(extendedGroup, false);
+  check(!readExtended().hidden, "unhiding removes the app-owned visibility markers");
+  const DWORD externalVelocity = 0x639bc8;
+  check(RegSetKeyValueW(HKEY_CURRENT_USER, extended, L"HideBasedOnVelocityId", REG_DWORD,
+                        &externalVelocity, sizeof(externalVelocity)) == ERROR_SUCCESS,
+        "register a visibility marker from an external menu manager");
+  extendedGroup = readExtended();
+  check(extendedGroup.hidden && !extendedGroup.managed && !extendedGroup.canHide,
+        "externally disabled cascades remain untouched");
+  constexpr auto activeHandler = L"Software\\Classes\\Folder\\shellex\\ContextMenuHandlers\\ExampleHandler";
+  constexpr auto disabledHandler = L"Software\\Classes\\Directory\\shellex\\-ContextMenuHandlers\\ExampleHandler";
+  const wchar_t handlerId[] = L"{AFF13484-F8C8-4E3A-A537-EC993BB16604}";
+  check(RegSetKeyValueW(HKEY_CURRENT_USER, activeHandler, nullptr, REG_SZ, handlerId, sizeof(handlerId)) == ERROR_SUCCESS &&
+        RegSetKeyValueW(HKEY_CURRENT_USER, disabledHandler, nullptr, REG_SZ, handlerId, sizeof(handlerId)) == ERROR_SUCCESS,
+        "register isolated active and disabled handlers sharing a CLSID");
+  const auto registrations = context::inventory(context::Scene::Folder);
+  auto enabled = std::find_if(registrations.begin(), registrations.end(),
+      [&](const auto &entry) { return entry.registryKey == activeHandler; });
+  auto disabled = std::find_if(registrations.begin(), registrations.end(),
+      [&](const auto &entry) { return entry.registryKey == disabledHandler; });
+  check(enabled != registrations.end() && !enabled->hidden, "active handler remains visible in the same scene");
+  check(disabled != registrations.end() && disabled->hidden && !disabled->canHide && !disabled->managed &&
+        !disabled->shellBlock && disabled->source == std::wstring(L"HKCU\\") + disabledHandler,
+        "externally disabled handler is discovered at its physical source and remains read-only");
+  context::setHidden(item, true);
+  const wchar_t replacement[] = L"External change";
+  check(RegSetKeyValueW(HKEY_CURRENT_USER, verb, L"LegacyDisable", REG_SZ, replacement, sizeof(replacement)) == ERROR_SUCCESS,
+        "simulate a third-party update to a managed value");
+  check(context::restoreAll() == 1 && read().hidden, "restore retains an externally modified value");
+}
+void contextCommands() {
+  check(!context::commandsEnabled() && context::loadCommands().empty(), "context command feature is off initially");
+  context::Command first;
+  first.name = L"First";
+  first.mode = context::Mode::Url;
+  first.program = L"https://example.com/";
+  first.scene = context::Scene::Folder;
+  auto second = first;
+  second.name = L"Second";
+  const auto exe = fn::modulePath();
+  context::saveCommands(true, {second, first}, exe);
+  auto loaded = context::loadCommands();
+  check(context::commandsEnabled() && loaded.size() == 2 &&
+        loaded[0].name == L"Second" && loaded[1].name == L"First", "custom command ordering persists");
+  constexpr auto registration = L"Software\\Classes\\Directory\\shell\\FolderNote.ContextCommands\\ExtendedSubCommandsKey\\shell\\1000";
+  wchar_t name[64]{};
+  DWORD bytes = sizeof(name);
+  check(RegGetValueW(HKEY_CURRENT_USER, registration, L"MUIVerb", RRF_RT_REG_SZ, nullptr, name, &bytes) == ERROR_SUCCESS &&
+        std::wstring_view(name) == L"Second", "the first Shell submenu entry matches the saved order");
+  wchar_t invocation[2048]{};
+  bytes = sizeof(invocation);
+  check(RegGetValueW(HKEY_CURRENT_USER, (std::wstring(registration) + L"\\command").c_str(), nullptr,
+        RRF_RT_REG_SZ, nullptr, invocation, &bytes) == ERROR_SUCCESS, "Shell menu invokes a versioned command token");
+  int argc = 0;
+  auto argv = CommandLineToArgvW(invocation, &argc);
+  const auto token = argv && argc == 4 ? std::wstring(argv[2]) : std::wstring{};
+  LocalFree(argv);
+  check(!token.empty(), "the command token survives Windows argument parsing");
+  context::saveCommands(true, {first, second}, exe);
+  bool rejected = false;
+  try { context::runCommand(token, L"C:\\|"); } catch (const fn::Error &) { rejected = true; }
+  check(rejected, "a stale command token cannot invoke a different command after reordering");
+  context::saveCommands(false, loaded, exe);
+  check(!context::commandsEnabled() && context::loadCommands().size() == 2,
+        "disabling retains the ordered command configuration");
+  bytes = sizeof(name);
+  check(RegGetValueW(HKEY_CURRENT_USER, registration, L"MUIVerb", RRF_RT_REG_SZ, nullptr, name, &bytes) == ERROR_FILE_NOT_FOUND,
+        "disabling removes Shell menu entries");
+}
 }
 int main() {
   CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
   int result = 0;
-  try { Registry registry; scenarios(); languages(); std::cout << "PASS " << checks << " settings assertions including language round trip\n"; }
+  try { Registry registry; scenarios(); languages(); contextInventory(); contextCommands(); std::cout << "PASS " << checks << " settings, language and context menu assertions\n"; }
   catch (const std::exception &error) { std::cerr << "FAIL " << checks << ": " << error.what() << "\n"; result = 1; }
   CoUninitialize(); return result;
 }

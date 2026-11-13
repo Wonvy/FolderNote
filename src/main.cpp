@@ -1,5 +1,6 @@
 #include "core.h"
 #include "language.h"
+#include "context_commands.h"
 #include "navigation.h"
 #include "quick_folders.h"
 #include <climits>
@@ -317,6 +318,16 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
   CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
   int argc = 0;
   auto argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+  if (argc == 4 && std::wstring_view(argv[1]) == L"--context-command") {
+    int result = 1;
+    try { result = context::runCommand(argv[2], argv[3]); }
+    catch (const fn::Error &error) {
+      MessageBoxW(nullptr, error.message.c_str(), L"FolderNote", MB_OK | MB_ICONERROR);
+    } catch (...) {
+      MessageBoxW(nullptr, lang::text(L"无法执行右键菜单命令。"), L"FolderNote", MB_OK | MB_ICONERROR);
+    }
+    LocalFree(argv); CoUninitialize(); return result;
+  }
   if (argc == 2 && std::wstring(argv[1]) == L"--quick-helper") {
     LocalFree(argv); auto result = quick::helper(inst); CoUninitialize(); return result;
   }

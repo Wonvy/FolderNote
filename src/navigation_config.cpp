@@ -37,6 +37,12 @@ Action configuredAction() {
   return result == ERROR_SUCCESS && value <= DWORD(Action::Back) ? Action(value) : Action::Off;
 }
 
+bool noteCommandHidden(int operation) {
+  if (operation < 0 || operation >= 3) return false;
+  DWORD value = 0, bytes = sizeof(value);
+  RegGetValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"HiddenNoteCommands", RRF_RT_REG_DWORD, nullptr, &value, &bytes);
+  return (value & (1u << operation)) != 0;
+}
 bool notesEnabled() {
   DWORD value = 0, size = sizeof(value);
   const auto result = RegGetValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"NotesEnabled",

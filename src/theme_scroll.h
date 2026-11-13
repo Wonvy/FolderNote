@@ -14,6 +14,7 @@ class ScrollBar {
   int total_ = 0, page_ = 1, pos_ = 0, line_ = 1, wheel_ = 0;
   int grab_ = 0, repeat_ = 0;
   bool hot_ = false, dragging_ = false, surface_ = false;
+  bool horizontal_ = false;
   static LRESULT CALLBACK proc(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
   void paint(HDC);
   void stop();
@@ -26,7 +27,7 @@ public:
   int position() const { return pos_; }
   int maximum() const { return total_ > page_ ? total_ - page_ : 0; }
   RECT thumb() const;
-  void create(HWND parent, int id, Theme &, std::function<void(int)>, bool surface = false);
+  void create(HWND parent, int id, Theme &, std::function<void(int)>, bool surface = false, bool horizontal = false);
   void configure(int total, int page, int position, UINT dpi, int line = 1);
   void move(int x, int y, int width, int height);
   void scrollTo(int position);

@@ -6,6 +6,7 @@
 #include "theme_scroll.h"
 #include "app_version.h"
 #include "update.h"
+#include "context_manager.h"
 #include "language.h"
 #include <commdlg.h>
 #include <dwmapi.h>
@@ -172,7 +173,7 @@ static void applySettings(bool notes, Action action, Action preferred, bool quic
     if (index < values.size())
       error = RegSetValueExW(value.key, value.name, 0, REG_DWORD,
                              reinterpret_cast<const BYTE *>(&values[index]), sizeof(DWORD));
-    else if (notes) {
+    else if (notes && !noteCommandHidden(static_cast<int>(index - values.size()))) {
       error = RegDeleteValueW(value.key, value.name);
       if (error == ERROR_FILE_NOT_FOUND)
         error = ERROR_SUCCESS;
@@ -194,6 +195,20 @@ static void applySettings(bool notes, Action action, Action preferred, bool quic
 }
 void saveSettings(bool notes, Action action, Action preferred) {
   saveSettings(notes, action, preferred, quickEnabled(), dialogQuickEnabled());
+}
+void setNoteCommandHidden(int operation, bool hidden) {
+  if (operation < 0 || operation >= 3) return;
+  DWORD previous = 0, bytes = sizeof(previous);
+  RegGetValueW(HKEY_CURRENT_USER, configKey, L"HiddenNoteCommands", RRF_RT_REG_DWORD, nullptr, &previous, &bytes);
+  const DWORD bit = 1u << operation;
+  const DWORD value = hidden ? previous | bit : previous & ~bit;
+  const auto error = RegSetKeyValueW(HKEY_CURRENT_USER, configKey, L"HiddenNoteCommands", REG_DWORD, &value, sizeof(value));
+  if (error) fn::fail(L"无法保存设置", error);
+  try { reload(); } catch (...) {
+    RegSetKeyValueW(HKEY_CURRENT_USER, configKey, L"HiddenNoteCommands", REG_DWORD, &previous, sizeof(previous));
+    throw;
+  }
+  SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
 }
 void saveSettings(bool notes, Action action, Action preferred, bool quick, bool dialogs) {
   saveSettings(notes, action, preferred, quick, dialogs, ui::configuredTheme());
@@ -218,8 +233,16 @@ static HWND dialogCheck;
 static HWND tabsCheck;
 static HWND preferNewTabCheck;
 static HFONT font, headingFont;
-static HWND body, themeChoice, settingsWindow, managerPage;
+static HWND body, themeChoice, settingsWindow, managerPage, contextPage;
 static SettingsPage activePage = SettingsPage::Features;
+static int settingsSidebarWidth = 208;
+static bool draggingSettingsSidebar = false;
+static HWND updateTip;
+static constexpr std::array pageButtons{40, 41, 47, 48};
+static const wchar_t *pageTitle(size_t page) {
+  constexpr std::array labels{L"功能设置", L"置顶与历史", L"右键菜单管理", L"设置"};
+  return lang::text(labels[page]);
+}
 static UINT selectPageMessage() { return RegisterWindowMessageW(L"FolderNote.Settings.SelectPage.v1"); }
 static std::unique_ptr<ui::Theme> appearance;
 static constexpr int languageChoice = 43, languageExport = 44, languageImport = 45;
@@ -382,28 +405,38 @@ static void layoutBody() {
 static void layoutSettings() {
   RECT client{}; GetClientRect(settingsWindow, &client);
   int width = client.right, height = client.bottom;
-  constexpr int sidebar = 208;
+  const int sidebar = settingsSidebarWidth;
   MoveWindow(GetDlgItem(settingsWindow, 35), scale(20), scale(20), scale(172), scale(32), TRUE);
   MoveWindow(GetDlgItem(settingsWindow, 36), scale(20), scale(57), scale(172), scale(22), TRUE);
   MoveWindow(GetDlgItem(settingsWindow, 30), scale(sidebar + 24), scale(27), width - scale(sidebar + 254), scale(32), TRUE);
-  MoveWindow(GetDlgItem(settingsWindow, 31), scale(20), height - scale(76), scale(176), scale(22), TRUE);
-  MoveWindow(GetDlgItem(settingsWindow, updateButton), scale(20), height - scale(44), scale(168), scale(32), TRUE);
-  for (int id : {40, 41}) MoveWindow(GetDlgItem(settingsWindow, id), scale(12), scale(103 + (id - 40) * 48), scale(184), scale(40), TRUE);
-  MoveWindow(GetDlgItem(settingsWindow, 46), scale(20), scale(213), scale(172), scale(22), TRUE);
-  MoveWindow(GetDlgItem(settingsWindow, languageChoice), scale(20), scale(237), scale(168), scale(130), TRUE);
-  MoveWindow(GetDlgItem(settingsWindow, languageExport), scale(20), scale(275), scale(168), scale(32), TRUE);
-  MoveWindow(GetDlgItem(settingsWindow, languageImport), scale(20), scale(315), scale(168), scale(32), TRUE);
-  MoveWindow(GetDlgItem(settingsWindow, 32), width - scale(210), scale(15), scale(186), scale(20), TRUE);
-  MoveWindow(themeChoice, width - scale(210), scale(40), scale(186), scale(160), TRUE);
+  MoveWindow(GetDlgItem(settingsWindow, 31), scale(20), height - scale(39), scale(sidebar - 79), scale(22), TRUE);
+  MoveWindow(GetDlgItem(settingsWindow, updateButton), scale(sidebar - 52), height - scale(44), scale(32), scale(32), TRUE);
+  for (size_t i = 0; i < pageButtons.size(); ++i)
+    MoveWindow(GetDlgItem(settingsWindow, pageButtons[i]), scale(12), scale(103 + int(i) * 48), scale(sidebar - 24), scale(40), TRUE);
+  auto preference = [&](int id, int x, int y, int w, int h) {
+    auto control = GetDlgItem(settingsWindow, id);
+    MoveWindow(control, scale(sidebar + 24 + x), scale(y), scale(w), scale(h), TRUE);
+    ShowWindow(control, activePage == SettingsPage::Preferences ? SW_SHOWNA : SW_HIDE);
+  };
+  preference(46, 0, 104, 210, 22);
+  preference(languageChoice, 0, 132, 210, 130);
+  preference(languageExport, 0, 178, 210, 32);
+  preference(languageImport, 220, 178, 210, 32);
+  preference(32, 0, 242, 210, 22);
+  preference(17, 0, 270, 210, 130);
   int bodyHeight = std::max(scale(40), height - scale(166));
   bool overflow = bodyHeight < contentHeight();
-  MoveWindow(body, scale(sidebar), scale(88), width - scale(sidebar) - (overflow ? scale(20) : 0), bodyHeight, TRUE);
-  MoveWindow(managerPage, scale(sidebar), scale(88), width - scale(sidebar), bodyHeight, TRUE);
+  const int contentLeft = scale(sidebar + 5);
+  MoveWindow(body, contentLeft, scale(88), width - contentLeft - (overflow ? scale(20) : 0), bodyHeight, TRUE);
+  MoveWindow(managerPage, contentLeft, scale(88), width - contentLeft, bodyHeight, TRUE);
+  MoveWindow(contextPage, contentLeft, 0, width - contentLeft, height, TRUE);
   settingsScroll.move(width - scale(18), scale(88), scale(12), bodyHeight);
   MoveWindow(GetDlgItem(settingsWindow, 33), scale(sidebar + 24), height - scale(70), width - scale(sidebar + 48), scale(18), TRUE);
   MoveWindow(GetDlgItem(settingsWindow, 13), scale(sidebar + 24), height - scale(44), scale(140), scale(32), TRUE);
   MoveWindow(GetDlgItem(settingsWindow, IDOK), width - scale(212), height - scale(44), scale(88), scale(32), TRUE);
   MoveWindow(GetDlgItem(settingsWindow, IDCANCEL), width - scale(112), height - scale(44), scale(88), scale(32), TRUE);
+  for (int id : {33, 13, IDOK, IDCANCEL})
+    ShowWindow(GetDlgItem(settingsWindow, id), activePage == SettingsPage::ContextMenus ? SW_HIDE : SW_SHOWNA);
   layoutBody();
   ShowWindow(settingsScroll.window(), activePage == SettingsPage::Features && overflow ? SW_SHOWNA : SW_HIDE);
 }
@@ -412,14 +445,18 @@ static void showPage(SettingsPage page) {
   if (page == SettingsPage::QuickFolders) quick::refreshManagerPage(managerPage);
   ShowWindow(body, page == SettingsPage::Features ? SW_SHOWNA : SW_HIDE);
   ShowWindow(managerPage, page == SettingsPage::QuickFolders ? SW_SHOWNA : SW_HIDE);
-  SetWindowTextW(GetDlgItem(settingsWindow, 30), page == SettingsPage::Features ? lang::text(L"功能设置") : lang::text(L"置顶与历史"));
-  for (int id : {40, 41}) InvalidateRect(GetDlgItem(settingsWindow, id), nullptr, TRUE);
+  ShowWindow(contextPage, page == SettingsPage::ContextMenus ? SW_SHOWNA : SW_HIDE);
+  ShowWindow(GetDlgItem(settingsWindow, 30), page == SettingsPage::ContextMenus ? SW_HIDE : SW_SHOWNA);
+  SetWindowTextW(GetDlgItem(settingsWindow, 30), pageTitle(size_t(page)));
+  for (int id : pageButtons) InvalidateRect(GetDlgItem(settingsWindow, id), nullptr, TRUE);
   layoutSettings();
 }
 static LRESULT CALLBACK sidebarProc(HWND h, UINT message, WPARAM w, LPARAM l, UINT_PTR id, DWORD_PTR) {
   if (message == WM_KEYDOWN && (w == VK_UP || w == VK_DOWN || w == VK_HOME || w == VK_END)) {
-    auto page = w == VK_HOME || (w != VK_END && GetDlgCtrlID(h) == 41) ? SettingsPage::Features : SettingsPage::QuickFolders;
-    showPage(page); SetFocus(GetDlgItem(settingsWindow, page == SettingsPage::Features ? 40 : 41)); return 0;
+    const int count = int(pageButtons.size());
+    const int current = int(std::find(pageButtons.begin(), pageButtons.end(), GetDlgCtrlID(h)) - pageButtons.begin());
+    const int next = w == VK_HOME ? 0 : w == VK_END ? count - 1 : (current + (w == VK_UP ? count - 1 : 1)) % count;
+    showPage(SettingsPage(next)); SetFocus(GetDlgItem(settingsWindow, pageButtons[next])); return 0;
   }
   if (message == WM_NCDESTROY) RemoveWindowSubclass(h, sidebarProc, id);
   return DefSubclassProc(h, message, w, l);
@@ -463,27 +500,92 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
   if (m == selectPageMessage()) { showPage(w == 1 ? SettingsPage::QuickFolders : SettingsPage::Features); return 0; }
   if (m == ui::themeChangedMessage() && appearance) {
     appearance->reset(ui::configuredTheme());
+    contextmenu::setTheme(contextPage, unsigned(appearance->mode));
     SendMessageW(themeChoice, CB_SETCURSEL, DWORD(appearance->mode), 0); appearance->apply(h); quick::setManagerTheme(managerPage, appearance->mode); return 0;
   }
   if (m == WM_DRAWITEM && appearance) {
     auto *item = reinterpret_cast<DRAWITEMSTRUCT *>(l);
-    if (item->CtlType == ODT_BUTTON && (item->CtlID == 40 || item->CtlID == 41)) {
+    if (item->CtlType == ODT_BUTTON && item->CtlID == updateButton) {
       const auto &p = appearance->colors;
-      bool selected = (item->CtlID == 40) == (activePage == SettingsPage::Features);
-      FillRect(item->hDC, &item->rcItem, appearance->background);
+      const bool selected = (item->itemState & ODS_SELECTED) != 0;
+      const bool disabled = (item->itemState & ODS_DISABLED) != 0;
+      FillRect(item->hDC, &item->rcItem, appearance->card);
+      ui::rounded(item->hDC, item->rcItem, selected ? p.pressed : p.field, p.border, scale(5));
+      auto symbols = ui::makeSymbolFont(dpi, 16);
+      auto old = SelectObject(item->hDC, symbols);
+      ui::text(item->hDC, L"\xE72C", item->rcItem, disabled ? p.muted : p.text,
+               DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+      SelectObject(item->hDC, old); DeleteObject(symbols);
+      if ((item->itemState & ODS_FOCUS) && !(item->itemState & ODS_NOFOCUSRECT)) {
+        auto focus = item->rcItem; InflateRect(&focus, -scale(3), -scale(3)); DrawFocusRect(item->hDC, &focus);
+      }
+      return TRUE;
+    }
+    auto button = std::find(pageButtons.begin(), pageButtons.end(), int(item->CtlID));
+    if (item->CtlType == ODT_BUTTON && button != pageButtons.end()) {
+      const auto &p = appearance->colors;
+      const auto page = size_t(button - pageButtons.begin());
+      bool selected = page == size_t(activePage);
+      FillRect(item->hDC, &item->rcItem, appearance->card);
       RECT rect = item->rcItem; InflateRect(&rect, -scale(2), -scale(2));
-      if (selected || (item->itemState & (ODS_SELECTED | ODS_FOCUS | ODS_HOTLIGHT))) ui::rounded(item->hDC, rect, p.hover, p.hover, scale(6));
-      if (selected) { RECT marker{rect.left, rect.top + scale(10), rect.left + scale(3), rect.bottom - scale(10)}; ui::rounded(item->hDC, marker, p.accent, p.accent, scale(1)); }
-      rect.left += scale(16); auto old = SelectObject(item->hDC, font);
-      ui::text(item->hDC, item->CtlID == 40 ? lang::text(L"功能设置") : lang::text(L"置顶与历史"), rect, selected && p.highContrast ? p.onAccent : p.text);
+      const auto fill = selected ? p.accent : (item->itemState & (ODS_SELECTED | ODS_HOTLIGHT)) ? p.hover : p.field;
+      ui::rounded(item->hDC, rect, fill, fill, scale(6));
+      auto old = SelectObject(item->hDC, font);
+      ui::text(item->hDC, pageTitle(page), rect, selected ? p.onAccent : p.text,
+               DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
       SelectObject(item->hDC, old);
-      if ((item->itemState & ODS_FOCUS) && !(item->itemState & ODS_NOFOCUSRECT)) DrawFocusRect(item->hDC, &rect);
+      if (!selected && (item->itemState & ODS_FOCUS) && !(item->itemState & ODS_NOFOCUSRECT)) {
+        InflateRect(&rect, -scale(3), -scale(3)); DrawFocusRect(item->hDC, &rect);
+      }
       return TRUE;
     }
   }
   LRESULT result = 0;
   if (appearance && appearance->handle(h, m, w, l, result)) return result;
   switch (m) {
+  case WM_SETCURSOR:
+    if (LOWORD(l) == HTCLIENT) {
+      POINT point{};
+      GetCursorPos(&point); ScreenToClient(h, &point);
+      if (abs(point.x - scale(settingsSidebarWidth)) <= scale(4)) {
+        SetCursor(LoadCursorW(nullptr, IDC_SIZEWE)); return TRUE;
+      }
+    }
+    break;
+  case WM_LBUTTONDOWN:
+    if (abs(GET_X_LPARAM(l) - scale(settingsSidebarWidth)) <= scale(4)) {
+      draggingSettingsSidebar = true; SetCapture(h); return 0;
+    }
+    break;
+  case WM_MOUSEMOVE:
+    if (draggingSettingsSidebar) {
+      const int width = std::clamp(MulDiv(GET_X_LPARAM(l), 96, dpi), 192, 244);
+      if (width != settingsSidebarWidth) {
+        settingsSidebarWidth = width;
+        layoutSettings(); InvalidateRect(h, nullptr, TRUE);
+      }
+      return 0;
+    }
+    break;
+  case WM_LBUTTONUP:
+    if (draggingSettingsSidebar) { ReleaseCapture(); return 0; }
+    break;
+  case WM_CAPTURECHANGED: draggingSettingsSidebar = false; break;
+  case WM_PAINT: {
+    PAINTSTRUCT paint{};
+    auto dc = BeginPaint(h, &paint);
+    RECT client{};
+    GetClientRect(h, &client);
+    FillRect(dc, &client, appearance->background);
+    auto sidebar = client;
+    sidebar.right = scale(settingsSidebarWidth);
+    FillRect(dc, &sidebar, appearance->card);
+    RECT separator{sidebar.right - 1, client.top, sidebar.right, client.bottom};
+    SetDCBrushColor(dc, appearance->colors.border);
+    FillRect(dc, &separator, reinterpret_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+    EndPaint(h, &paint);
+    return 0;
+  }
   case WM_CREATE: {
     SetPropW(h, app::settingsWindowTag, reinterpret_cast<HANDLE>(1));
     settingsWindow = h; dpi = GetDpiForWindow(h); scrollPosition = 0; placements.clear();
@@ -494,17 +596,30 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
       SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE); return control;
     };
     HWND logo = add(h, L"STATIC", L"FolderNote", 0, 35);
+    ui::surface(logo);
     SendMessageW(logo, WM_SETFONT, reinterpret_cast<WPARAM>(headingFont), TRUE);
-    ui::muted(add(h, L"STATIC", lang::text(L"系统工具"), 0, 36));
-    for (int id : {40, 41}) {
-      auto button = add(h, L"BUTTON", id == 40 ? lang::text(L"功能设置") : lang::text(L"置顶与历史"), BS_OWNERDRAW | WS_TABSTOP, id);
+    auto subtitle = add(h, L"STATIC", lang::text(L"系统工具"), 0, 36);
+    ui::surface(subtitle); ui::muted(subtitle);
+    for (size_t page = 0; page < pageButtons.size(); ++page) {
+      auto button = add(h, L"BUTTON", pageTitle(page), BS_OWNERDRAW | WS_TABSTOP, pageButtons[page]);
       SetWindowSubclass(button, sidebarProc, 1, 0);
     }
     HWND title = add(h, L"STATIC", lang::text(L"功能设置"), 0, 30);
     SendMessageW(title, WM_SETFONT, reinterpret_cast<WPARAM>(headingFont), TRUE);
     const auto version = lang::format(L"版本 {0} · x64", {app::version});
-    ui::muted(add(h, L"STATIC", version.c_str(), SS_LEFT | SS_NOPREFIX, 31));
-    add(h, L"BUTTON", lang::text(L"检查更新"), WS_TABSTOP, updateButton);
+    auto versionControl = add(h, L"STATIC", version.c_str(), SS_LEFT | SS_NOPREFIX, 31);
+    ui::surface(versionControl); ui::muted(versionControl);
+    auto update = add(h, L"BUTTON", lang::text(L"检查更新"), WS_TABSTOP | BS_OWNERDRAW, updateButton);
+    updateTip = CreateWindowExW(WS_EX_TOPMOST | WS_EX_NOACTIVATE, TOOLTIPS_CLASSW, nullptr,
+        WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX, 0, 0, 0, 0, h, nullptr, GetModuleHandleW(nullptr), nullptr);
+    if (updateTip) {
+      TOOLINFOW tool{sizeof(tool)};
+      tool.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
+      tool.hwnd = h;
+      tool.uId = reinterpret_cast<UINT_PTR>(update);
+      tool.lpszText = const_cast<wchar_t *>(lang::text(L"检查更新"));
+      SendMessageW(updateTip, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&tool));
+    }
     ui::muted(add(h, L"STATIC", lang::text(L"外观主题"), 0, 32));
     constexpr DWORD comboStyle = CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS | WS_TABSTOP;
     ui::muted(add(h, L"STATIC", lang::text(L"界面语言"), 0, 46));
@@ -528,7 +643,16 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN, 0, 0, 0, 0, h, nullptr, GetModuleHandleW(nullptr), nullptr);
     settingsScroll.create(h, 34, *appearance, [](int position) { scrollPosition = position; layoutBody(); });
     managerPage = quick::createManagerPage(GetModuleHandleW(nullptr), h, appearance->mode);
-    if (!managerPage) return -1;
+    contextPage = contextmenu::createPage(GetModuleHandleW(nullptr), h, [](int operation, bool hidden) {
+      if (!hidden && !notesEnabled()) {
+        const auto action = configuredAction();
+        const auto preferred = preferredAction();
+        for (int op = 0; op < 3; ++op) setNoteCommandHidden(op, op != operation);
+        saveSettings(true, action, preferred);
+        SendMessageW(notesCheck, BM_SETCHECK, BST_CHECKED, 0);
+      } else setNoteCommandHidden(operation, hidden);
+    });
+    if (!managerPage || !contextPage) return -1;
     auto field = [&](LPCWSTR cls, LPCWSTR text, DWORD style, int x, int y, int width, int height, int id, bool quiet = false) {
       HWND c = add(body, cls, text, style, id); placements.push_back({c, x, y, width, height});
       ui::surface(c); if (quiet) ui::muted(c); return c;
@@ -630,7 +754,7 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
       } catch (const fn::Error &e) { MessageBoxW(h, e.message.c_str(), L"FolderNote", MB_OK | MB_ICONERROR); }
     } else if (LOWORD(w) == 17 && HIWORD(w) == CBN_SELCHANGE) {
       auto selected = SendMessageW(themeChoice, CB_GETCURSEL, 0, 0);
-      if (selected >= 0 && selected <= 2) { appearance->reset(ui::ThemeMode(selected)); appearance->apply(h); quick::setManagerTheme(managerPage, appearance->mode); }
+      if (selected >= 0 && selected <= 2) { appearance->reset(ui::ThemeMode(selected)); appearance->apply(h); quick::setManagerTheme(managerPage, appearance->mode); contextmenu::setTheme(contextPage, unsigned(appearance->mode)); }
     } else if (LOWORD(w) == 12 && HIWORD(w) == BN_CLICKED) {
       EnableWindow(choice, SendMessageW(navigationCheck, BM_GETCHECK, 0, 0) == BST_CHECKED);
     } else if (LOWORD(w) == 14 && HIWORD(w) == BN_CLICKED) {
@@ -639,8 +763,9 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
       EnableWindow(preferNewTabCheck, SendMessageW(tabsCheck, BM_GETCHECK, 0, 0) == BST_CHECKED);
     } else if (LOWORD(w) == 16 && HIWORD(w) == BN_CLICKED) {
       showPage(SettingsPage::QuickFolders); SetFocus(GetDlgItem(h, 41));
-    } else if ((LOWORD(w) == 40 || LOWORD(w) == 41) && HIWORD(w) == BN_CLICKED) {
-      showPage(LOWORD(w) == 40 ? SettingsPage::Features : SettingsPage::QuickFolders);
+    } else if (auto button = std::find(pageButtons.begin(), pageButtons.end(), LOWORD(w));
+               button != pageButtons.end() && HIWORD(w) == BN_CLICKED) {
+      showPage(SettingsPage(button - pageButtons.begin()));
     } else if (LOWORD(w) == 13 && HIWORD(w) == BN_CLICKED) {
       try { copyDiagnostics(h); } catch (const fn::Error &e) { MessageBoxW(h, e.message.c_str(), L"FolderNote", MB_OK | MB_ICONERROR); }
     } else if (LOWORD(w) == updateButton && HIWORD(w) == BN_CLICKED && !updateWork.valid()) {
@@ -676,7 +801,7 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     layoutSettings(); return 0;
   }
   case WM_DESTROY: KillTimer(h, updateTimer); updateWork = {}; PostQuitMessage(0); return 0;
-  case WM_NCDESTROY: RemovePropW(h, app::settingsWindowTag); DeleteObject(font); DeleteObject(headingFont); body = managerPage = settingsWindow = nullptr; placements.clear(); break;
+  case WM_NCDESTROY: RemovePropW(h, app::settingsWindowTag); DeleteObject(font); DeleteObject(headingFont); body = managerPage = contextPage = settingsWindow = nullptr; placements.clear(); break;
   }
   return DefWindowProcW(h, m, w, l);
 }
@@ -703,7 +828,7 @@ int settings(HINSTANCE instance, SettingsPage page) {
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_MAXIMIZEBOX | WS_CLIPCHILDREN,
         work.left, work.top, scale(980), scale(660), nullptr, nullptr, instance, nullptr);
     if (!window) { appearance.reset(); languageDraft.reset(); return 1; }
-    ui::centerLogical(window, work, 980, 660); ShowWindow(window, SW_SHOW); SetFocus(GetDlgItem(window, activePage == SettingsPage::Features ? 40 : 41));
+    ui::centerLogical(window, work, 980, 660); ShowWindow(window, SW_SHOW); SetFocus(GetDlgItem(window, pageButtons[size_t(activePage)]));
     MSG message{};
     while (GetMessageW(&message, nullptr, 0, 0) > 0) {
       if (message.message == WM_KEYDOWN && (message.wParam == VK_ESCAPE || message.wParam == VK_RETURN)) {

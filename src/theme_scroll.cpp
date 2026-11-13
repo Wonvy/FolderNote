@@ -6,10 +6,11 @@
 namespace ui {
 namespace { constexpr UINT_PTR repeatTimer = 0x5343; }
 ScrollBar::~ScrollBar() { if (window_) DestroyWindow(window_); }
-void ScrollBar::create(HWND parent, int id, Theme &theme, std::function<void(int)> changed, bool surface) {
+void ScrollBar::create(HWND parent, int id, Theme &theme, std::function<void(int)> changed, bool surface, bool horizontal) {
   if (window_) DestroyWindow(window_);
   theme_ = &theme; changed_ = std::move(changed); surface_ = surface;
-  window_ = CreateWindowExW(0, L"SCROLLBAR", L"垂直滚动", WS_CHILD | SBS_VERT,
+  horizontal_ = horizontal;
+  window_ = CreateWindowExW(0, L"SCROLLBAR", horizontal ? L"水平滚动" : L"垂直滚动", WS_CHILD | (horizontal ? SBS_HORZ : SBS_VERT),
       0, 0, 1, 1, parent, reinterpret_cast<HMENU>(INT_PTR(id)), GetModuleHandleW(nullptr), nullptr);
   if (!window_) throw std::runtime_error("create scrollbar");
   SetWindowSubclass(window_, proc, 1, reinterpret_cast<DWORD_PTR>(this));
@@ -27,6 +28,7 @@ void ScrollBar::configure(int total, int page, int position, UINT dpi, int line)
 void ScrollBar::move(int x, int y, int width, int height) { MoveWindow(window_, x, y, width, height, TRUE); }
 RECT ScrollBar::thumb() const {
   RECT rect{}; GetClientRect(window_, &rect);
+  if (horizontal_) std::swap(rect.right, rect.bottom);
   int inset = std::max(1, MulDiv(2, dpi_, 96));
   int track = std::max(0, int(rect.bottom) - inset * 2);
   int height = total_ ? MulDiv(track, page_, total_) : track;
@@ -34,7 +36,7 @@ RECT ScrollBar::thumb() const {
   int top = inset + (maximum() ? MulDiv(track - height, pos_, maximum()) : 0);
   int width = std::min<int>(rect.right, MulDiv(hot_ || dragging_ || theme_->colors.highContrast ? 8 : 5, dpi_, 96));
   int left = (rect.right - width) / 2;
-  return {left, top, left + width, top + height};
+  return horizontal_ ? RECT{top, left, top + height, left + width} : RECT{left, top, left + width, top + height};
 }
 void ScrollBar::scrollTo(int position) {
   int next = std::clamp(position, 0, maximum());
@@ -69,7 +71,9 @@ void ScrollBar::stop() {
 void ScrollBar::repeatPage() {
   POINT point{}; GetCursorPos(&point); ScreenToClient(window_, &point);
   auto bounds = thumb();
-  if ((repeat_ < 0 && point.y < bounds.top) || (repeat_ > 0 && point.y >= bounds.bottom)) scrollTo(pos_ + repeat_ * page_);
+  const int coordinate = horizontal_ ? point.x : point.y;
+  if ((repeat_ < 0 && coordinate < (horizontal_ ? bounds.left : bounds.top)) ||
+      (repeat_ > 0 && coordinate >= (horizontal_ ? bounds.right : bounds.bottom))) scrollTo(pos_ + repeat_ * page_);
 }
 void ScrollBar::paint(HDC dc) {
   RECT rect{}; GetClientRect(window_, &rect);
@@ -77,7 +81,7 @@ void ScrollBar::paint(HDC dc) {
   if (maximum()) {
     auto bounds = thumb(); const auto &p = theme_->colors;
     auto color = dragging_ ? p.accent : hot_ ? p.text : p.muted;
-    rounded(dc, bounds, color, color, (bounds.right - bounds.left) / 2);
+    rounded(dc, bounds, color, color, std::min(bounds.right - bounds.left, bounds.bottom - bounds.top) / 2);
   }
 }
 LRESULT CALLBACK ScrollBar::proc(HWND window, UINT message, WPARAM w, LPARAM l, UINT_PTR id, DWORD_PTR data) {
@@ -92,19 +96,22 @@ LRESULT CALLBACK ScrollBar::proc(HWND window, UINT message, WPARAM w, LPARAM l, 
     if (bar.dragging_) {
       RECT rect{}; GetClientRect(window, &rect); auto thumb = bar.thumb();
       int inset = std::max(1, MulDiv(2, bar.dpi_, 96));
-      int travel = rect.bottom - inset * 2 - (thumb.bottom - thumb.top);
-      if (travel > 0) bar.scrollTo(MulDiv(GET_Y_LPARAM(l) - bar.grab_ - inset, bar.maximum(), travel));
+      const bool horizontal = bar.horizontal_;
+      int travel = (horizontal ? rect.right - (thumb.right - thumb.left) : rect.bottom - (thumb.bottom - thumb.top)) - inset * 2;
+      if (travel > 0) bar.scrollTo(MulDiv((horizontal ? GET_X_LPARAM(l) : GET_Y_LPARAM(l)) - bar.grab_ - inset, bar.maximum(), travel));
     }
     return 0;
   }
   case WM_MOUSELEAVE: bar.hot_ = false; InvalidateRect(window, nullptr, FALSE); return 0;
   case WM_LBUTTONDOWN: {
     if (!bar.maximum()) return 0;
-    auto thumb = bar.thumb(); int y = GET_Y_LPARAM(l);
+    auto thumb = bar.thumb();
+    const int y = bar.horizontal_ ? GET_X_LPARAM(l) : GET_Y_LPARAM(l);
+    const int start = bar.horizontal_ ? thumb.left : thumb.top, end = bar.horizontal_ ? thumb.right : thumb.bottom;
     SetCapture(window); bar.hot_ = true;
-    if (y >= thumb.top && y < thumb.bottom) { bar.dragging_ = true; bar.grab_ = y - thumb.top; }
+    if (y >= start && y < end) { bar.dragging_ = true; bar.grab_ = y - start; }
     else {
-      bar.repeat_ = y < thumb.top ? -1 : 1;
+      bar.repeat_ = y < start ? -1 : 1;
       bar.scrollTo(bar.pos_ + bar.repeat_ * bar.page_); SetTimer(window, repeatTimer, 350, nullptr);
     }
     InvalidateRect(window, nullptr, FALSE); return 0;
@@ -119,8 +126,8 @@ LRESULT CALLBACK ScrollBar::proc(HWND window, UINT message, WPARAM w, LPARAM l, 
   case WM_MOUSEWHEEL: bar.wheel(GET_WHEEL_DELTA_WPARAM(w)); return 0;
   case WM_KEYDOWN:
     switch (w) {
-    case VK_UP: bar.command(SB_LINEUP); return 0;
-    case VK_DOWN: bar.command(SB_LINEDOWN); return 0;
+    case VK_LEFT: case VK_UP: bar.command(SB_LINEUP); return 0;
+    case VK_RIGHT: case VK_DOWN: bar.command(SB_LINEDOWN); return 0;
     case VK_PRIOR: bar.command(SB_PAGEUP); return 0;
     case VK_NEXT: bar.command(SB_PAGEDOWN); return 0;
     case VK_HOME: bar.command(SB_TOP); return 0;
@@ -131,7 +138,9 @@ LRESULT CALLBACK ScrollBar::proc(HWND window, UINT message, WPARAM w, LPARAM l, 
     auto *info = reinterpret_cast<SCROLLBARINFO *>(l);
     if (!info || info->cbSize != sizeof(*info)) return FALSE;
     *info = {sizeof(*info)}; GetWindowRect(window, &info->rcScrollBar);
-    auto bounds = bar.thumb(); info->xyThumbTop = bounds.top; info->xyThumbBottom = bounds.bottom;
+    auto bounds = bar.thumb();
+    info->xyThumbTop = bar.horizontal_ ? bounds.left : bounds.top;
+    info->xyThumbBottom = bar.horizontal_ ? bounds.right : bounds.bottom;
     info->rgstate[1] = info->rgstate[5] = STATE_SYSTEM_INVISIBLE | STATE_SYSTEM_UNAVAILABLE;
     if (!bar.maximum()) info->rgstate[0] = STATE_SYSTEM_INVISIBLE | STATE_SYSTEM_UNAVAILABLE;
     if (bar.dragging_) info->rgstate[3] = STATE_SYSTEM_PRESSED;
