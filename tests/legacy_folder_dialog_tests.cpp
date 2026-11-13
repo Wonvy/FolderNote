@@ -121,7 +121,13 @@ struct Fixture {
 };
 void dialogs(const std::wstring &executable) {
   wchar_t temp[MAX_PATH]{}; GetTempPathW(ARRAYSIZE(temp), temp);
-  const std::wstring root = std::wstring(temp) + L"FolderNote-Legacy-" + token();
+  // Hosted Windows runners can expose a DOS alias in TEMP while Shell returns
+  // a long path in BFFM_SELCHANGED. Use the same path spelling for both sides.
+  wchar_t expanded[MAX_PATH]{};
+  const auto length = GetLongPathNameW(temp, expanded, ARRAYSIZE(expanded));
+  std::wstring tempDirectory = length && length < ARRAYSIZE(expanded) ? expanded : temp;
+  if (!tempDirectory.empty() && tempDirectory.back() != L'\\') tempDirectory += L'\\';
+  const std::wstring root = tempDirectory + L"FolderNote-Legacy-" + token();
   const auto destination = root + L"\\中文 空格 😀", other = root + L"\\Other folder";
   check(CreateDirectoryW(root.c_str(), nullptr) && CreateDirectoryW(destination.c_str(), nullptr) && CreateDirectoryW(other.c_str(), nullptr), "create private Unicode test directories");
   struct Cleanup { std::wstring root, first, second; ~Cleanup() { RemoveDirectoryW(first.c_str()); RemoveDirectoryW(second.c_str()); RemoveDirectoryW(root.c_str()); } } cleanup{root, destination, other};
@@ -141,7 +147,10 @@ void dialogs(const std::wstring &executable) {
     check(!quick::legacy::navigate(simulatedForeground, std::wstring(32768, L'a'), request), "oversized destination rejected before transport");
     check(quick::legacy::navigate(simulatedForeground, destination, request), "submit Unicode navigation across real process boundary");
     check(!quick::legacy::navigate(simulatedForeground, other, request), "pending selection blocks a second uncancellable request for the same process");
-    check(waitFor([&] { return !_wcsicmp(fixture.shared->path, destination.c_str()); }), "native picker selects exact requested Unicode path");
+    const auto selected = waitFor([&] { return !_wcsicmp(fixture.shared->path, destination.c_str()); });
+    if (!selected) std::wcerr << L"Expected picker path: " << destination << L"\nActual picker path: "
+                             << fixture.shared->path << L"\nSelection callbacks: " << fixture.shared->changes << L'\n';
+    check(selected, "native picker selects exact requested Unicode path");
     check(waitFor([] { return quick::legacy::pending.empty(); }), "completion callback releases pending transport buffer");
     check(IsWindow(simulatedForeground) && fixture.shared->returned == 0, "navigation never accepts or closes picker");
     check(quick::legacy::navigate(simulatedForeground, other, request), "repeated request accepted after completion");

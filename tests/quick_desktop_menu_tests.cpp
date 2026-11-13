@@ -14,8 +14,18 @@ HWND anchor = nullptr;
 int checks = 0, menusShown = 0, opened = 0;
 bool disableOnSelection = false;
 std::wstring openedPath;
+std::wstring desktopPath;
 void check(bool value, const char *reason) { ++checks; if (!value) throw std::runtime_error(reason); }
 HWND testForeground() { return anchor; }
+HRESULT testKnownFolder(REFKNOWNFOLDERID id, DWORD, HANDLE, PWSTR *path) {
+  *path = nullptr;
+  if (id != FOLDERID_Desktop) return E_FAIL;
+  auto bytes = (desktopPath.size() + 1) * sizeof(wchar_t);
+  *path = static_cast<PWSTR>(CoTaskMemAlloc(bytes));
+  if (!*path) return E_OUTOFMEMORY;
+  memcpy(*path, desktopPath.c_str(), bytes);
+  return S_OK;
+}
 BOOL testExecute(SHELLEXECUTEINFOW *execute) {
   ++opened;
   PWSTR path = nullptr;
@@ -54,12 +64,14 @@ unsigned testShow(HINSTANCE, POINT, std::shared_ptr<Branch> root, ui::ThemeMode,
 }
 #define GetForegroundWindow testForeground
 #define ShellExecuteExW testExecute
+#define SHGetKnownFolderPath testKnownFolder
 #define isDesktop testDesktop
 #define show testShow
 #include "../src/quick_menu.cpp"
 #undef show
 #undef isDesktop
 #undef ShellExecuteExW
+#undef SHGetKnownFolderPath
 #undef GetForegroundWindow
 
 struct Fixture {
@@ -226,7 +238,11 @@ int main() {
           RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"QuickFoldersInDialogs", REG_DWORD, &dialogs, sizeof(dialogs)) == ERROR_SUCCESS,
           "enable desktop menu without file dialog support");
     wchar_t temp[MAX_PATH]{}; check(GetTempPathW(ARRAYSIZE(temp), temp) != 0, "get existing local folder");
-    const auto path = quick::normalize(temp); quick::pin(path, true);
+    wchar_t longTemp[32768]{};
+    const auto length = GetLongPathNameW(temp, longTemp, ARRAYSIZE(longTemp));
+    check(length && length < ARRAYSIZE(longTemp), "resolve the Shell's long temporary directory path");
+    const auto path = quick::normalize(longTemp);
+    quick::pin(path, true);
     transferIconTests(path);
     historyTabTests();
     for (auto mode : {quick::MenuMode::Copy, quick::MenuMode::Move}) {
@@ -244,6 +260,7 @@ int main() {
         check(command.kind != quick::Kind::NewWindow, "transfer folder commands never launch a navigation window");
       }
     }
+    desktopPath = path;
     check(quick::menu(GetModuleHandleW(nullptr), anchor, nullptr, {20, 20}) == 0, "desktop menu command succeeds");
     check(menusShown == 1 && opened == 1 && quick::same(openedPath, path), "ordinary desktop folder selection opens one Explorer window");
     check(!quick::load().history.empty() && quick::same(quick::load().history.front(), path), "successful desktop folder open is recorded");

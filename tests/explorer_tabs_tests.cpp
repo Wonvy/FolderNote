@@ -1,6 +1,7 @@
 #include "../src/explorer_tabs.h"
 #include <shlobj.h>
 #include <shellapi.h>
+#include <filesystem>
 #include <functional>
 #include <iostream>
 #include <thread>
@@ -492,7 +493,13 @@ struct TooltipFolder {
   tabs::Location location() const {
     PIDLIST_ABSOLUTE id = nullptr;
     require(SUCCEEDED(SHParseDisplayName(path.c_str(), nullptr, &id, 0, nullptr)), "parse real long Unicode folder PIDL");
-    auto result = tabs::location(id); CoTaskMemFree(id); return result;
+    auto result = tabs::location(id); CoTaskMemFree(id);
+    // The Shell can expand short names in the environment's temporary path.
+    // Verify the PIDL still resolves to the original directory.
+    std::error_code error;
+    require(std::filesystem::equivalent(path, result.path, error),
+            "long Unicode tooltip fixture resolves to the same directory");
+    return result;
   }
 };
 static void stableLayoutTests() {
@@ -713,14 +720,16 @@ static void stableLayoutTests() {
     {
       TooltipFolder firstPath, secondPath;
       SendMessageW(window, tabs::actionMessage, tabs::Select, 1); pump();
-      browser.view.folder = firstPath.location();
+      const auto firstFolder = firstPath.location();
+      browser.view.folder = firstFolder;
       SendMessageW(window, tabs::changedMessage, 0, 0); pump();
-      require(firstPath.path.size() > 80 && tip(1) == firstPath.path,
+      require(firstFolder.path.size() > 80 && tip(1) == firstFolder.path,
               "tooltip does not truncate a long path containing Chinese, emoji and ampersand");
       const auto unchangedTitle = title(1);
-      browser.view.folder = secondPath.location();
+      const auto secondFolder = secondPath.location();
+      browser.view.folder = secondFolder;
       SendMessageW(window, tabs::changedMessage, 0, 0); pump();
-      require(title(1) == unchangedTitle && tip(1) == secondPath.path && tip(0) == original.path,
+      require(title(1) == unchangedTitle && tip(1) == secondFolder.path && tip(0) == original.path,
               "same-title folder navigation replaces tooltip path without stale cache or affecting other tabs");
       browser.view.folder = original;
       SendMessageW(window, tabs::changedMessage, 0, 0); pump();
