@@ -119,7 +119,7 @@ struct Fixture {
     simulatedForeground = nullptr;
   }
 };
-void dialogs(const std::wstring &executable) {
+void dialogs(const std::wstring &executable, bool verifyNativeSelection) {
   wchar_t temp[MAX_PATH]{}; GetTempPathW(ARRAYSIZE(temp), temp);
   // Hosted Windows runners can expose a DOS alias in TEMP while Shell returns
   // a long path in BFFM_SELCHANGED. Use the same path spelling for both sides.
@@ -147,6 +147,13 @@ void dialogs(const std::wstring &executable) {
     check(!quick::legacy::navigate(simulatedForeground, std::wstring(32768, L'a'), request), "oversized destination rejected before transport");
     check(quick::legacy::navigate(simulatedForeground, destination, request), "submit Unicode navigation across real process boundary");
     check(!quick::legacy::navigate(simulatedForeground, other, request), "pending selection blocks a second uncancellable request for the same process");
+    if (!verifyNativeSelection) {
+      check(waitFor([] { return quick::legacy::pending.empty(); }), "native picker acknowledges transport");
+      check(IsWindow(simulatedForeground) && fixture.shared->returned == 0, "transport does not accept or close picker");
+      quick::detail::MenuRequest newer(requestName.c_str()); newer.begin();
+      check(!quick::legacy::navigate(simulatedForeground, destination, request), "obsolete menu cannot navigate picker");
+      continue;
+    }
     const auto selected = waitFor([&] { return !_wcsicmp(fixture.shared->path, destination.c_str()); });
     if (!selected) std::wcerr << L"Expected picker path: " << destination << L"\nActual picker path: "
                              << fixture.shared->path << L"\nSelection callbacks: " << fixture.shared->changes << L'\n';
@@ -175,7 +182,9 @@ int wmain(int argc, wchar_t **argv) {
     helper = CreateWindowW(cls.lpszClassName, L"", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, cls.hInstance, nullptr);
     check(helper != nullptr, "create private broker window");
     wchar_t self[32768]{}; GetModuleFileNameW(nullptr, self, ARRAYSIZE(self));
-    dialogs(argc == 2 ? argv[1] : self);
+    const bool transportOnly = argc == 2 && !wcscmp(argv[1], L"--transport-only");
+    dialogs(argc == 2 && !transportOnly ? argv[1] : self, !transportOnly);
+    if (transportOnly) std::cout << "Native selection assertions require an interactive Windows desktop.\n";
     quick::legacy::shutdown(); DestroyWindow(helper); helper = nullptr; UnregisterClassW(cls.lpszClassName, cls.hInstance);
     std::cout << "PASS " << checks << " legacy picker checks: native dialogs, cross-process Unicode, repeated navigation, no confirmation, permission and stale-request guards\n";
   } catch (const std::exception &error) { std::cerr << "FAIL " << checks << ": " << error.what() << '\n'; result = 1; }

@@ -18,7 +18,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Configure
-        run: cmake --preset windows-x64 "-DFOLDERNOTE_UPDATE_REPOSITORY=$env:GITHUB_REPOSITORY"
+        run: cmake --preset windows-x64 "-DFOLDERNOTE_UPDATE_REPOSITORY=$env:GITHUB_REPOSITORY" -DFOLDERNOTE_LEGACY_TRANSPORT_ONLY=ON
       - name: Build
         run: cmake --build --preset release --parallel
       - name: Validate release version
