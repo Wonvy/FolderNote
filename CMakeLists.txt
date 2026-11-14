@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(FolderNote VERSION 1.9.4 LANGUAGES CXX RC)
+project(FolderNote VERSION 1.9.5 LANGUAGES CXX RC)
 set(FOLDERNOTE_UPDATE_REPOSITORY "" CACHE STRING "Public GitHub repository for updates (owner/repo)")
 option(FOLDERNOTE_WINUI "Build the WinUI 3 desktop-group interface" ON)
 if(FOLDERNOTE_UPDATE_REPOSITORY AND NOT FOLDERNOTE_UPDATE_REPOSITORY MATCHES "^[A-Za-z0-9-]+/[A-Za-z0-9_.-]+$")

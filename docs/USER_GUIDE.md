@@ -1,6 +1,6 @@
 # FolderNote 使用说明
 
-适用于 **FolderNote 1.9.4**。FolderNote 为 Windows 资源管理器提供文件夹入口管理、右键菜单管理、文件夹备注、双击空白处导航、中键快速定位与复制 / 移动，以及 Windows 10 多标签功能。
+适用于 **FolderNote 1.9.5**。FolderNote 为 Windows 资源管理器提供文件夹入口管理、右键菜单管理、文件夹备注、双击空白处导航、中键快速定位与复制 / 移动，以及 Windows 10 多标签功能。
 
 ## 1. 安装与首次使用
 
