@@ -140,6 +140,7 @@ struct DesktopGroupsSettings {
   DWORD radius = 10, opacity = 55;
   bool shadow = false;
   DWORD shadowOpacity = 36, shadowBlur = 12, shadowOffset = 3;
+  bool managedIcons = false;
 };
 static bool configuredDesktopGroupsGlass() {
   return desktop_groups::configuredAppearance().glass;
@@ -153,7 +154,7 @@ static void applySettings(bool notes, Action action, Action preferred, bool quic
   if (DWORD(theme) > 2) throw fn::Error{lang::text(L"请选择有效的主题。")};
   SettingKeys keys;
   LSTATUS error = ERROR_SUCCESS;
-  constexpr size_t configurationCount = 16;
+  constexpr size_t configurationCount = 17;
   std::array<SettingValue, configurationCount + 3> saved;
   if (saveConfiguration) {
     error = RegCreateKeyExW(HKEY_CURRENT_USER, configKey, 0, nullptr, 0,
@@ -177,6 +178,7 @@ static void applySettings(bool notes, Action action, Action preferred, bool quic
       saved[13].read(keys.values[0], L"DesktopGroupsShadowOpacity");
       saved[14].read(keys.values[0], L"DesktopGroupsShadowBlur");
       saved[15].read(keys.values[0], L"DesktopGroupsShadowOffset");
+      saved[16].read(keys.values[0], L"DesktopGroupsManagedIcons");
     }
   }
   // Only alter menus already installed by FolderNote. A modern-only or portable
@@ -197,7 +199,7 @@ static void applySettings(bool notes, Action action, Action preferred, bool quic
       desktopGroups ? desktopGroups->radius : 0UL, desktopGroups ? desktopGroups->opacity : 0UL,
       desktopGroups && desktopGroups->shadow ? 1UL : 0UL,
       desktopGroups ? desktopGroups->shadowOpacity : 0UL, desktopGroups ? desktopGroups->shadowBlur : 0UL,
-      desktopGroups ? desktopGroups->shadowOffset : 0UL};
+      desktopGroups ? desktopGroups->shadowOffset : 0UL, desktopGroups && desktopGroups->managedIcons ? 1UL : 0UL};
   for (size_t index = 0; index < saved.size(); ++index) {
     auto &value = saved[index];
     if (!value.key)
@@ -264,7 +266,7 @@ static HWND quickCheck;
 static HWND dialogCheck;
 static HWND tabsCheck;
 static HWND preferNewTabCheck;
-static HWND desktopGroupsCheck, desktopGroupsManager, desktopGroupsGlassCheck, desktopGroupsPreview;
+static HWND desktopGroupsCheck, desktopGroupsManager, desktopGroupsGlassCheck, desktopGroupsPreview, managedIconsCheck;
 static HFONT font, headingFont;
 static HWND body, themeChoice, settingsWindow, managerPage, contextPage, entriesPage;
 static SettingsPage activePage = SettingsPage::Features;
@@ -280,6 +282,7 @@ static UINT selectPageMessage() { return RegisterWindowMessageW(L"FolderNote.Set
 static std::unique_ptr<ui::Theme> appearance;
 static constexpr int languageChoice = 43, languageExport = 44, languageImport = 45;
 static constexpr int desktopGroupsToggle = 22, desktopGroupsManage = 23, desktopGroupsGlassToggle = 24, desktopGroupsPreviewId = 25;
+static constexpr int managedIconsToggle = 26;
 static constexpr int boxGlass = 51, boxShadow = 52, boxRadius = 53, boxRadiusLabel = 55,
                      boxPreview = 57, boxPreviewLabel = 58, boxStyleShortcut = 59;
 static constexpr int boxShadowOpacity = 60, boxShadowBlur = 61, boxShadowOffset = 62;
@@ -304,7 +307,7 @@ static desktop_groups::Appearance boxStyle;
 static bool boxAppearancePreviewing = false;
 static bool reopenForLanguage = false;
 struct SettingsDraft {
-  std::array<LRESULT, 8> toggles;
+  std::array<LRESULT, 9> toggles;
   LRESULT action;
   ui::ThemeMode theme;
   desktop_groups::Appearance boxStyle;
@@ -312,8 +315,9 @@ struct SettingsDraft {
 static std::optional<SettingsDraft> languageDraft;
 
 static void updateDesktopGroupsManager() {
-  EnableWindow(desktopGroupsManager, desktop_groups::enabled() &&
-      SendMessageW(desktopGroupsCheck, BM_GETCHECK, 0, 0) == BST_CHECKED);
+  const bool boxesChecked = SendMessageW(desktopGroupsCheck, BM_GETCHECK, 0, 0) == BST_CHECKED;
+  EnableWindow(desktopGroupsManager, desktop_groups::enabled() && boxesChecked);
+  EnableWindow(managedIconsCheck, boxesChecked);
 }
 
 static void refreshLanguageMenus() {
@@ -432,7 +436,7 @@ struct Placement { HWND window; int x, y, width, height; };
 static std::vector<Placement> placements;
 static UINT dpi;
 static int scale(int n) { return MulDiv(n, dpi, 96); }
-static constexpr int desktopGroupsHeight = 232;
+static constexpr int desktopGroupsHeight = 296;
 static constexpr int desktopGroupsPreviewTop = 537, desktopGroupsPreviewHeight = 120;
 static int contentHeight() { return scale((tabsSupported() ? 634 : 440) + desktopGroupsHeight); }
 
@@ -985,7 +989,7 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     field(L"BUTTON", lang::text(L"置顶与历史 →"), WS_TABSTOP, 86, 402, 220, 28, 16);
     desktopGroupsCheck = field(L"BUTTON", lang::text(L"桌面盒子"), checkStyle, 40, 462, -40, 26, desktopGroupsToggle);
     SendMessageW(desktopGroupsCheck, BM_SETCHECK, desktop_groups::enabled() ? BST_CHECKED : BST_UNCHECKED, 0);
-    field(L"STATIC", lang::text(L"启用后，FolderNote 显示桌面盒子和待整理桌面。\n关闭并保存后，恢复 Windows 原有的桌面图标。"), 0, 86, 494, -40, 38, 0, true);
+    field(L"STATIC", lang::text(L"默认保留 Windows 原生图标。\n可开启图标整理模式，由 FolderNote 显示图标。"), 0, 86, 494, -40, 38, 0, true);
     desktopGroupsGlassCheck = field(L"BUTTON", glassLabel.c_str(), checkStyle, 86, 538, 185, 26, desktopGroupsGlassToggle);
     SendMessageW(desktopGroupsGlassCheck, BM_SETCHECK, configuredDesktopGroupsGlass() ? BST_CHECKED : BST_UNCHECKED, 0);
     desktopGroupsManager = field(L"BUTTON", lang::text(L"管理桌面盒子"), WS_TABSTOP | BS_NOTIFY,
@@ -993,6 +997,10 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     desktopGroupsPreview = field(L"STATIC", lang::text(L"桌面盒子效果预览"), SS_OWNERDRAW,
         285, desktopGroupsPreviewTop, 380, desktopGroupsPreviewHeight, desktopGroupsPreviewId);
     field(L"BUTTON", lang::text(L"盒子样式 →"), WS_TABSTOP, 86, 612, 185, 28, boxStyleShortcut);
+    managedIconsCheck = field(L"BUTTON", lang::text(L"图标整理模式"), checkStyle, 86, 658, -40, 26, managedIconsToggle);
+    SendMessageW(managedIconsCheck, BM_SETCHECK, desktop_groups::managedIconsEnabled() ? BST_CHECKED : BST_UNCHECKED, 0);
+    field(L"STATIC", lang::text(L"保存后，由 FolderNote 显示桌面图标，已分组项目只在盒子中显示。"),
+          0, 112, 687, -40, 40, 0, true);
     updateBoxStylePreview(h);
     tabsCheck = preferNewTabCheck = nullptr;
     if (tabsSupported()) {
@@ -1011,7 +1019,8 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     add(h, L"BUTTON", lang::text(L"保存"), WS_TABSTOP | BS_DEFPUSHBUTTON, IDOK);
     add(h, L"BUTTON", lang::text(L"取消"), WS_TABSTOP, IDCANCEL);
     if (languageDraft) {
-      std::array checks{notesCheck, navigationCheck, quickCheck, dialogCheck, tabsCheck, preferNewTabCheck, desktopGroupsCheck, desktopGroupsGlassCheck};
+      std::array checks{notesCheck, navigationCheck, quickCheck, dialogCheck, tabsCheck, preferNewTabCheck,
+                        desktopGroupsCheck, desktopGroupsGlassCheck, managedIconsCheck};
       for (size_t i = 0; i < checks.size(); ++i)
         if (checks[i]) SendMessageW(checks[i], BM_SETCHECK, languageDraft->toggles[i], 0);
       SendMessageW(choice, CB_SETCURSEL, languageDraft->action, 0);
@@ -1043,7 +1052,8 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         }
         refreshLanguageMenus();
         SettingsDraft draft{{}, SendMessageW(choice, CB_GETCURSEL, 0, 0), appearance->mode, boxStyle};
-        std::array checks{notesCheck, navigationCheck, quickCheck, dialogCheck, tabsCheck, preferNewTabCheck, desktopGroupsCheck, desktopGroupsGlassCheck};
+        std::array checks{notesCheck, navigationCheck, quickCheck, dialogCheck, tabsCheck, preferNewTabCheck,
+                          desktopGroupsCheck, desktopGroupsGlassCheck, managedIconsCheck};
         for (size_t i = 0; i < checks.size(); ++i)
           if (checks[i]) draft.toggles[i] = SendMessageW(checks[i], BM_GETCHECK, 0, 0);
         languageDraft = draft;
@@ -1070,7 +1080,8 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             true, DesktopGroupsSettings{
               SendMessageW(desktopGroupsCheck, BM_GETCHECK, 0, 0) == BST_CHECKED,
               boxStyle.glass, boxStyle.radius, boxStyle.opacity, boxStyle.shadow,
-              boxStyle.shadowOpacity, boxStyle.shadowBlur, boxStyle.shadowOffset});
+              boxStyle.shadowOpacity, boxStyle.shadowBlur, boxStyle.shadowOffset,
+              SendMessageW(managedIconsCheck, BM_GETCHECK, 0, 0) == BST_CHECKED});
         restoreBoxStylePreview();
         updateDesktopGroupsManager();
         const bool desktopGroupsSynced = desktop_groups::sync();

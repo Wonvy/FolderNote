@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -42,12 +43,25 @@ struct Group {
   std::wstring titleIcon;
   DisplayMode displayMode = DisplayMode::Scroll;
   int itemSpacing = 0;
+  std::optional<bool> glass;
+  bool autoCollapse = false;
+  std::wstring folder;
+  // The first tab can carry a tint from another box without changing this box's appearance.
+  std::optional<std::optional<COLORREF>> primaryDetachedTint;
 };
 
 struct LooseItem {
   std::wstring path;
   POINT position{};
+  // Older layouts used the native grid, so zero represents its spacing.
+  SIZE spacing{};
 };
+
+SIZE desktopSpacingForIcon(SIZE nativeSpacing, int nativeIconSize, int iconSize);
+POINT desktopGridOrigin(const RECT &work, SIZE nativeSpacing, std::span<const LooseItem> nativeItems);
+POINT scaleDesktopPosition(POINT position, POINT nativeOrigin, SIZE nativeSpacing, SIZE from, SIZE to);
+std::optional<std::vector<POINT>> snapDesktopPositions(const RECT &work, POINT origin, SIZE spacing,
+    std::span<const POINT> desired, std::span<const POINT> occupied);
 
 struct Layout {
   std::vector<Group> groups;
@@ -61,12 +75,17 @@ std::vector<Group> load(const std::filesystem::path &file = layoutPath());
 void save(const std::vector<Group> &groups, const std::filesystem::path &file = layoutPath());
 std::vector<std::wstring> desktopRoots();
 bool samePath(const std::wstring &a, const std::wstring &b);
+bool isDesktopShellItem(const std::wstring &path);
 // Returns an existing, direct child of the personal or public desktop.
 std::wstring desktopItem(const std::vector<std::wstring> &roots, const std::wstring &path);
-// Tab 0 is the default desktop list. Additional tabs are indexed from 1.
+// A box's main tab is 0. Additional tabs are indexed from 1.
+const std::wstring &folderForTab(const Group &group, std::size_t tab);
 // Assigns a desktop item to exactly one manual tab and returns whether it changed.
 bool addItem(std::vector<Group> &groups, std::size_t target, const std::wstring &path, std::size_t tab = 0);
-// Runtime group 0 is the synthetic desktop and cannot be merged or detached.
+// Group indices are zero-based. A single-tab box cannot be split.
 bool mergeGroups(std::vector<Group> &groups, std::size_t source, std::size_t target);
 bool detachTab(std::vector<Group> &groups, std::size_t group, std::size_t tabIndex, RECT bounds);
+// Insertion is a slot in the target's original header, from 0 to tabs.size() + 1.
+bool moveTab(std::vector<Group> &groups, std::size_t source, std::size_t tab,
+             std::size_t target, std::size_t insertion);
 }

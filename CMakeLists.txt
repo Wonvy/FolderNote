@@ -41,10 +41,11 @@ add_library(tabs_router STATIC src/tabs_router.cpp)
 target_link_libraries(tabs_router PUBLIC navigation_config shell32 advapi32)
 add_library(quick_ui STATIC src/quick_runtime.cpp src/quick_menu.cpp src/quick_dialog.cpp src/quick_manage.cpp src/quick_popup.cpp src/quick_transfer.cpp)
 target_link_libraries(quick_ui PUBLIC quick_data quick_legacy theme quick_icons tabs_router uiautomationcore oleaut32 comctl32 uxtheme)
-add_library(desktop_groups STATIC src/desktop_groups.cpp src/desktop_groups_model.cpp src/desktop_groups_glass.cpp
-  src/desktop_groups_menu.cpp src/desktop_groups_item_menu.cpp src/desktop_groups_hold.cpp
+add_library(desktop_groups STATIC src/desktop_groups.cpp src/desktop_groups_model.cpp
+  src/desktop_groups_desktop_icons.cpp src/desktop_groups_icon_source.cpp
+  src/desktop_groups_menu.cpp src/desktop_groups_item_menu.cpp
   src/desktop_groups_visibility.cpp src/desktop_groups_render.cpp src/desktop_groups_color_picker.cpp)
-target_link_libraries(desktop_groups PUBLIC quick_ui comctl32 comdlg32 shell32 ole32 uuid gdiplus dwmapi shlwapi runtimeobject d2d1 dwrite msimg32)
+target_link_libraries(desktop_groups PUBLIC quick_ui comctl32 comdlg32 shell32 ole32 uuid dwmapi shlwapi runtimeobject d2d1 dwrite msimg32)
 if(FOLDERNOTE_WINUI)
   include(cmake/WinUI.cmake)
   foldernote_add_winui(desktop_groups FolderNote)

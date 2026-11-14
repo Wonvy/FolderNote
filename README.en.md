@@ -26,7 +26,7 @@ FolderNote adds desktop boxes, folder entry management, context menu management,
 | --- | --- | --- |
 | Context Menu Manager | Browse existing menus by Explorer object, hide or restore supported entries, and create ordered FolderNote commands. | Off |
 | Folder entries | Add folders in This PC, the navigation pane, or the desktop. Hide, show, or restore supported entries, and remove or recover supported This PC entries. | Available in Settings |
-| Desktop boxes | Preview frosted glass on the Features page. Enable and save to manage desktop icons in boxes and the Ungrouped desktop panel. Turn off and save to restore the Windows desktop icons. | Off |
+| Desktop boxes | Add independent boxes while keeping native Windows icons by default. Icon organization mode is optional. | Off |
 | Folder notes | Add, edit, clear, or repair notes from a folder's context menu. Show notes in the Comments column in File Explorer. | Off |
 | Double-click empty space | Go up one level or configure the gesture to go back. | Go up one level |
 | Middle-click folder menu | Open pinned, recent, and frequently used folders on the desktop or in File Explorer. Hover over folders to browse subfolders. You can also enable the menu in file and folder dialogs. | Off |
@@ -54,10 +54,12 @@ Select **Folder entries** and choose a location. Switch between list and icon vi
 
 ## Organize the desktop
 
-1. In **Features**, enable **Desktop boxes** and save. FolderNote takes over the desktop icons and displays ungrouped files and folders in **Ungrouped desktop**. Frosted glass is on by default. Use **Box appearance** to preview and adjust the corner radius, background opacity, frosted glass, and drop shadow.
-2. Right-click an empty area of the desktop and select **New box**, or hold the right mouse button and release it. On Windows 11, the context menu command may be under **Show more options**. You can also create boxes from **Manage desktop boxes** or the notification area icon.
-3. Drag items into or between boxes. Right-click empty space inside a box to switch between **Icons** and **List** and choose manual order, name, type, or date modified. Collapse boxes to their headers, add tabs, or map a folder to display its contents in a tab.
-4. Turn off **Desktop boxes** and save to restore the Windows desktop icons. Grouping keeps files in their original locations.
+1. In **Features**, enable **Desktop boxes** and save. By default, Windows continues to manage desktop icons, their positions, and the native context menu. Use **Box appearance** to preview and adjust the corner radius, background opacity, frosted glass, and drop shadow.
+2. Right-click an empty area of the desktop and select **New box**. On Windows 11, this command may be under **Show more options**. You can also create boxes from **Manage desktop boxes** or the notification area icon.
+3. Drag a desktop item into a box to add a reference. In the default mode, its native icon also appears on the desktop. Drag the item back onto the desktop to remove it from the box. The file stays in its original location.
+4. Right-click empty space inside a box to switch between **Icons** and **List** or change the sort order. You can collapse the box, add tabs, or map a folder. Right-click the box title to toggle its frosted glass, select **Use global frosted glass setting**, or adjust background opacity independently.
+5. Enable **Auto-collapse** in a box's title menu to expand it when you hover over the title and collapse it shortly after the pointer leaves. This option is off by default.
+6. To show grouped items only in their boxes, enable **Icon organization mode** under **Features → Desktop boxes** and save. FolderNote reads the positions and sizes of visible Windows desktop icons and shows ungrouped icons in their original layout. You can move icons and save new positions. Right-clicking empty desktop space still opens the native Windows menu. Turn this mode off and save to return to the native Windows icons.
 
 ## Install and get started
 
@@ -79,7 +81,7 @@ The standard edition uses the folder context menu on Windows 10 and **Show more 
 
 - Folder notes are stored in each folder's `desktop.ini`. Keep that file when copying folders. Repair can restore missing attributes. To restore deleted note contents, use a backup of the file.
 - Notes, visit history, and desktop group layouts stay on your PC. The update check connects to GitHub.
-- When desktop boxes are enabled, the desktop helper starts at sign-in and adds a notification area icon. Layouts are saved to `%LOCALAPPDATA%\Programs\FolderNote\DesktopGroups.json`. If the desktop helper exits unexpectedly, a recovery process restores the previous icon visibility.
+- When desktop boxes are enabled, the desktop helper starts at sign-in and adds a notification area icon. Layouts are saved to `%LOCALAPPDATA%\Programs\FolderNote\DesktopGroups.json`.
 - The Explorer extension handles double-click navigation and Windows 10 tabs. A background helper supports the desktop middle-click menu and opening folders in new tabs. The helper exits when both features are off. Support for file and folder dialogs can be switched off separately.
 - Upgrades preserve settings, pinned folders, and history. Run `Uninstall.exe` to remove the app. Notes and preferences are retained.
 

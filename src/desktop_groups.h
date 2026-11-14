@@ -17,6 +17,7 @@ Appearance configuredAppearance();
 void previewAppearance(const Appearance &appearance);
 void restoreAppearance();
 bool enabled();
+bool managedIconsEnabled();
 bool sync(const std::wstring &installedExecutable = {});
 bool stop();
 bool showManager();

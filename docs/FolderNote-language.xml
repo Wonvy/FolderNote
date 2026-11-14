@@ -500,8 +500,12 @@ Right-click a tab to open it in a separate window.</message>
   <message id="f6dd3fc3b4606ba1">Could not take over desktop icons.</message>
   <message id="5a54db1c66fb8c06">No ungrouped items</message>
   <message id="9c2226f38f438591">Desktop boxes</message>
-  <message id="3426e1d2e7483f11">FolderNote displays groups and an ungrouped desktop.
-Turn off and save to restore the Windows desktop icons.</message>
+  <message id="d2520a793a876b02">Windows displays its own desktop icons by default.
+Enable Icon organization mode to use FolderNote’s desktop icons.</message>
+  <message id="fbb119fea9d68458">Icon organization mode</message>
+  <message id="2383d1e1619f8988">After saving, FolderNote displays desktop icons. Grouped items appear only in their boxes.</message>
+  <message id="12f3d328fbefb49a">Use global frosted glass setting</message>
+  <message id="7a74291d9de2a826">Auto-collapse</message>
   <message id="b777d06073d0780e">Manage desktop boxes</message>
   <message id="9f1acc804f9f1b41">Desktop box appearance preview</message>
   <message id="e96bdc3cc4cc3fb5">Box appearance</message>

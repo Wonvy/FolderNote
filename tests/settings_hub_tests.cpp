@@ -241,13 +241,18 @@ void scenarios() {
   check(!navigation::preferNewTabEnabled(), "new-tab preference defaults off");
   check(!desktop_groups::enabled() && SendMessageW(navigation::desktopGroupsCheck, BM_GETCHECK, 0, 0) == BST_UNCHECKED &&
         !IsWindowEnabled(navigation::desktopGroupsManager), "desktop groups are off by default");
+  check(!desktop_groups::managedIconsEnabled() &&
+        SendMessageW(navigation::managedIconsCheck, BM_GETCHECK, 0, 0) == BST_UNCHECKED &&
+        !IsWindowEnabled(navigation::managedIconsCheck), "native desktop icons are the default");
   check(SendMessageW(navigation::desktopGroupsGlassCheck, BM_GETCHECK, 0, 0) == BST_CHECKED,
         "new desktop groups use glass by default");
   inspectDesktopGroupsPreview();
   SendMessageW(navigation::desktopGroupsCheck, BM_SETCHECK, BST_CHECKED, 0);
   SendMessageW(hub.window, WM_COMMAND, MAKEWPARAM(navigation::desktopGroupsToggle, BN_CLICKED), 0);
-  check(!desktop_groups::enabled() && !IsWindowEnabled(navigation::desktopGroupsManager),
+  check(!desktop_groups::enabled() && !IsWindowEnabled(navigation::desktopGroupsManager) &&
+        IsWindowEnabled(navigation::managedIconsCheck),
         "desktop groups only become available after saving the draft");
+  SendMessageW(navigation::managedIconsCheck, BM_SETCHECK, BST_CHECKED, 0);
   if (navigation::tabsSupported()) {
     check(GetDlgItem(navigation::body, 21) == navigation::preferNewTabCheck &&
           !IsWindowEnabled(navigation::preferNewTabCheck), "new-tab option starts disabled when tabs are off");
@@ -310,6 +315,7 @@ void scenarios() {
     check(visibleStyle(navigation::body) && !visibleStyle(manager), "sidebar returns to feature page");
     check(SendMessageW(navigation::notesCheck, BM_GETCHECK, 0, 0) == BST_CHECKED &&
           SendMessageW(navigation::desktopGroupsCheck, BM_GETCHECK, 0, 0) == BST_CHECKED &&
+          SendMessageW(navigation::managedIconsCheck, BM_GETCHECK, 0, 0) == BST_CHECKED &&
           SendMessageW(navigation::desktopGroupsGlassCheck, BM_GETCHECK, 0, 0) == BST_UNCHECKED &&
           SendMessageW(navigation::themeChoice, CB_GETCURSEL, 0, 0) == DWORD(ui::ThemeMode::Dark),
           "repeated switches keep all draft controls");
@@ -324,24 +330,27 @@ void scenarios() {
   check(!IsWindow(hub.window) && !IsWindow(manager) && !IsWindow(features) && !IsWindow(version),
         "closing the hub destroys both pages and fixed controls");
   check(!navigation::notesEnabled() && ui::configuredTheme() == ui::ThemeMode::System &&
-        !navigation::preferNewTabEnabled() && !desktop_groups::enabled() && navigation::configuredDesktopGroupsGlass(),
+        !navigation::preferNewTabEnabled() && !desktop_groups::enabled() && !desktop_groups::managedIconsEnabled() &&
+        navigation::configuredDesktopGroupsGlass(),
         "cancel does not commit feature, theme or glass drafts");
   navigation::applySettings(false, navigation::Action::Parent, navigation::Action::Parent,
                             false, true, ui::ThemeMode::System, false, false, true,
-                            navigation::DesktopGroupsSettings{true, false, 8, 55, true, 72, 18, 9});
+                            navigation::DesktopGroupsSettings{true, false, 8, 55, true, 72, 18, 9, true});
   const auto savedShadow = desktop_groups::configuredAppearance();
-  check(desktop_groups::enabled() && !savedShadow.glass && savedShadow.shadow &&
+  check(desktop_groups::enabled() && desktop_groups::managedIconsEnabled() && !savedShadow.glass && savedShadow.shadow &&
         savedShadow.shadowOpacity == 72 && savedShadow.shadowBlur == 18 && savedShadow.shadowOffset == 9,
         "settings save persists the desktop groups and appearance choices");
   navigation::saveSettings(false, navigation::Action::Parent, navigation::Action::Parent,
                           false, true, ui::ThemeMode::System, false, true);
   Hub reopened;
   check(desktop_groups::enabled() && SendMessageW(navigation::desktopGroupsCheck, BM_GETCHECK, 0, 0) == BST_CHECKED &&
+        SendMessageW(navigation::managedIconsCheck, BM_GETCHECK, 0, 0) == BST_CHECKED &&
         SendMessageW(navigation::desktopGroupsGlassCheck, BM_GETCHECK, 0, 0) == BST_UNCHECKED &&
         IsWindowEnabled(navigation::desktopGroupsManager), "existing save callers preserve the desktop groups and glass choices");
   SendMessageW(navigation::desktopGroupsCheck, BM_SETCHECK, BST_UNCHECKED, 0);
   SendMessageW(reopened.window, WM_COMMAND, MAKEWPARAM(navigation::desktopGroupsToggle, BN_CLICKED), 0);
-  check(desktop_groups::enabled() && !IsWindowEnabled(navigation::desktopGroupsManager),
+  check(desktop_groups::enabled() && !IsWindowEnabled(navigation::desktopGroupsManager) &&
+        !IsWindowEnabled(navigation::managedIconsCheck),
         "unchecking desktop groups stages a change and disables management");
   if (navigation::tabsSupported()) {
     check(!IsWindowEnabled(navigation::preferNewTabCheck) &&
@@ -352,7 +361,7 @@ void scenarios() {
   check(navigation::preferNewTabEnabled(), "cancel leaves previously saved new-tab choice untouched");
   navigation::applySettings(false, navigation::Action::Parent, navigation::Action::Parent,
                             false, true, ui::ThemeMode::System, false, true, true, navigation::DesktopGroupsSettings{false, true});
-  check(!desktop_groups::enabled() && navigation::configuredDesktopGroupsGlass(),
+  check(!desktop_groups::enabled() && !desktop_groups::managedIconsEnabled() && navigation::configuredDesktopGroupsGlass(),
         "settings save can turn off desktop groups without losing the appearance choice");
 }
 void languages() {
@@ -363,6 +372,7 @@ void languages() {
           windowText(GetDlgItem(hub.window, IDOK)) == L"Save" &&
           windowText(navigation::desktopGroupsCheck) == L"Desktop boxes" &&
           windowText(navigation::desktopGroupsGlassCheck) == L"Frosted glass (Acrylic)" &&
+          windowText(navigation::managedIconsCheck) == L"Icon organization mode" &&
           windowText(navigation::desktopGroupsManager) == L"Manage desktop boxes", "English settings labels load");
   }
   wchar_t directory[MAX_PATH]{}, file[MAX_PATH]{};

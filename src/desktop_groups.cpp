@@ -1,8 +1,8 @@
 #include "desktop_groups.h"
 #include "desktop_box_icons.h"
 #include "desktop_groups_color_picker.h"
-#include "desktop_groups_glass.h"
-#include "desktop_groups_hold.h"
+#include "desktop_groups_desktop_icons.h"
+#include "desktop_groups_icon_source.h"
 #include "desktop_groups_model.h"
 #include "desktop_groups_menu.h"
 #include "desktop_groups_item_menu.h"
@@ -16,6 +16,7 @@
 #include "language.h"
 #include "quick_folders.h"
 #include "quick_popup.h"
+#include "quick_transfer.h"
 #include "resource.h"
 #include "theme.h"
 #include "window_position.h"
@@ -37,6 +38,7 @@
 #include <map>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <thread>
 #include <utility>
 
@@ -44,20 +46,27 @@ namespace desktop_groups {
 namespace {
 constexpr auto receiverClass = L"FolderNote.DesktopGroups.Receiver";
 constexpr auto panelClass = L"FolderNote.DesktopGroups.Panel";
-constexpr auto sceneClass = L"FolderNote.DesktopGroups.Scene";
+constexpr auto tabPreviewClass = L"FolderNote.DesktopGroups.TabPreview";
 constexpr auto mutexName = L"Local\\FolderNote.DesktopGroups";
 constexpr auto runKey = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 constexpr auto runName = L"FolderNote.DesktopGroups";
 constexpr UINT manageMessage = WM_APP + 1, trayMessage = WM_APP + 2, rejectedMessage = WM_APP + 3;
 constexpr UINT dragMessage = WM_APP + 4, refreshMessage = WM_APP + 5;
+constexpr UINT desktopZoomMessage = WM_APP + 7;
+constexpr UINT endDesktopDragMessage = WM_APP + 8;
 constexpr UINT createMessage = WM_APP + 6;
-constexpr UINT detachBoxTabMessage = WM_APP + 41;
+constexpr UINT dropBoxTabMessage = WM_APP + 41;
 constexpr UINT dragTimer = 2;
 constexpr UINT headerTimer = 3;
 constexpr UINT_PTR boxMoveTimer = 1;
+constexpr UINT_PTR tabDragTimer = 2;
+constexpr UINT_PTR collapseHoldTimer = 3;
+constexpr ULONGLONG collapseHoldDelay = 350;
+constexpr UINT_PTR hoverTabTimer = 1;
 constexpr UINT syncScrollMessage = WM_APP + 40;
 constexpr UINT finishBoxGestureMessage = WM_APP + 42;
 constexpr UINT updatePagesMessage = WM_APP + 43, goToPageMessage = WM_APP + 44;
+constexpr UINT renameCreatedBoxMessage = WM_APP + 45;
 UINT appearanceMessage() {
   static const UINT message = RegisterWindowMessageW(L"FolderNote.DesktopGroups.Appearance.v2");
   return message;
@@ -68,27 +77,18 @@ constexpr WPARAM previewGlass = 1u << 12, previewShadow = 1u << 13, previewEnabl
 enum Command { NewGroup = 1, RenameGroup, DeleteGroup, OpenItem, RemoveItem, ToggleGroup,
                AddTab, MapFolder, RemoveTab, IconView, ListViewMode, ManualSort, NameSort, TypeSort, ModifiedSort,
                BoxColor, ResetBoxColor, MoveTabLeft, MoveTabRight, BoxIcon, ClearBoxIcon,
-               TitleText, TitleIcon, TitleIconAndText, ScrollDisplay, PageDisplay };
+               TitleText, TitleIcon, TitleIconAndText, ScrollDisplay, PageDisplay,
+               ToggleBoxGlass, InheritBoxGlass, ToggleAutoCollapse };
 constexpr LRESULT resizeTitle = 0x100;
 using quick::popup::Branch;
 using quick::popup::Symbol;
 
-constexpr auto ungroupedPlacement = L"DesktopGroupsUngroupedPlacement";
-constexpr auto ungroupedOpacity = L"DesktopGroupsUngroupedOpacity";
-constexpr auto ungroupedTint = L"DesktopGroupsUngroupedTint";
-constexpr auto ungroupedTitleHeight = L"DesktopGroupsUngroupedTitleHeight";
-constexpr auto ungroupedTitleStyle = L"DesktopGroupsUngroupedTitleStyle";
-constexpr auto ungroupedTitleIcon = L"DesktopGroupsUngroupedTitleIcon";
-constexpr auto ungroupedDisplayMode = L"DesktopGroupsUngroupedDisplayMode";
-constexpr auto ungroupedItemSpacing = L"DesktopGroupsUngroupedItemSpacing";
 constexpr auto desktopSettings = L"Software\\FolderNote";
 DWORD appearanceValue(const wchar_t *name, DWORD fallback) {
   DWORD value = fallback, bytes = sizeof(value);
   return RegGetValueW(HKEY_CURRENT_USER, desktopSettings, name, RRF_RT_REG_DWORD,
                       nullptr, &value, &bytes) == ERROR_SUCCESS ? value : fallback;
 }
-struct UngroupedPlacement { RECT bounds; DWORD view; DWORD sort; DWORD collapsed; int iconSize = defaultIconSize; };
-
 struct HueColor {
   int hue;
   double saturation, lightness;
@@ -128,38 +128,9 @@ std::vector<std::wstring> &manualItems(Group &group, size_t index) {
   return index ? group.tabs[index - 1].paths : group.paths;
 }
 
-std::optional<std::vector<std::wstring>> ungroupedItems(const std::vector<Group> &groups) {
-  std::vector<std::wstring> grouped;
-  for (size_t i = 1; i < groups.size(); ++i) {
-    const auto &group = groups[i];
-    grouped.insert(grouped.end(), group.paths.begin(), group.paths.end());
-    for (const auto &tab : group.tabs) grouped.insert(grouped.end(), tab.paths.begin(), tab.paths.end());
-  }
-  std::vector<std::wstring> result;
-  Microsoft::WRL::ComPtr<IShellFolder> desktop;
-  Microsoft::WRL::ComPtr<IEnumIDList> entries;
-  if (FAILED(SHGetDesktopFolder(&desktop))) return std::nullopt;
-  const auto status = desktop->EnumObjects(nullptr, SHCONTF_FOLDERS | SHCONTF_NONFOLDERS, &entries);
-  if (FAILED(status)) return std::nullopt;
-  if (!entries) return result;
-  PITEMID_CHILD id = nullptr;
-  while (entries->Next(1, &id, nullptr) == S_OK) {
-    const std::unique_ptr<ITEMIDLIST, decltype(&CoTaskMemFree)> entry(id, CoTaskMemFree);
-    PWSTR raw = nullptr;
-    Microsoft::WRL::ComPtr<IShellItem> item;
-    if (FAILED(SHCreateItemWithParent(nullptr, desktop.Get(), reinterpret_cast<PCUITEMID_CHILD>(id), IID_PPV_ARGS(&item))) ||
-        FAILED(item->GetDisplayName(SIGDN_DESKTOPABSOLUTEPARSING, &raw)) || !raw) continue;
-    const std::unique_ptr<wchar_t, decltype(&CoTaskMemFree)> path(raw, CoTaskMemFree);
-    const auto normalized = quick::normalize(raw);
-    if (normalized.empty() ||
-        std::none_of(grouped.begin(), grouped.end(), [&](const auto &item) { return samePath(item, normalized); }))
-      result.push_back(normalized.empty() ? std::wstring(raw) : normalized);
-  }
-  return result;
-}
-
 HWND receiver() { return FindWindowW(receiverClass, nullptr); }
 constexpr auto readyProperty = L"FolderNote.DesktopGroups.Ready";
+constexpr auto managedIconsProperty = L"FolderNote.DesktopGroups.ManagedIcons";
 
 bool startup(const std::wstring &exe) {
   HKEY key = nullptr;
@@ -200,11 +171,11 @@ bool launch(const std::wstring &exe, bool manage) {
   return ready;
 }
 
-bool notifyManager(HWND window, UINT message = manageMessage) {
+bool notifyManager(HWND window, UINT message = manageMessage, POINT point = {}) {
   DWORD pid = 0;
   GetWindowThreadProcessId(window, &pid);
   if (pid) AllowSetForegroundWindow(pid);
-  return PostMessageW(window, message, 0, 0) != FALSE;
+  return PostMessageW(window, message, static_cast<WPARAM>(static_cast<INT_PTR>(point.x)), point.y) != FALSE;
 }
 
 bool stopProcess() {
@@ -422,9 +393,9 @@ std::wstring pickBoxIcon(HWND owner) {
   return GetOpenFileNameW(&dialog) ? std::wstring(path) : std::wstring{};
 }
 
-RECT visibleBounds(RECT bounds) {
+RECT visibleBounds(RECT bounds, HMONITOR target = nullptr) {
   MONITORINFO monitor{sizeof(monitor)};
-  const auto target = MonitorFromRect(&bounds, MONITOR_DEFAULTTONEAREST);
+  if (!target) target = MonitorFromRect(&bounds, MONITOR_DEFAULTTONEAREST);
   if (!GetMonitorInfoW(target, &monitor)) return bounds;
   const auto work = monitor.rcWork;
   const auto width = std::clamp(bounds.right - bounds.left, 1L, work.right - work.left);
@@ -543,10 +514,15 @@ struct Panel {
   std::optional<COLORREF> colorPreview;
   std::optional<COLORREF> mergeTint;
   int backgroundOpacity() const;
+  bool backgroundGlass() const;
   COLORREF backgroundColor() const;
   void applyBackground();
   bool saveColor(std::optional<COLORREF> tint);
   bool saveSpacing(int spacing);
+  bool autoCollapsed = false;
+  ULONGLONG autoCollapseAt = 0;
+  bool collapsed() const;
+  void tickAutoCollapse(bool pointerInside, ULONGLONG now);
   bool movingOrSizing = false;
   RECT gestureBounds{};
   RECT gestureTarget{};
@@ -554,18 +530,53 @@ struct Panel {
   void snapGesture(RECT &bounds);
   ULONGLONG lastCompositionFrame = 0;
   void stopGesture();
+  void beginGesture(WPARAM edge, POINT point, bool capture);
   void updateGestureTarget(POINT point);
   void updateGestureFrame();
   void finishGesture(bool accept);
   POINT gestureStart{};
-  POINT tabPress{};
-  size_t pressedTab = 0;
+  std::optional<size_t> pressedTab;
   std::optional<size_t> hoveredTab;
+  int tabWheelRemainder = 0;
+  HWND titleEdit = nullptr;
+  std::wstring pendingTitle;
+  void beginTitleRename();
+  void queueTitleRename(std::wstring name);
+  void finishTitleEdit(bool cancel);
+  static LRESULT CALLBACK titleEditInput(HWND control, UINT message, WPARAM w, LPARAM l, UINT_PTR, DWORD_PTR data);
   WPARAM gestureEdge = 0;
   bool gestureEnding = false;
+  bool gestureCanMerge = true;
+  struct CollapsePress { POINT start; ULONGLONG pressedAt; bool armed = false, moving = false, canceled = false; };
+  std::optional<CollapsePress> collapsePress;
+  void beginCollapseHold(POINT start);
+  void moveCollapseHold(POINT screen);
+  bool finishCollapseHold();
+  void cancelCollapseHold();
+  void showCollapseMove(bool show);
+  struct TabDrag {
+    size_t tab;
+    POINT start, anchor;
+    RECT previewBounds{};
+    HWND preview = nullptr;
+    bool canDetach = false;
+    HWND target = nullptr;
+    size_t slot = 0;
+  };
+  std::optional<TabDrag> tabDrag;
+  std::optional<size_t> tabInsertionMark;
+  struct TabDrop { size_t tab; RECT bounds; HWND target; size_t slot; };
+  std::optional<TabDrop> pendingTabDrop;
+  void beginTabDrag(size_t tab, POINT screen, RECT tabBounds);
+  void moveTabDrag(POINT screen);
+  void endTabDrag(POINT screen);
+  void cancelTabDrag();
+  static LRESULT CALLBACK tabPreviewProc(HWND window, UINT message, WPARAM w, LPARAM l);
   void place(RECT bounds);
   Panel(Desktop &owner, size_t position) : desktop(owner), index(position) {}
   ~Panel() {
+    if (window) KillTimer(window, collapseHoldTimer);
+    if (tabDrag && tabDrag->preview) DestroyWindow(tabDrag->preview);
 #ifdef FOLDERNOTE_WINUI
     surface.reset();
 #endif
@@ -589,6 +600,12 @@ struct Panel {
   bool mapped() const;
   void readMappedFolder();
   void showTab(size_t tab);
+  std::optional<size_t> tabAt(POINT screen) const;
+  std::optional<size_t> tabInsertion(POINT screen) const;
+  void showTabInsertion(std::optional<size_t> slot);
+  void paintTabInsertion(HDC dc) const;
+  bool wheelOnTab(POINT screen, int delta);
+  bool wheelTabs(int delta);
   void zoom(int delta);
   void loadThumbnails(int pixels);
   void applyThumbnails();
@@ -614,23 +631,26 @@ class Desktop {
 public:
   HINSTANCE instance;
   HWND window = nullptr;
-  HWND scene = nullptr;
 #ifdef FOLDERNOTE_WINUI
   bool useWinui = false;
 #endif
-  RECT sceneBounds{};
   std::vector<Group> groups;
   std::vector<LooseItem> looseItems;
-  std::vector<HWND> looseWindows;
+  std::unique_ptr<DesktopIcons> desktopIcons;
+  DesktopIconMetrics desktopIconMetrics;
+  SIZE nativeDesktopSpacing{};
+  int nativeDesktopIconSize = 0;
+  int desktopWheelRemainder = 0;
+  std::vector<LooseItem> nativeItems;
+  std::vector<std::wstring> scannedIconPaths;
   std::vector<std::unique_ptr<Panel>> panels;
   std::vector<std::wstring> roots = desktopRoots();
   ui::Theme theme;
-  GlassBackground looseGlass;
-  DesktopHold hold;
   Appearance style = configuredAppearance();
   bool previewingAppearance = false;
   UINT taskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
   bool quitting = false;
+  bool ownsIconLayer = false;
   bool menuOpen = false;
   bool editing = false;
   bool dragging = false;
@@ -639,6 +659,9 @@ public:
   HICON dragIcon = nullptr;
   SIZE dragSize{};
   RECT dragIconRect{}, dragLabelRect{};
+  POINT dragAnchor{};
+  POINT desktopDragStart{};
+  bool dragImageOnly = false;
   bool dragListMode = false;
   std::wstring dragLabel;
   HWND dropHighlight = nullptr;
@@ -647,94 +670,59 @@ public:
   std::wstring dragPath;
   std::vector<std::wstring> dragItems;
   ULONGLONG lastFolderRefresh = 0;
+  std::optional<POINT> desktopMenuPoint;
+  ULONGLONG desktopMenuOpenedAt = 0;
 
   explicit Desktop(HINSTANCE module) : instance(module) {
     auto layout = loadLayout();
     groups = std::move(layout.groups);
     looseItems = std::move(layout.looseItems);
-    Group ungrouped;
-    ungrouped.name = lang::text(L"待整理桌面");
-    const auto work = ui::mouseWorkArea();
-    const auto dpi = GetDpiForSystem();
-    ungrouped.bounds = {work.left + 16, work.top + 16, work.left + MulDiv(350, dpi, 96),
-                        work.top + MulDiv(460, dpi, 96)};
-    ungrouped.sort = Sort::Name;
-    if (const auto opacity = appearanceValue(ungroupedOpacity, MAXDWORD); opacity <= 100)
-      ungrouped.opacity = static_cast<int>(opacity);
-    if (const auto tint = appearanceValue(ungroupedTint, CLR_NONE); tint <= 0x00ffffff)
-      ungrouped.tint = tint;
-    ungrouped.titleHeight = std::clamp<DWORD>(appearanceValue(ungroupedTitleHeight, 36), 28, 80);
-    ungrouped.titleStyle = static_cast<TitleStyle>(std::min<DWORD>(appearanceValue(ungroupedTitleStyle, 0), 2));
-    if (appearanceValue(ungroupedDisplayMode, 0) == 1) ungrouped.displayMode = DisplayMode::Pages;
-    ungrouped.itemSpacing = std::min<DWORD>(maxItemSpacing, appearanceValue(ungroupedItemSpacing, 0));
-    DWORD iconBytes = 0;
-    if (RegGetValueW(HKEY_CURRENT_USER, desktopSettings, ungroupedTitleIcon, RRF_RT_REG_SZ,
-                     nullptr, nullptr, &iconBytes) == ERROR_SUCCESS && iconBytes <= 65536) {
-      std::wstring path(iconBytes / sizeof(wchar_t), L'\0');
-      if (!path.empty() && RegGetValueW(HKEY_CURRENT_USER, desktopSettings, ungroupedTitleIcon, RRF_RT_REG_SZ,
-                                      nullptr, path.data(), &iconBytes) == ERROR_SUCCESS) {
-        path.resize(wcslen(path.c_str()));
-        ungrouped.titleIcon = std::move(path);
-      }
-    }
-    UngroupedPlacement placement{};
-    DWORD bytes = sizeof(placement);
-    if (RegGetValueW(HKEY_CURRENT_USER, desktopSettings, ungroupedPlacement, RRF_RT_REG_BINARY,
-                     nullptr, &placement, &bytes) == ERROR_SUCCESS &&
-        (bytes == sizeof(placement) || bytes == offsetof(UngroupedPlacement, iconSize)) &&
-        placement.bounds.left < placement.bounds.right && placement.bounds.top < placement.bounds.bottom &&
-        static_cast<LONGLONG>(placement.bounds.right) - placement.bounds.left <= INT_MAX &&
-        static_cast<LONGLONG>(placement.bounds.bottom) - placement.bounds.top <= INT_MAX &&
-        placement.view <= static_cast<DWORD>(View::List) && placement.sort <= static_cast<DWORD>(Sort::Modified)) {
-      ungrouped.bounds = placement.bounds;
-      ungrouped.view = static_cast<View>(placement.view);
-      ungrouped.sort = static_cast<Sort>(placement.sort);
-      ungrouped.collapsed = placement.collapsed != 0;
-      if (bytes == sizeof(placement) && std::find(iconSizes.begin(), iconSizes.end(), placement.iconSize) != iconSizes.end())
-        ungrouped.iconSize = placement.iconSize;
-    }
-    groups.insert(groups.begin(), std::move(ungrouped));
-    auto items = ungroupedItems(groups);
-    if (!items) throw fn::Error{lang::text(L"无法接管桌面图标。")};
-    groups.front().paths = std::move(*items);
-    std::erase_if(groups.front().paths, [&](const auto &path) {
-      return std::any_of(looseItems.begin(), looseItems.end(), [&](const auto &item) { return samePath(item.path, path); });
-    });
   }
   ~Desktop() {
+    quitting = true;
     if (dragPreview) DestroyWindow(dragPreview);
     if (dragIcon) DestroyIcon(dragIcon);
-    hold.stop();
+    desktopIcons.reset();
+    if (ownsIconLayer) restoreDesktopIcons();
     panels.clear();
-    if (scene) DestroyWindow(scene);
     if (window) DestroyWindow(window);
   }
   void tray(DWORD action) const;
   bool openPanel(size_t index);
-  void updateScene();
+  void updateShadows();
   void highlight(HWND target);
   void setAppearance(const Appearance &value);
   void lower(HWND raisedPanel = nullptr) const;
   Panel *mergeTargetAt(POINT point, const Panel &source) const;
   Panel *panelAt(POINT point) const;
+  Panel *panelForWindow(HWND handle) const;
   bool desktopDropAt(POINT point) const;
-  bool commit(std::vector<Group> changed, HWND owner, const std::vector<LooseItem> *placements = nullptr,
-              bool refreshContents = true);
-  void refreshLoose();
+  std::wstring dropFolder(Panel *panel, POINT point) const;
+  bool canMoveInto(std::span<const std::wstring> paths, const std::wstring &folder) const;
+  void moveInto(std::span<const std::wstring> paths, const std::wstring &folder, HWND owner);
+  bool startDesktopIcons();
+  void stopDesktopIcons();
+  bool refreshDesktopIcons(bool scan);
+  void zoomDesktopIcons(int delta);
+  std::wstring boxItem(const std::wstring &path) const;
+  bool commit(std::vector<Group> changed, HWND owner, bool refreshContents = true,
+              std::optional<std::vector<LooseItem>> placements = std::nullopt);
   bool mergePanels(size_t source, size_t target);
-  void detachPanelTab(size_t index, size_t tab, POINT point);
+  void detachPanelTab(size_t index, size_t tab, RECT bounds);
+  void movePanelTab(Panel &source, size_t tab, Panel &target, size_t slot, bool selectMoved);
   void beginDrag(HWND source, std::wstring path, HICON icon, HWND list = nullptr, int row = -1,
-                 bool listMode = false);
-  static LRESULT CALLBACK looseProc(HWND window, UINT message, WPARAM w, LPARAM l, UINT_PTR, DWORD_PTR data);
+                 bool listMode = false, const RECT *sourceImage = nullptr, POINT mouse = {});
+  bool ungroup(std::span<const std::wstring> paths, HWND owner, std::optional<POINT> location = std::nullopt);
   void manage();
   void action(Panel *panel, Command command, size_t tab = 0);
+  void createBox(POINT point, HWND owner);
+  void renameBox(Panel &panel, std::wstring name);
   void drag(Panel &panel, int index);
   bool drop(Panel &panel, HDROP files, POINT point);
   bool assign(Panel &panel, const std::vector<std::wstring> &paths, POINT point);
-  void finishDrag(HWND source, bool apply);
+  void finishDrag(HWND source, bool apply, std::optional<POINT> release = std::nullopt);
   void updateDragFeedback();
   static LRESULT CALLBACK dragPreviewProc(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
-  void refreshUngrouped();
   static LRESULT CALLBACK proc(HWND window, UINT message, WPARAM w, LPARAM l);
 };
 
@@ -815,6 +803,10 @@ int Panel::backgroundOpacity() const {
   return opacityPreview.value_or(desktop.groups[index].opacity.value_or(desktop.style.opacity));
 }
 
+bool Panel::backgroundGlass() const {
+  return desktop.groups[index].glass.value_or(desktop.style.glass);
+}
+
 COLORREF Panel::backgroundColor() const {
   const auto &colors = desktop.theme.colors;
   if (colors.highContrast) return colors.field;
@@ -826,7 +818,7 @@ void Panel::applyBackground() {
   if (hasSurface()) {
     const auto &colors = desktop.theme.colors;
     const auto opacity = static_cast<BYTE>(MulDiv(backgroundOpacity(), 255, 100));
-    surface->appearance(colors.dark, colors.highContrast, backgroundColor(), opacity, desktop.style.glass);
+    surface->appearance(colors.dark, colors.highContrast, backgroundColor(), opacity, backgroundGlass());
     return;
   }
 #endif
@@ -836,39 +828,18 @@ void Panel::applyBackground() {
 bool Panel::saveColor(std::optional<COLORREF> tint) {
   if (desktop.quitting) return false;
   if (desktop.groups[index].tint == tint) return true;
-  if (index) {
-    auto changed = desktop.groups;
-    changed[index].tint = tint;
-    return desktop.commit(std::move(changed), window, nullptr, false);
-  }
-  const DWORD value = tint.value_or(CLR_NONE);
-  const auto result = RegSetKeyValueW(HKEY_CURRENT_USER, desktopSettings, ungroupedTint, REG_DWORD, &value, sizeof(value));
-  if (result != ERROR_SUCCESS) {
-    report(window, lang::text(L"无法保存桌面盒子"));
-    return false;
-  }
-  desktop.groups.front().tint = tint;
-  return true;
+  auto changed = desktop.groups;
+  changed[index].tint = tint;
+  return desktop.commit(std::move(changed), window, false);
 }
 
 bool Panel::saveSpacing(int spacing) {
   if (desktop.quitting) return false;
   if (desktop.groups[index].itemSpacing == spacing) return true;
-  if (index) {
-    auto changed = desktop.groups;
-    changed[index].itemSpacing = spacing;
-    return desktop.commit(std::move(changed), window, nullptr, false);
-  }
-  const DWORD value = spacing;
-  if (RegSetKeyValueW(HKEY_CURRENT_USER, desktopSettings, ungroupedItemSpacing,
-                      REG_DWORD, &value, sizeof(value)) != ERROR_SUCCESS) {
-    report(window, lang::text(L"无法保存桌面盒子"));
-    return false;
-  }
-  desktop.groups.front().itemSpacing = spacing;
-  return true;
+  auto changed = desktop.groups;
+  changed[index].itemSpacing = spacing;
+  return desktop.commit(std::move(changed), window, false);
 }
-
 #ifdef FOLDERNOTE_WINUI
 void Panel::syncSurfaceHeader() {
   if (!hasSurface()) return;
@@ -876,7 +847,7 @@ void Panel::syncSurfaceHeader() {
   const auto &colors = desktop.theme.colors;
   std::vector<std::wstring> titles{group.name};
   for (const auto &tab : group.tabs) titles.push_back(tab.name);
-  surface->header(titles, activeTab, group.collapsed, headerActions, desktop.dropHighlight == window,
+  surface->header(titles, activeTab, collapsed(), headerActions, desktop.dropHighlight == window,
                   desktop.style.radius, colors.text, colors.muted, colors.border, colors.accent,
                   titleHeightPreview ? titleHeightPreview : group.titleHeight, group.titleStyle, headerIcon());
 }
@@ -912,8 +883,7 @@ HICON Panel::headerIcon() {
 }
 
 bool Panel::mapped() const {
-  const auto tab = extraTab(desktop.groups[index], activeTab);
-  return tab && !tab->folder.empty();
+  return !folderForTab(desktop.groups[index], activeTab).empty();
 }
 
 void Desktop::setAppearance(const Appearance &value) {
@@ -974,6 +944,287 @@ void Panel::showTab(size_t tab) {
   InvalidateRect(tabs, nullptr, FALSE);
 }
 
+void Panel::beginTitleRename() {
+#ifdef FOLDERNOTE_WINUI
+  if (hasSurface() && surface->beginTitleRename([this](std::wstring name) { queueTitleRename(std::move(name)); })) return;
+#endif
+  RECT area{};
+  GetClientRect(window, &area);
+  const auto dpi = GetDpiForWindow(window);
+  const auto inset = MulDiv(10, dpi, 96);
+  const auto height = MulDiv(24, dpi, 96);
+  titleEdit = CreateWindowExW(0, L"EDIT", desktop.groups[index].name.c_str(),
+                              WS_CHILD | WS_TABSTOP | ES_AUTOHSCROLL,
+                              inset, std::max(0, (headerHeight() - height) / 2),
+                              std::max(1L, area.right - MulDiv(110, dpi, 96)), height,
+                              window, nullptr, desktop.instance, nullptr);
+  if (!titleEdit) return;
+  if (!SetWindowSubclass(titleEdit, titleEditInput, 1, reinterpret_cast<DWORD_PTR>(this))) {
+    DestroyWindow(std::exchange(titleEdit, nullptr));
+    return;
+  }
+  SendMessageW(titleEdit, WM_SETFONT, reinterpret_cast<WPARAM>(titleFont), FALSE);
+  SendMessageW(titleEdit, EM_SETLIMITTEXT, groupNameLimit, 0);
+  SetWindowPos(titleEdit, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+  SetForegroundWindow(window);
+  SetActiveWindow(window);
+  SetFocus(titleEdit);
+  SendMessageW(titleEdit, EM_SETSEL, 0, -1);
+}
+
+void Panel::queueTitleRename(std::wstring name) {
+  if (name.empty() || desktop.quitting) return;
+  pendingTitle = std::move(name);
+  PostMessageW(window, renameCreatedBoxMessage, 0, 0);
+}
+
+void Panel::finishTitleEdit(bool cancel) {
+  if (!titleEdit) return;
+  const auto edit = std::exchange(titleEdit, nullptr);
+  wchar_t name[groupNameLimit + 1]{};
+  if (!cancel) GetWindowTextW(edit, name, ARRAYSIZE(name));
+  DestroyWindow(edit);
+  if (!cancel) queueTitleRename(name);
+  InvalidateRect(window, nullptr, FALSE);
+}
+
+LRESULT CALLBACK Panel::titleEditInput(HWND control, UINT message, WPARAM w, LPARAM l, UINT_PTR, DWORD_PTR data) {
+  auto &panel = *reinterpret_cast<Panel *>(data);
+  if (message == WM_KEYDOWN && (w == VK_RETURN || w == VK_ESCAPE)) {
+    panel.finishTitleEdit(w == VK_ESCAPE);
+    return 0;
+  }
+  if (message == WM_KILLFOCUS && panel.titleEdit == control) {
+    panel.finishTitleEdit(false);
+    return 0;
+  }
+  return DefSubclassProc(control, message, w, l);
+}
+
+std::optional<size_t> Panel::tabAt(POINT screen) const {
+#ifdef FOLDERNOTE_WINUI
+  if (hasSurface()) return surface->tabAt(screen);
+#endif
+  if (!IsWindowVisible(tabs) || !ScreenToClient(tabs, &screen)) return std::nullopt;
+  for (size_t i = 0; i < tabAreas.size(); ++i)
+    if (PtInRect(&tabAreas[i], screen)) return i;
+  return std::nullopt;
+}
+
+std::optional<size_t> Panel::tabInsertion(POINT screen) const {
+  if (dockHidden) return std::nullopt;
+#ifdef FOLDERNOTE_WINUI
+  if (hasSurface()) return surface->tabInsertion(screen);
+#endif
+  RECT client{};
+  GetClientRect(window, &client);
+  const auto dpi = GetDpiForWindow(window);
+  client.bottom = headerHeight();
+  client.right -= MulDiv(96, dpi, 96);
+  auto point = screen;
+  if (!ScreenToClient(window, &point) || !PtInRect(&client, point)) return std::nullopt;
+  if (tabAreas.empty()) return point.x < std::min(client.right / 2, LONG(MulDiv(70, dpi, 96))) ? 0 : 1;
+  ScreenToClient(tabs, &screen);
+  for (size_t i = 0; i < tabAreas.size(); ++i)
+    if (screen.x < (tabAreas[i].left + tabAreas[i].right) / 2) return i;
+  return std::max<size_t>(1, tabAreas.size());
+}
+
+void Panel::showTabInsertion(std::optional<size_t> slot) {
+  if (tabInsertionMark == slot) return;
+  tabInsertionMark = slot;
+#ifdef FOLDERNOTE_WINUI
+  if (hasSurface()) {
+    surface->showTabInsertion(slot);
+    return;
+  }
+#endif
+  RECT area{};
+  GetClientRect(window, &area);
+  area.bottom = headerHeight();
+  InvalidateRect(window, &area, FALSE);
+  InvalidateRect(tabs, nullptr, FALSE);
+}
+
+void Panel::paintTabInsertion(HDC dc) const {
+  if (!tabInsertionMark) return;
+  const auto dpi = GetDpiForWindow(window);
+  const auto inset = MulDiv(8, dpi, 96);
+  const auto width = std::max(2, MulDiv(2, dpi, 96));
+  LONG x = MulDiv(125, dpi, 96);
+  if (!tabAreas.empty()) {
+    const auto slot = *tabInsertionMark;
+    x = slot < tabAreas.size() ? tabAreas[slot].left : std::max(0L, tabAreas.back().right - width);
+  } else {
+    RECT client{};
+    GetClientRect(window, &client);
+    if (!*tabInsertionMark) x = MulDiv(6, dpi, 96);
+    x = std::clamp(x, 0L, std::max(0L, client.right - MulDiv(100, dpi, 96)));
+  }
+  const RECT mark{x, inset, x + width, std::max<LONG>(inset + width, headerHeight() - inset)};
+  const auto old = SetDCBrushColor(dc, desktop.theme.colors.accent);
+  FillRect(dc, &mark, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+  SetDCBrushColor(dc, old);
+}
+
+bool Panel::wheelOnTab(POINT screen, int delta) {
+#ifdef FOLDERNOTE_WINUI
+  if (hasSurface()) return surface->wheelOnTab(screen, delta);
+#endif
+  if (!tabAt(screen)) return false;
+  KillTimer(tabs, hoverTabTimer);
+  return wheelTabs(delta);
+}
+
+bool Panel::wheelTabs(int delta) {
+  const auto count = desktop.groups[index].tabs.size() + 1;
+  if (count < 2 || !delta) return false;
+  if (tabDrag || pressedTab || gestureEdge || desktop.dragging || desktop.editing || desktop.menuOpen || desktop.quitting) return true;
+  tabWheelRemainder += std::clamp(delta, -WHEEL_DELTA * 12, WHEEL_DELTA * 12);
+  const auto steps = tabWheelRemainder / WHEEL_DELTA;
+  tabWheelRemainder %= WHEEL_DELTA;
+  const auto total = static_cast<std::ptrdiff_t>(count);
+  const auto next = (static_cast<std::ptrdiff_t>(activeTab % count) - steps % total + total) % total;
+  if (steps) showTab(static_cast<size_t>(next));
+  return true;
+}
+
+void Panel::beginTabDrag(size_t tab, POINT screen, RECT tabBounds) {
+  cancelTabDrag();
+  if (desktop.editing || desktop.dragging || desktop.menuOpen || desktop.quitting ||
+      tab > desktop.groups[index].tabs.size()) return;
+  const auto dpi = GetDpiForWindow(window);
+  const auto width = MulDiv(360, dpi, 96);
+  tabDrag = TabDrag{tab, screen, {std::clamp(screen.x - tabBounds.left, 0L, LONG(width - 1)),
+                                 std::clamp(screen.y - tabBounds.top, 0L, LONG(headerHeight() - 1))}};
+  if (!desktop.groups[index].tabs.empty()) SetTimer(window, tabDragTimer, 16, nullptr);
+}
+
+void Panel::moveTabDrag(POINT screen) {
+  if (!tabDrag || desktop.groups[index].tabs.empty() || tabDrag->tab > desktop.groups[index].tabs.size()) return;
+  if (desktop.quitting || desktop.editing || desktop.menuOpen || desktop.dragging) {
+    cancelTabDrag();
+    return;
+  }
+  auto &drag = *tabDrag;
+  const auto dpi = GetDpiForWindow(window);
+  if (!drag.preview && std::abs(screen.x - drag.start.x) < GetSystemMetricsForDpi(SM_CXDRAG, dpi) &&
+      std::abs(screen.y - drag.start.y) < GetSystemMetricsForDpi(SM_CYDRAG, dpi)) return;
+  if (!drag.preview) {
+    WNDCLASSW type{};
+    type.lpfnWndProc = tabPreviewProc;
+    type.hInstance = desktop.instance;
+    type.lpszClassName = tabPreviewClass;
+    if (!RegisterClassW(&type) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return;
+    drag.preview = CreateWindowExW(WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW,
+                                  tabPreviewClass, nullptr, WS_POPUP, 0, 0, 0, 0,
+                                  window, nullptr, desktop.instance, this);
+    if (!drag.preview) return;
+    SetLayeredWindowAttributes(drag.preview, 0, desktop.theme.colors.highContrast ? 255 : 220, LWA_ALPHA);
+  }
+  const bool wasAllowed = drag.canDetach;
+  auto *target = desktop.panelAt(screen);
+  auto slot = target ? target->tabInsertion(screen) : std::nullopt;
+  if (target && target != this && !target->dockHidden && !slot) slot = desktop.groups[target->index].tabs.size() + 1;
+  if (target == this && slot && (*slot == drag.tab || *slot == drag.tab + 1)) slot.reset();
+  const auto targetWindow = slot ? target->window : nullptr;
+  if (drag.target != targetWindow || drag.slot != slot.value_or(0)) {
+    if (drag.target != targetWindow) {
+      if (auto *previous = desktop.panelForWindow(drag.target)) previous->showTabInsertion(std::nullopt);
+    }
+    drag.target = targetWindow;
+    drag.slot = slot.value_or(0);
+    if (targetWindow) target->showTabInsertion(slot);
+  }
+  drag.canDetach = !target && desktop.desktopDropAt(screen);
+  const LONG x = screen.x - drag.anchor.x, y = screen.y - drag.anchor.y;
+  const auto bounds = visibleBounds({x, y, x + MulDiv(360, dpi, 96), y + MulDiv(254, dpi, 96)});
+  // The compact preview marks where the detached box's header will appear.
+  const auto width = std::min<LONG>(bounds.right - bounds.left, MulDiv(210, dpi, 96));
+  const auto height = std::min<LONG>(bounds.bottom - bounds.top, headerHeight());
+  if (!IsWindowVisible(drag.preview) || wasAllowed != drag.canDetach) {
+    const LONG previewWidth = drag.canDetach ? width : std::min<LONG>(width, MulDiv(144, dpi, 96));
+    const auto region = createBoxRegion(previewWidth, height, MulDiv(12, dpi, 96));
+    if (region && !SetWindowRgn(drag.preview, region, FALSE)) DeleteObject(region);
+    SetWindowPos(drag.preview, HWND_TOPMOST, bounds.left, bounds.top, previewWidth, height,
+                 SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    InvalidateRect(drag.preview, nullptr, FALSE);
+  } else if (!EqualRect(&bounds, &drag.previewBounds)) {
+    SetWindowPos(drag.preview, nullptr, bounds.left, bounds.top, 0, 0, SWP_NOACTIVATE | SWP_NOSIZE | SWP_NOZORDER);
+  }
+  drag.previewBounds = bounds;
+  SetCursor(LoadCursorW(nullptr, drag.canDetach || drag.target ? IDC_SIZEALL : IDC_NO));
+}
+
+void Panel::endTabDrag(POINT screen) {
+  if (!tabDrag) return;
+  moveTabDrag(screen);
+  if (!tabDrag) return;
+  const auto tab = tabDrag->tab;
+  const auto bounds = tabDrag->previewBounds;
+  const auto target = tabDrag->target;
+  const auto slot = tabDrag->slot;
+  const bool detach = tabDrag->preview && tabDrag->canDetach;
+  const bool click = !tabDrag->preview && GetAncestor(WindowFromPoint(screen), GA_ROOT) == window;
+  cancelTabDrag();
+  if (detach || target) {
+    pendingTabDrop = TabDrop{tab, bounds, target, slot};
+    if (!PostMessageW(window, dropBoxTabMessage, 0, 0)) pendingTabDrop.reset();
+  } else if (click) {
+    showTab(tab);
+  }
+}
+
+void Panel::cancelTabDrag() {
+  if (!tabDrag) return;
+  const auto preview = tabDrag->preview;
+  if (!desktop.quitting) {
+    if (auto *target = desktop.panelForWindow(tabDrag->target)) target->showTabInsertion(std::nullopt);
+  }
+  tabDrag.reset();
+  if (window) KillTimer(window, tabDragTimer);
+  if (preview) {
+    DestroyWindow(preview);
+    SetCursor(LoadCursorW(nullptr, IDC_ARROW));
+  }
+}
+
+LRESULT CALLBACK Panel::tabPreviewProc(HWND window, UINT message, WPARAM w, LPARAM l) {
+  if (message == WM_NCCREATE)
+    SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(reinterpret_cast<CREATESTRUCTW *>(l)->lpCreateParams));
+  if (message == WM_NCHITTEST) return HTTRANSPARENT;
+  if (message == WM_MOUSEACTIVATE) return MA_NOACTIVATE;
+  if (message == WM_ERASEBKGND) return 1;
+  if (message == WM_PAINT) {
+    PAINTSTRUCT paint{};
+    const auto dc = BeginPaint(window, &paint);
+    const auto panel = reinterpret_cast<Panel *>(GetWindowLongPtrW(window, GWLP_USERDATA));
+    if (panel && panel->tabDrag) {
+      const auto &group = panel->desktop.groups[panel->index];
+      const auto tab = panel->tabDrag->tab;
+      if (tab <= group.tabs.size()) {
+        const auto &name = tab ? group.tabs[tab - 1].name : group.name;
+        const auto tint = tab ? group.tabs[tab - 1].detachedTint : group.primaryDetachedTint;
+        const auto &colors = panel->desktop.theme.colors;
+        const auto dpi = GetDpiForWindow(window);
+        const auto fill = colors.highContrast ? colors.field : tint.value_or(group.tint).value_or(colors.hover);
+        RECT rect{};
+        GetClientRect(window, &rect);
+        SetDCBrushColor(dc, fill);
+        FillRect(dc, &rect, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+        ui::rounded(dc, rect, fill, boxOutlineColor(fill, colors), MulDiv(6, dpi, 96));
+        InflateRect(&rect, -MulDiv(10, dpi, 96), 0);
+        const auto font = SelectObject(dc, panel->titleFont);
+        ui::text(dc, name, rect, colors.text);
+        if (font) SelectObject(dc, font);
+      }
+    }
+    EndPaint(window, &paint);
+    return 0;
+  }
+  return DefWindowProcW(window, message, w, l);
+}
+
 void Panel::paintTabs(const DRAWITEMSTRUCT &item) {
   const auto &colors = desktop.theme.colors;
   const auto &group = desktop.groups[index];
@@ -988,17 +1239,16 @@ void Panel::paintTabs(const DRAWITEMSTRUCT &item) {
   const auto dpi = GetDpiForWindow(window);
   const auto px = [dpi](int value) { return MulDiv(value, dpi, 96); };
   const auto oldMode = SetBkMode(dc, TRANSPARENT);
-  POINT cursor{};
-  GetCursorPos(&cursor);
-  ScreenToClient(tabs, &cursor);
   for (size_t i = 0; i < tabAreas.size(); ++i) {
     auto box = tabAreas[i];
     InflateRect(&box, -px(1), 0);
     if (IsRectEmpty(&box)) continue;
     const bool selected = i == activeTab;
-    const bool hot = PtInRect(&box, cursor);
-    if (selected || hot) {
-      const auto fill = selected && colors.highContrast ? colors.accent : selected ? colors.hover : colors.surface;
+    const bool pressed = pressedTab == i;
+    const bool hot = !pressedTab && hoveredTab == i;
+    if (selected || hot || pressed) {
+      const auto fill = colors.highContrast && (selected || pressed) ? colors.accent
+                      : pressed || (selected && hot) ? colors.pressed : selected ? colors.hover : colors.surface;
       auto upper = box;
       upper.bottom += px(5);
       ui::rounded(dc, upper, fill, fill, px(5));
@@ -1011,11 +1261,12 @@ void Panel::paintTabs(const DRAWITEMSTRUCT &item) {
     const auto previous = SelectObject(dc, font);
     InflateRect(&box, -px(8), 0);
     const auto &title = i ? group.tabs[i - 1].name : group.name;
-    ui::text(dc, title, box, selected && colors.highContrast ? colors.onAccent :
-             selected || hot ? colors.text : colors.muted,
+    ui::text(dc, title, box, (selected || pressed) && colors.highContrast ? colors.onAccent :
+             selected || hot || pressed ? colors.text : colors.muted,
              DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
     SelectObject(dc, previous);
   }
+  paintTabInsertion(dc);
   SetBkMode(dc, oldMode);
   if (buffered) {
     BitBlt(item.hDC, 0, 0, item.rcItem.right, item.rcItem.bottom, buffer, 0, 0, SRCCOPY);
@@ -1027,7 +1278,6 @@ void Panel::paintTabs(const DRAWITEMSTRUCT &item) {
 
 LRESULT CALLBACK tabInput(HWND control, UINT message, WPARAM w, LPARAM l, UINT_PTR, DWORD_PTR data) {
   auto &panel = *reinterpret_cast<Panel *>(data);
-  constexpr UINT_PTR hoverTabTimer = 1;
   const auto tabAt = [&](POINT point) -> std::optional<size_t> {
     for (size_t i = 0; i < panel.tabAreas.size(); ++i)
       if (PtInRect(&panel.tabAreas[i], point)) return i;
@@ -1037,14 +1287,26 @@ LRESULT CALLBACK tabInput(HWND control, UINT message, WPARAM w, LPARAM l, UINT_P
     KillTimer(control, hoverTabTimer);
     panel.hoveredTab.reset();
   };
+  const auto clearPress = [&] {
+    panel.pressedTab.reset();
+    InvalidateRect(control, nullptr, FALSE);
+  };
+  const auto screenPoint = [&] {
+    POINT point{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
+    ClientToScreen(control, &point);
+    return point;
+  };
   if (message == WM_ERASEBKGND) return 1;
+  if (message == WM_MOUSEWHEEL && !GET_KEYSTATE_WPARAM(w) &&
+      panel.wheelOnTab({GET_X_LPARAM(l), GET_Y_LPARAM(l)}, GET_WHEEL_DELTA_WPARAM(w))) return 0;
   if (message == WM_MOUSELEAVE) {
     clearHover();
+    panel.tabWheelRemainder = 0;
     InvalidateRect(control, nullptr, FALSE);
   }
   if (message == WM_TIMER && w == hoverTabTimer) {
     const auto pending = panel.hoveredTab;
-    clearHover();
+    KillTimer(control, hoverTabTimer);
     POINT cursor{};
     if (pending && !panel.pressedTab && !panel.desktop.menuOpen && GetCursorPos(&cursor) &&
         WindowFromPoint(cursor) == control && ScreenToClient(control, &cursor) && tabAt(cursor) == pending)
@@ -1052,37 +1314,42 @@ LRESULT CALLBACK tabInput(HWND control, UINT message, WPARAM w, LPARAM l, UINT_P
     return 0;
   }
   if (message == WM_LBUTTONDOWN) {
-    clearHover();
-    SetFocus(control);
     const POINT point{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
-    for (size_t i = 1; i < panel.tabAreas.size(); ++i) {
-      if (!PtInRect(&panel.tabAreas[i], point)) continue;
-      panel.pressedTab = i;
-      panel.tabPress = point;
-      SetForegroundWindow(panel.desktop.scene);
+    if (const auto tab = tabAt(point)) {
+      clearHover();
+      SetForegroundWindow(panel.window);
+      SetFocus(control);
       SetCapture(control);
-      if (GetCapture() != control) panel.pressedTab = 0;
+      if (GetCapture() != control) {
+        panel.showTab(*tab);
+        return 0;
+      }
+      auto bounds = panel.tabAreas[*tab];
+      MapWindowPoints(control, HWND_DESKTOP, reinterpret_cast<POINT *>(&bounds), 2);
+      panel.pressedTab = tab;
+      panel.beginTabDrag(*tab, screenPoint(), bounds);
+      InvalidateRect(control, nullptr, FALSE);
       return 0;
     }
   }
-  if (message == WM_CAPTURECHANGED) panel.pressedTab = 0;
+  if (panel.pressedTab && (message == WM_CAPTURECHANGED || message == WM_CANCELMODE ||
+                          (message == WM_KEYDOWN && w == VK_ESCAPE))) {
+    clearPress();
+    panel.cancelTabDrag();
+    if (GetCapture() == control) ReleaseCapture();
+    return 0;
+  }
   if (panel.pressedTab && message == WM_MOUSEMOVE) {
-    POINT screen{};
-    GetCursorPos(&screen);
-    SetCursor(LoadCursorW(nullptr, !panel.desktop.panelAt(screen) && panel.desktop.desktopDropAt(screen) ? IDC_SIZEALL : IDC_ARROW));
+    panel.moveTabDrag(screenPoint());
     return 0;
   }
   if (panel.pressedTab && message == WM_LBUTTONUP) {
-    const auto tab = std::exchange(panel.pressedTab, 0);
-    const POINT point{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
+    clearPress();
+    const auto point = screenPoint();
+    auto client = point;
+    if (WindowFromPoint(point) == control && ScreenToClient(control, &client)) panel.hoveredTab = tabAt(client);
+    panel.endTabDrag(point);
     if (GetCapture() == control) ReleaseCapture();
-    POINT screen{};
-    GetCursorPos(&screen);
-    if ((std::abs(point.x - panel.tabPress.x) >= GetSystemMetrics(SM_CXDRAG) ||
-         std::abs(point.y - panel.tabPress.y) >= GetSystemMetrics(SM_CYDRAG)) &&
-        !panel.desktop.panelAt(screen) && panel.desktop.desktopDropAt(screen))
-      panel.desktop.detachPanelTab(panel.index, tab, screen);
-    else panel.showTab(tab);
     return 0;
   }
   const POINT point{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
@@ -1097,10 +1364,8 @@ LRESULT CALLBACK tabInput(HWND control, UINT message, WPARAM w, LPARAM l, UINT_P
       InvalidateRect(control, nullptr, FALSE);
     }
   }
-  if (message == WM_LBUTTONUP)
-    if (const auto tab = tabAt(point)) panel.showTab(*tab);
-  if (message == WM_KEYDOWN && (w == VK_LEFT || w == VK_RIGHT) && !panel.tabAreas.empty()) {
-    clearHover();
+  if (!panel.pressedTab && message == WM_KEYDOWN && (w == VK_LEFT || w == VK_RIGHT) && !panel.tabAreas.empty()) {
+    KillTimer(control, hoverTabTimer);
     const auto count = panel.tabAreas.size();
     panel.showTab((panel.activeTab + (w == VK_LEFT ? count - 1 : 1)) % count);
     return 0;
@@ -1144,7 +1409,34 @@ LRESULT CALLBACK iconInput(HWND control, UINT message, WPARAM w, LPARAM l, UINT_
   return DefSubclassProc(control, message, w, l);
 }
 
-LRESULT CALLBACK toggleInput(HWND control, UINT message, WPARAM w, LPARAM l, UINT_PTR, DWORD_PTR) {
+LRESULT CALLBACK toggleInput(HWND control, UINT message, WPARAM w, LPARAM l, UINT_PTR, DWORD_PTR data) {
+  if (auto *panel = reinterpret_cast<Panel *>(data)) {
+    const auto screenPoint = [&] {
+      POINT point{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
+      ClientToScreen(control, &point);
+      return point;
+    };
+    if (message == WM_LBUTTONDOWN || message == WM_LBUTTONDBLCLK) {
+      panel->beginCollapseHold(screenPoint());
+    } else if (message == WM_MOUSEMOVE && (w & MK_LBUTTON)) {
+      panel->moveCollapseHold(screenPoint());
+      if (panel->gestureEdge == HTCAPTION && GetCapture() == control) return 0;
+    } else if (message == WM_LBUTTONUP && panel->finishCollapseHold()) {
+      SendMessageW(control, BM_SETSTATE, FALSE, 0);
+      if (GetCapture() == control) ReleaseCapture();
+      return 0;
+    } else if (message == WM_SETCURSOR && panel->collapsePress && panel->collapsePress->armed && GetCapture() == control) {
+      SetCursor(LoadCursorW(nullptr, IDC_SIZEALL));
+      return TRUE;
+    } else if (message == WM_KEYDOWN && w == VK_ESCAPE && GetCapture() == control) {
+      panel->cancelCollapseHold();
+      SendMessageW(control, BM_SETSTATE, FALSE, 0);
+      if (GetCapture() == control) ReleaseCapture();
+      return 0;
+    } else if (message == WM_CANCELMODE || message == WM_CAPTURECHANGED) {
+      panel->cancelCollapseHold();
+    }
+  }
   if (message == WM_ERASEBKGND) return 1;
   if (message == WM_PAINT || message == WM_PRINTCLIENT) {
     PAINTSTRUCT paint{};
@@ -1185,7 +1477,7 @@ void Panel::zoom(int delta) {
   auto changed = desktop.groups;
   changed[index].view = next ? View::Icons : View::List;
   if (next) changed[index].iconSize = sizes[next];
-  if (!desktop.commit(std::move(changed), window, nullptr, false)) return;
+  if (!desktop.commit(std::move(changed), window, false)) return;
   renderPage(desktop.groups[index]);
 #ifdef FOLDERNOTE_WINUI
   if (hasSurface()) surface->animateZoom(next > step);
@@ -1348,7 +1640,7 @@ void Panel::setDockSide(DockSide side) {
 
 void Panel::tickDock(POINT cursor, ULONGLONG now) {
   if (dockSide == DockSide::None || !IsWindowVisible(window) || desktop.quitting ||
-      movingOrSizing || gestureEdge) return;
+      movingOrSizing || gestureEdge || tabDrag || (collapsePress && !collapsePress->canceled)) return;
   RECT bounds{};
   if (!GetWindowRect(window, &bounds)) return;
   if (touchingWorkEdge(bounds, dockSide) != dockSide) {
@@ -1453,6 +1745,7 @@ void Panel::paint(HDC dc, bool backgroundOnly) {
       header.left += px(24);
     }
     if (group.titleStyle != TitleStyle::Icon) ui::text(dc, group.name, header, colors.text);
+    paintTabInsertion(dc);
   }
   SetBkMode(dc, oldMode);
   SelectObject(dc, old);
@@ -1465,7 +1758,7 @@ void Panel::paint(HDC dc, bool backgroundOnly) {
     FrameRgn(dc, outline, brush, target ? 2 : 1, target ? 2 : 1);
     DeleteObject(outline);
   }
-  if (pageCount && !group.collapsed) {
+  if (pageCount > 1 && !collapsed()) {
     const auto footer = pageFooter();
     const int count = visiblePageDots(), first = firstPageDot();
     const int step = std::max(1, px(16));
@@ -1508,9 +1801,38 @@ bool Panel::paintItem(HDC dc, int row) {
   return painted;
 }
 
+bool Panel::collapsed() const {
+  return autoCollapsed || desktop.groups[index].collapsed;
+}
+
+void Panel::tickAutoCollapse(bool pointerInside, ULONGLONG now) {
+  const auto &group = desktop.groups[index];
+  if (!group.autoCollapse || group.collapsed || dockSide != DockSide::None || !IsWindowVisible(window) ||
+      movingOrSizing || gestureEdge || tabDrag || (collapsePress && !collapsePress->canceled) ||
+      desktop.menuOpen || desktop.editing || desktop.dragging || desktop.quitting) {
+    autoCollapseAt = 0;
+    return;
+  }
+  const auto captured = GetCapture();
+  if (captured && GetAncestor(captured, GA_ROOT) == window) {
+    autoCollapseAt = 0;
+    return;
+  }
+  if (pointerInside) {
+    autoCollapseAt = 0;
+    if (std::exchange(autoCollapsed, false)) setCollapsed();
+  } else if (!autoCollapsed) {
+    if (!autoCollapseAt) autoCollapseAt = now + 450;
+    else if (now >= autoCollapseAt) {
+      autoCollapsed = true;
+      setCollapsed();
+    }
+  }
+}
+
 void Panel::setCollapsed() {
   const auto &group = desktop.groups[index];
-  const bool collapsed = group.collapsed;
+  const bool collapsed = this->collapsed();
   RECT current{};
   GetWindowRect(window, &current);
   RECT bounds{current.left, current.top, current.right,
@@ -1535,6 +1857,81 @@ void Panel::place(RECT bounds) {
                bounds.right - bounds.left, bounds.bottom - bounds.top,
                SWP_NOZORDER | SWP_NOACTIVATE);
   if (windowPositionReady) updateShadow();
+}
+
+void Panel::beginCollapseHold(POINT start) {
+  if (desktop.dragging || desktop.editing || desktop.menuOpen || desktop.quitting || gestureEdge || tabDrag) return;
+  collapsePress = CollapsePress{start, GetTickCount64()};
+  SetTimer(window, collapseHoldTimer, 16, nullptr);
+}
+
+void Panel::showCollapseMove(bool show) {
+#ifdef FOLDERNOTE_WINUI
+  if (hasSurface()) surface->showCollapseMove(show);
+#endif
+  InvalidateRect(toggle, nullptr, FALSE);
+  SetCursor(LoadCursorW(nullptr, show ? IDC_SIZEALL : IDC_ARROW));
+}
+
+void Panel::moveCollapseHold(POINT screen) {
+  if (!collapsePress || collapsePress->canceled) return;
+  auto &press = *collapsePress;
+  if (press.armed) SetCursor(LoadCursorW(nullptr, IDC_SIZEALL));
+  if (press.moving) return;
+  if (!press.armed) {
+    if (GetTickCount64() - press.pressedAt < collapseHoldDelay) return;
+    press.armed = true;
+    showCollapseMove(true);
+  }
+  const auto dpi = GetDpiForWindow(window);
+  if (std::abs(screen.x - press.start.x) < GetSystemMetricsForDpi(SM_CXDRAG, dpi) &&
+      std::abs(screen.y - press.start.y) < GetSystemMetricsForDpi(SM_CYDRAG, dpi)) return;
+  press.moving = true;
+  beginGesture(HTCAPTION, press.start, false);
+  if (gestureEdge) updateGestureFrame();
+}
+
+bool Panel::finishCollapseHold() {
+  if (!collapsePress) return false;
+  const auto press = *std::exchange(collapsePress, std::nullopt);
+  KillTimer(window, collapseHoldTimer);
+  if (press.armed) showCollapseMove(false);
+  if (press.moving && gestureEdge && !gestureEnding)
+    gestureEnding = PostMessageW(window, finishBoxGestureMessage, TRUE, 0) != FALSE;
+  return press.canceled || press.armed || press.moving || GetTickCount64() - press.pressedAt >= collapseHoldDelay;
+}
+
+void Panel::cancelCollapseHold() {
+  if (!collapsePress || collapsePress->canceled) return;
+  collapsePress->canceled = true;
+  KillTimer(window, collapseHoldTimer);
+  if (std::exchange(collapsePress->armed, false)) showCollapseMove(false);
+  if (collapsePress->moving && gestureEdge) finishGesture(false);
+}
+
+void Panel::beginGesture(WPARAM edge, POINT point, bool capture) {
+  if (desktop.dragging || desktop.editing || desktop.menuOpen || desktop.quitting || gestureEdge || tabDrag) return;
+  if (!GetWindowRect(window, &gestureBounds)) return;
+  gestureStart = point;
+  gestureEdge = edge;
+  gestureCanMerge = capture;
+  gestureTarget = gestureBounds;
+  desktop.lower(window);
+  if (capture) SetCapture(window);
+  SendMessageW(window, WM_ENTERSIZEMOVE, 0, 0);
+  bool paced = false;
+#ifdef FOLDERNOTE_WINUI
+  if (hasSurface()) {
+    surface->animateReflow(edge != HTCAPTION);
+    paced = surface->onFrame([this] {
+      lastCompositionFrame = GetTickCount64();
+      updateGestureFrame();
+    });
+  }
+#endif
+  if (paced) lastCompositionFrame = GetTickCount64();
+  // No-activate boxes may stop receiving pointer movement outside their bounds.
+  if (!SetTimer(window, boxMoveTimer, 16, nullptr) && !paced) finishGesture(false);
 }
 
 void Panel::stopGesture() {
@@ -1652,7 +2049,7 @@ void Panel::updateGestureTarget(POINT point) {
   if (gestureEdge == resizeTitle) {
     const auto dpi = GetDpiForWindow(window);
     const auto &group = desktop.groups[index];
-    const int available = group.collapsed ? 80 : MulDiv(bounds.bottom - bounds.top, 96, dpi) - 44;
+    const int available = collapsed() ? 80 : MulDiv(bounds.bottom - bounds.top, 96, dpi) - 44;
     titleHeightPreview = std::clamp(group.titleHeight + MulDiv(dy, 96, dpi), 28, std::clamp(available, 28, 80));
     return;
   }
@@ -1673,6 +2070,7 @@ void Panel::updateGestureTarget(POINT point) {
 
 void Panel::updateGestureFrame() {
   if (!gestureEdge || gestureEnding) return;
+  if (collapsePress && collapsePress->armed) SetCursor(LoadCursorW(nullptr, IDC_SIZEALL));
   if (GetAsyncKeyState(VK_ESCAPE) < 0) {
     gestureEnding = PostMessageW(window, finishBoxGestureMessage, FALSE, 0) != FALSE;
     return;
@@ -1687,7 +2085,7 @@ void Panel::updateGestureFrame() {
   updateGestureTarget(cursor);
   if (gestureEdge == resizeTitle) {
     if (titleHeightPreview != previousHeight) {
-      if (desktop.groups[index].collapsed) setCollapsed();
+      if (collapsed()) setCollapsed();
       else resize();
       InvalidateRect(window, nullptr, FALSE);
     }
@@ -1699,7 +2097,7 @@ void Panel::updateGestureFrame() {
     if (!EqualRect(&current, &gestureTarget)) place(gestureTarget);
     return;
   }
-  const auto merge = !EqualRect(&gestureTarget, &gestureBounds) ? desktop.mergeTargetAt(cursor, *this) : nullptr;
+  const auto merge = gestureCanMerge && !EqualRect(&gestureTarget, &gestureBounds) ? desktop.mergeTargetAt(cursor, *this) : nullptr;
   const auto tint = merge ? std::optional(merge->backgroundColor()) : std::nullopt;
   if (mergeTint != tint) {
     mergeTint = tint;
@@ -1708,7 +2106,7 @@ void Panel::updateGestureFrame() {
   desktop.highlight(merge ? merge->window : nullptr);
   if (current.left == gestureTarget.left && current.top == gestureTarget.top) return;
   if (!SetWindowPos(window, nullptr, gestureTarget.left, gestureTarget.top, 0, 0,
-                    SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE)) return;
+                    SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | (hasSurface() ? SWP_NOCOPYBITS : 0))) return;
   updateShadow();
 }
 
@@ -1730,23 +2128,16 @@ void Panel::finishGesture(bool accept) {
     movingOrSizing = false;
     if (GetCapture() == window) ReleaseCapture();
     if (accept && height && height != desktop.groups[index].titleHeight) {
-      if (index) {
-        auto changed = desktop.groups;
-        changed[index].titleHeight = height;
-        desktop.commit(std::move(changed), window, nullptr, false);
-      } else {
-        const DWORD saved = height;
-        if (RegSetKeyValueW(HKEY_CURRENT_USER, desktopSettings, ungroupedTitleHeight, REG_DWORD,
-                           &saved, sizeof(saved)) == ERROR_SUCCESS) desktop.groups.front().titleHeight = height;
-        else report(window, lang::text(L"无法保存桌面盒子"));
-      }
+      auto changed = desktop.groups;
+      changed[index].titleHeight = height;
+      desktop.commit(std::move(changed), window, false);
     }
-    if (desktop.groups[index].collapsed) setCollapsed();
+    if (collapsed()) setCollapsed();
     resize();
     desktop.lower();
     return;
   }
-  auto *merge = hasCursor && edge == HTCAPTION && !EqualRect(&start, &gestureTarget)
+  auto *merge = gestureCanMerge && hasCursor && edge == HTCAPTION && !EqualRect(&start, &gestureTarget)
                     ? desktop.mergeTargetAt(cursor, *this) : nullptr;
   if (accept && edge == HTCAPTION && hasBounds) {
     gestureTarget.right = gestureTarget.left + current.right - current.left;
@@ -1775,9 +2166,8 @@ void Panel::finishGesture(bool accept) {
 
 void Panel::refresh(const Group &group) {
   if (activeTab > group.tabs.size()) activeTab = 0;
-  const auto tab = extraTab(group, activeTab);
-  const bool folderMapped = tab && !tab->folder.empty();
-  const auto folder = folderMapped ? tab->folder : std::wstring{};
+  const auto &folder = folderForTab(group, activeTab);
+  const bool folderMapped = !folder.empty();
   if (folder != mappedFolder) {
     mappedFolder = folder;
     mappedItems.clear();
@@ -1828,36 +2218,43 @@ int Panel::pageSize(const Group &group) const {
   if (group.displayMode != DisplayMode::Pages) return 0;
   const auto dpi = GetDpiForWindow(window);
   const int spacing = spacingPreview.value_or(group.itemSpacing);
+  const auto fit = [&](bool showDots) {
 #ifdef FOLDERNOTE_WINUI
-  if (hasSurface())
-    return surface->pageCapacity(group.view == View::List, group.iconSize,
-                                 titleHeightPreview ? titleHeightPreview : group.titleHeight,
-                                 desktop.style.radius, spacing);
+    if (hasSurface())
+      return surface->pageCapacity(group.view == View::List, group.iconSize,
+                                   titleHeightPreview ? titleHeightPreview : group.titleHeight,
+                                   desktop.style.radius, spacing, showDots);
 #endif
-  RECT area{};
-  GetWindowRect(list, &area);
-  const int width = area.right - area.left;
-  const int height = area.bottom - area.top;
-  if (group.view == View::List) {
-    RECT item{};
-    const int row = ListView_GetView(list) == LV_VIEW_DETAILS && ListView_GetItemRect(list, 0, &item, LVIR_BOUNDS)
-        ? item.bottom - item.top : MulDiv(24, dpi, 96);
-    return std::max(1, height / std::max(1, row));
-  }
-  const int columnWidth = MulDiv(std::max(80, group.iconSize + 28) + spacing, dpi, 96);
-  const int rowHeight = MulDiv(group.iconSize + 46 + spacing, dpi, 96);
-  return std::max(1, width / columnWidth) * std::max(1, height / rowHeight);
+    RECT area{};
+    GetClientRect(window, &area);
+    const auto pad = MulDiv(6, dpi, 96);
+    const auto width = std::max(0L, area.right - 2 * pad);
+    const auto bottom = showDots ? pageFooter().top : area.bottom - pad;
+    const auto height = std::max(0L, bottom - headerHeight() - MulDiv(10, dpi, 96));
+    if (group.view == View::List) {
+      RECT item{};
+      const auto row = ListView_GetView(list) == LV_VIEW_DETAILS && ListView_GetItemRect(list, 0, &item, LVIR_BOUNDS)
+          ? item.bottom - item.top : static_cast<LONG>(MulDiv(24, dpi, 96));
+      return static_cast<int>(std::max(1L, height / std::max(1L, row)));
+    }
+    const auto columnWidth = MulDiv(std::max(80, group.iconSize + 28) + spacing, dpi, 96);
+    const auto rowHeight = MulDiv(group.iconSize + 46 + spacing, dpi, 96);
+    return static_cast<int>(std::max(1L, width / columnWidth) * std::max(1L, height / rowHeight));
+  };
+  // Choose the footer using the full content area so the page count cannot oscillate.
+  const auto full = fit(false);
+  return orderedItems.size() <= static_cast<size_t>(full) ? full : fit(true);
 }
 
 void Panel::queuePageLayout() {
-  if (desktop.groups[index].displayMode != DisplayMode::Pages || desktop.groups[index].collapsed ||
+  if (desktop.groups[index].displayMode != DisplayMode::Pages || collapsed() ||
       pageLayoutPending || pageSize(desktop.groups[index]) == pageCapacity) return;
   pageLayoutPending = PostMessageW(window, updatePagesMessage, 0, 0) != FALSE;
 }
 
 void Panel::goToPage(int page) {
   const auto &group = desktop.groups[index];
-  if (!pageCount || group.collapsed || group.displayMode != DisplayMode::Pages ||
+  if (pageCount <= 1 || collapsed() || group.displayMode != DisplayMode::Pages ||
       desktop.dragging || desktop.editing || desktop.menuOpen || desktop.quitting) return;
   const int next = std::clamp(page, 0, pageCount - 1);
   if (currentPage == next) return;
@@ -1867,7 +2264,8 @@ void Panel::goToPage(int page) {
 
 bool Panel::pageWheel(int delta) {
   const auto &group = desktop.groups[index];
-  if (group.displayMode != DisplayMode::Pages || group.collapsed) return false;
+  if (group.displayMode != DisplayMode::Pages || collapsed()) return false;
+  if (pageCount <= 1) return true;
   if (desktop.dragging || desktop.editing || desktop.menuOpen || desktop.quitting) return true;
   pageWheelRemainder += delta;
   const int ticks = pageWheelRemainder / WHEEL_DELTA;
@@ -1877,10 +2275,12 @@ bool Panel::pageWheel(int delta) {
 }
 
 void Panel::renderPage(const Group &group) {
-  if (!group.collapsed || !pageCapacity || group.displayMode == DisplayMode::Scroll)
+  const auto hadDots = pageCount > 1;
+  if (!collapsed() || !pageCapacity || group.displayMode == DisplayMode::Scroll)
     pageCapacity = pageSize(group);
   const auto size = static_cast<int>(orderedItems.size());
   pageCount = pageCapacity ? std::max(1, size / pageCapacity + (size % pageCapacity != 0)) : 0;
+  if (pageCount <= 1) pageWheelRemainder = 0;
   currentPage = std::clamp(currentPage, 0, std::max(0, pageCount - 1));
   const int first = pageCount ? currentPage * pageCapacity : 0;
   const int last = pageCount ? first + std::min(pageCapacity, size - first) : size;
@@ -1891,6 +2291,7 @@ void Panel::renderPage(const Group &group) {
   });
 #endif
   if (!hasSurface()) {
+    if (hadDots != (pageCount > 1)) resize();
     const auto footer = pageFooter();
     InvalidateRect(window, &footer, FALSE);
   }
@@ -1946,11 +2347,11 @@ void Panel::renderPage(const Group &group) {
     if (folderMapped) {
       const auto found = std::find_if(mappedItems.begin(), mappedItems.end(), [&](const auto &item) { return item.path == path; });
       if (found != mappedItems.end()) attributes = found->attributes;
-    } else if (index) attributes = GetFileAttributesW(path.c_str());
+    } else attributes = GetFileAttributesW(path.c_str());
     PIDLIST_ABSOLUTE id = nullptr;
     DWORD_PTR images = 0;
     std::wstring label = name;
-    if (!folderMapped && (index == 0 || attributes != INVALID_FILE_ATTRIBUTES) &&
+    if (!folderMapped && (attributes != INVALID_FILE_ATTRIBUTES || isDesktopShellItem(path)) &&
         SUCCEEDED(SHParseDisplayName(path.c_str(), nullptr, &id, 0, nullptr))) {
       images = SHGetFileInfoW(reinterpret_cast<const wchar_t *>(id), 0, &icon, sizeof(icon),
                              SHGFI_PIDL | SHGFI_DISPLAYNAME | SHGFI_SYSICONINDEX |
@@ -2065,7 +2466,7 @@ void Panel::resize() {
   InvalidateRect(tabs, nullptr, FALSE);
   const int contentTop = header + MulDiv(10, dpi, 96);
   const bool nativePaging = !hasSurface() && group.displayMode == DisplayMode::Pages;
-  const int contentBottom = nativePaging ? pageFooter().top : area.bottom - pad;
+  const int contentBottom = nativePaging && pageCount > 1 ? pageFooter().top : area.bottom - pad;
   const auto listStyle = GetWindowLongPtrW(list, GWL_STYLE);
   const auto nextStyle = nativePaging ? listStyle | LVS_NOSCROLL : listStyle & ~LVS_NOSCROLL;
   if (listStyle != nextStyle) {
@@ -2099,7 +2500,7 @@ void Panel::updateHeaderActions(POINT cursor) {
   const auto hit = WindowFromPoint(cursor);
   const bool show = IsWindowVisible(window) && PtInRect(&bounds, cursor) &&
       (hit == window || IsChild(window, hit)) &&
-      !movingOrSizing && !desktop.menuOpen && !desktop.dragging;
+      !movingOrSizing && !tabDrag && !desktop.menuOpen && !desktop.dragging;
 #ifdef FOLDERNOTE_WINUI
   if (hasSurface()) {
     if (headerActions != show) {
@@ -2129,7 +2530,7 @@ void Panel::syncScroll() {
   const auto syncBar = [&](ui::ScrollBar &bar, bool horizontal) -> RECT {
     SCROLLINFO range{sizeof(range), SIF_RANGE | SIF_PAGE | SIF_POS};
     SCROLLBARINFO native{sizeof(native)};
-    if (group.collapsed || group.displayMode == DisplayMode::Pages || !IsWindowVisible(list) ||
+    if (collapsed() || group.displayMode == DisplayMode::Pages || !IsWindowVisible(list) ||
         !(style & (horizontal ? WS_HSCROLL : WS_VSCROLL)) ||
         !GetScrollInfo(list, horizontal ? SB_HORZ : SB_VERT, &range) ||
         !GetScrollBarInfo(list, horizontal ? OBJID_HSCROLL : OBJID_VSCROLL, &native) ||
@@ -2184,19 +2585,7 @@ void Panel::contextMenu(POINT point, bool title) {
     auto client = point;
     if (ScreenToClient(window, &client)) title = client.y >= 0 && client.y < headerHeight();
   }
-  std::optional<size_t> selectedTab;
-  if (title && !keyboard) {
-#ifdef FOLDERNOTE_WINUI
-    if (hasSurface()) selectedTab = surface->tabAt(point);
-    else
-#endif
-    if (IsWindowVisible(tabs)) {
-      auto local = point;
-      if (ScreenToClient(tabs, &local))
-        for (size_t i = 0; i < tabAreas.size(); ++i)
-          if (PtInRect(&tabAreas[i], local)) { selectedTab = i; break; }
-    }
-  }
+  const auto selectedTab = title && !keyboard ? tabAt(point) : std::nullopt;
   int row = -1;
   if (!title) {
     LVHITTESTINFO hit{};
@@ -2223,28 +2612,18 @@ void Panel::contextMenu(POINT point, bool title) {
     bool remove = false;
     desktop.menuOpen = true;
     bool shown = false;
-    try { shown = showItemMenu(window, path, itemPoint, index && !mapped(), remove); }
+    try { shown = showItemMenu(window, path, itemPoint, !mapped(), remove); }
     catch (...) { desktop.menuOpen = false; throw; }
     desktop.menuOpen = false;
     if (desktop.quitting) return;
     if (remove) PostMessageW(window, WM_COMMAND, RemoveItem, 0);
     if (shown) return;
     menuItem(*menu, OpenItem, L"打开", Symbol::Folder);
-    if (index && !mapped()) menuItem(*menu, RemoveItem, L"移出盒子", Symbol::Unpin);
+    if (!mapped()) menuItem(*menu, RemoveItem, L"移出盒子", Symbol::Unpin);
     separator(*menu);
   }
   const auto &group = desktop.groups[index];
   if (title) {
-    quick::popup::Item spacing;
-    spacing.title = lang::text(L"项目间距");
-    spacing.slider = quick::popup::Slider{0, maxItemSpacing, group.itemSpacing,
-      [this](int value) {
-        spacingPreview = value;
-        resize();
-      },
-      [this](int value) { return saveSpacing(value); }, false, false};
-    menu->items.push_back(std::move(spacing));
-    separator(*menu);
     if (!desktop.theme.colors.highContrast) {
       const auto initial = group.tint;
       const auto hue = HueColor::fromRgb(backgroundColor(), desktop.theme.colors.dark);
@@ -2268,6 +2647,9 @@ void Panel::contextMenu(POINT point, bool title) {
       separator(*menu);
     }
     if (hasSurface() && !desktop.theme.colors.highContrast) {
+      menuItem(*menu, ToggleBoxGlass, L"毛玻璃效果", Symbol::Visibility, backgroundGlass());
+      if (group.glass.has_value())
+        menuItem(*menu, InheritBoxGlass, L"跟随全局毛玻璃设置", Symbol::Settings);
       quick::popup::Item item;
       item.title = lang::text(L"背景不透明度");
       item.slider = quick::popup::Slider{0, 100, backgroundOpacity(),
@@ -2277,22 +2659,9 @@ void Panel::contextMenu(POINT point, bool title) {
         },
         [this](int value) {
           if (desktop.quitting) return false;
-          bool saved = false;
-          if (index) {
-            auto changed = desktop.groups;
-            changed[index].opacity = value;
-            saved = desktop.commit(std::move(changed), window, nullptr, false);
-          } else {
-            const DWORD opacity = value;
-            const auto result = RegSetKeyValueW(HKEY_CURRENT_USER, desktopSettings, ungroupedOpacity,
-                                                REG_DWORD, &opacity, sizeof(opacity));
-            if (result == ERROR_SUCCESS) {
-              desktop.groups.front().opacity = value;
-              saved = true;
-            } else {
-              report(window, lang::text(L"无法保存桌面盒子"));
-            }
-          }
+          auto changed = desktop.groups;
+          changed[index].opacity = value;
+          const bool saved = desktop.commit(std::move(changed), window, false);
           opacityPreview.reset();
           applyBackground();
           return saved;
@@ -2300,25 +2669,35 @@ void Panel::contextMenu(POINT point, bool title) {
       menu->items.push_back(std::move(item));
       separator(*menu);
     }
-    menuItem(*menu, NewGroup, L"新建盒子", Symbol::AddFolder);
     menuItem(*menu, BoxIcon, L"选择盒子图标", Symbol::Folder);
     if (!group.titleIcon.empty()) menuItem(*menu, ClearBoxIcon, L"清除自定义图标", Symbol::Folder);
     menuItem(*menu, TitleIconAndText, L"图标和文字", Symbol::Window, group.titleStyle == TitleStyle::IconAndText);
     menuItem(*menu, TitleIcon, L"仅图标", Symbol::Window, group.titleStyle == TitleStyle::Icon);
     menuItem(*menu, TitleText, L"仅文字", Symbol::Window, group.titleStyle == TitleStyle::Text);
-    menuItem(*menu, ToggleGroup, group.collapsed ? L"展开盒子" : L"折叠盒子", Symbol::Window);
-    if (index) {
-      menuItem(*menu, AddTab, L"添加标签", Symbol::AddFolder);
-      menuItem(*menu, MapFolder, L"映射文件夹", Symbol::Folder);
-      const auto targetTab = selectedTab.value_or(activeTab);
-      if (targetTab) menuItem(*menu, RemoveTab, L"移除标签", Symbol::Unpin);
-      if (selectedTab && *selectedTab > 1) menuItem(*menu, MoveTabLeft, L"向左移动", Symbol::Move);
-      if (selectedTab && *selectedTab > 0 && *selectedTab < group.tabs.size())
-        menuItem(*menu, MoveTabRight, L"向右移动", Symbol::Move);
-      separator(*menu);
-      menuItem(*menu, RenameGroup, L"重命名盒子", Symbol::Settings);
-      menuItem(*menu, DeleteGroup, L"删除盒子", Symbol::Trash);
-    }
+    separator(*menu);
+    quick::popup::Item spacing;
+    spacing.title = lang::text(L"项目间距");
+    spacing.slider = quick::popup::Slider{0, maxItemSpacing, group.itemSpacing,
+      [this](int value) {
+        spacingPreview = value;
+        resize();
+      },
+      [this](int value) { return saveSpacing(value); }, false, false};
+    menu->items.push_back(std::move(spacing));
+    menuItem(*menu, ToggleGroup, collapsed() ? L"展开盒子" : L"折叠盒子", Symbol::Window);
+    menuItem(*menu, ToggleAutoCollapse, L"自动折叠隐藏", Symbol::Visibility, group.autoCollapse);
+    separator(*menu);
+    menuItem(*menu, AddTab, L"添加标签", Symbol::AddFolder);
+    menuItem(*menu, MapFolder, L"映射文件夹", Symbol::Folder);
+    const auto targetTab = selectedTab.value_or(activeTab);
+    if (targetTab) menuItem(*menu, RemoveTab, L"移除标签", Symbol::Unpin);
+    if (selectedTab && *selectedTab > 0) menuItem(*menu, MoveTabLeft, L"向左移动", Symbol::Move);
+    if (selectedTab && *selectedTab < group.tabs.size())
+      menuItem(*menu, MoveTabRight, L"向右移动", Symbol::Move);
+    separator(*menu);
+    menuItem(*menu, NewGroup, L"新建盒子", Symbol::AddFolder);
+    menuItem(*menu, RenameGroup, L"重命名盒子", Symbol::Settings);
+    menuItem(*menu, DeleteGroup, L"删除盒子", Symbol::Trash);
   } else {
     menuItem(*menu, IconView, L"图标", Symbol::Folder, group.view == View::Icons);
     menuItem(*menu, ListViewMode, L"列表", Symbol::Window, group.view == View::List);
@@ -2355,6 +2734,10 @@ void Panel::contextMenu(POINT point, bool title) {
     throw;
   }
   clearPreview();
+  if (command == NewGroup) {
+    desktop.createBox(point, window);
+    return;
+  }
   if (command) {
     const auto tab = selectedTab.value_or(activeTab);
     const auto tabCommand = command == RemoveTab || command == MoveTabLeft || command == MoveTabRight;
@@ -2391,7 +2774,7 @@ LRESULT CALLBACK Panel::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
       if (!panel->list || !panel->toggle || !panel->tabs ||
           !SetWindowSubclass(panel->tabs, tabInput, 1, reinterpret_cast<DWORD_PTR>(panel)) ||
           !SetWindowSubclass(panel->list, iconInput, 1, reinterpret_cast<DWORD_PTR>(panel)) ||
-          !SetWindowSubclass(panel->toggle, toggleInput, 1, 0)) return -1;
+          !SetWindowSubclass(panel->toggle, toggleInput, 1, reinterpret_cast<DWORD_PTR>(panel))) return -1;
       panel->font = ui::makeFont(GetDpiForWindow(window));
       panel->titleFont = ui::makeFont(GetDpiForWindow(window), 14, FW_SEMIBOLD);
       SendMessageW(panel->list, WM_SETFONT, reinterpret_cast<WPARAM>(panel->font), FALSE);
@@ -2438,9 +2821,11 @@ LRESULT CALLBACK Panel::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
       RECT bounds{};
       GetWindowRect(window, &bounds);
       const POINT point{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
+      RECT editBounds{};
+      if (panel->titleEdit && GetWindowRect(panel->titleEdit, &editBounds) && PtInRect(&editBounds, point)) return HTCLIENT;
       const auto dpi = GetDpiForWindow(window);
       const int border = MulDiv(8, dpi, 96);
-      if (!desktop.groups[panel->index].collapsed) {
+      if (!panel->collapsed()) {
         const bool left = point.x < bounds.left + border, right = point.x >= bounds.right - border;
         const int corner = std::max(2 * border, panel->cornerDiameter() / 2);
         const bool nearLeft = point.x < bounds.left + corner, nearRight = point.x >= bounds.right - corner;
@@ -2454,7 +2839,7 @@ LRESULT CALLBACK Panel::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
                           point.y >= bounds.bottom - corner ? HTBOTTOMRIGHT : HTRIGHT;
       }
       const int header = panel->headerHeight();
-      const bool collapsed = desktop.groups[panel->index].collapsed;
+      const bool collapsed = panel->collapsed();
       if (panel->hasSurface() && point.y >= bounds.top + header - MulDiv(3, dpi, 96) &&
           point.y < bounds.top + header + (collapsed ? 0 : MulDiv(4, dpi, 96))) return resizeTitle;
 #ifdef FOLDERNOTE_WINUI
@@ -2494,32 +2879,27 @@ LRESULT CALLBACK Panel::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
       return 0;
     case WM_NCLBUTTONDOWN:
       if (w == HTCAPTION || w == resizeTitle || (w >= HTLEFT && w <= HTBOTTOMRIGHT)) {
-        if (desktop.dragging || desktop.editing || desktop.menuOpen || panel->gestureEdge) return 0;
-        if (!GetWindowRect(window, &panel->gestureBounds)) return 0;
-        panel->gestureStart = {GET_X_LPARAM(l), GET_Y_LPARAM(l)};
-        panel->gestureEdge = w;
-        panel->gestureTarget = panel->gestureBounds;
-        desktop.lower(window);
-        SetCapture(window);
-        SendMessageW(window, WM_ENTERSIZEMOVE, 0, 0);
-        bool paced = false;
-#ifdef FOLDERNOTE_WINUI
-        if (panel->hasSurface()) {
-          panel->surface->animateReflow(w != HTCAPTION);
-          paced = panel->surface->onFrame([panel] {
-            panel->lastCompositionFrame = GetTickCount64();
-            panel->updateGestureFrame();
-          });
-        }
-#endif
-        if (paced) panel->lastCompositionFrame = GetTickCount64();
-        // A no-activate box may not receive mouse messages outside its bounds.
-        // Poll while dragging, even if the composition clock pauses.
-        if (!SetTimer(window, boxMoveTimer, 16, nullptr) && !paced) panel->finishGesture(false);
+        panel->beginGesture(w, {GET_X_LPARAM(l), GET_Y_LPARAM(l)}, true);
         return 0;
       }
       break;
     case WM_TIMER:
+      if (w == collapseHoldTimer) {
+        POINT cursor{};
+        if (GetAsyncKeyState(VK_ESCAPE) < 0 || desktop.quitting) panel->cancelCollapseHold();
+        else if (GetAsyncKeyState(VK_LBUTTON) >= 0) KillTimer(window, collapseHoldTimer);
+        else if (GetCursorPos(&cursor)) panel->moveCollapseHold(cursor);
+        return 0;
+      }
+      if (w == tabDragTimer) {
+        POINT cursor{};
+        if (GetAsyncKeyState(VK_ESCAPE) < 0 || desktop.quitting) panel->cancelTabDrag();
+        else if (panel->tabDrag && GetCursorPos(&cursor)) {
+          if (GetAsyncKeyState(VK_LBUTTON) < 0) panel->moveTabDrag(cursor);
+          else panel->endTabDrag(cursor);
+        }
+        return 0;
+      }
       if (w == boxMoveTimer) {
         if (GetTickCount64() - panel->lastCompositionFrame >= 32) panel->updateGestureFrame();
         return 0;
@@ -2602,8 +2982,13 @@ LRESULT CALLBACK Panel::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
         SetDCBrushColor(item.hDC, oldColor);
         return TRUE;
       }
+      if (panel->collapsePress && panel->collapsePress->armed) {
+        if (const auto move = LoadCursorW(nullptr, IDC_SIZEALL))
+          DrawIconEx(item.hDC, centerX - px(8), centerY - px(8), move, px(16), px(16), 0, nullptr, DI_NORMAL);
+        return TRUE;
+      }
       const int halfWidth = px(4), halfHeight = px(2);
-      const int direction = desktop.groups[panel->index].collapsed ? 1 : -1;
+      const int direction = panel->collapsed() ? 1 : -1;
       POINT arrow[]{{centerX - halfWidth, centerY - direction * halfHeight},
                     {centerX, centerY + direction * halfHeight},
                     {centerX + halfWidth, centerY - direction * halfHeight}};
@@ -2621,12 +3006,13 @@ LRESULT CALLBACK Panel::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
       return 0;
     case updatePagesMessage:
       panel->pageLayoutPending = false;
-      if (!desktop.groups[panel->index].collapsed) panel->renderPage(desktop.groups[panel->index]);
+      if (!panel->collapsed()) panel->renderPage(desktop.groups[panel->index]);
       return 0;
     case goToPageMessage:
       panel->goToPage(static_cast<int>(l) + (w ? panel->currentPage : 0));
       return 0;
     case WM_MOUSEWHEEL:
+      if (!GET_KEYSTATE_WPARAM(w) && panel->wheelOnTab({GET_X_LPARAM(l), GET_Y_LPARAM(l)}, GET_WHEEL_DELTA_WPARAM(w))) return 0;
       if (GET_KEYSTATE_WPARAM(w) & MK_CONTROL) panel->zoom(GET_WHEEL_DELTA_WPARAM(w));
       else if (!panel->pageWheel(GET_WHEEL_DELTA_WPARAM(w)))
         panel->verticalScroll.wheel(GET_WHEEL_DELTA_WPARAM(w));
@@ -2641,7 +3027,7 @@ LRESULT CALLBACK Panel::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
     case WM_GETMINMAXINFO: {
       auto &info = *reinterpret_cast<MINMAXINFO *>(l);
       const auto dpi = GetDpiForWindow(window);
-      info.ptMinTrackSize = {MulDiv(190, dpi, 96), desktop.groups[panel->index].collapsed
+      info.ptMinTrackSize = {MulDiv(190, dpi, 96), panel->collapsed()
                              ? panel->headerHeight()
                              : std::max(MulDiv(112, dpi, 96), panel->headerHeight() + MulDiv(44, dpi, 96))};
       return 0;
@@ -2657,7 +3043,7 @@ LRESULT CALLBACK Panel::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
       panel->titleFont = titleFont;
       auto rect = reinterpret_cast<RECT *>(l);
       panel->place(*rect);
-      if (desktop.groups[panel->index].collapsed) panel->setCollapsed();
+      if (panel->collapsed()) panel->setCollapsed();
       panel->updateShape();
       panel->refresh(desktop.groups[panel->index]);
       return 0;
@@ -2671,9 +3057,9 @@ LRESULT CALLBACK Panel::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
       auto &group = changed[panel->index];
       RECT bounds{};
       GetWindowRect(window, &bounds);
-      if (group.collapsed) bounds.bottom = bounds.top + (group.bounds.bottom - group.bounds.top);
+      if (panel->collapsed()) bounds.bottom = bounds.top + (group.bounds.bottom - group.bounds.top);
       group.bounds = bounds;
-      if (!desktop.commit(std::move(changed), window, nullptr, false)) {
+      if (!desktop.commit(std::move(changed), window, false)) {
         const auto saved = visibleBounds(desktop.groups[panel->index].bounds);
         panel->place(saved);
         panel->setCollapsed();
@@ -2685,7 +3071,7 @@ LRESULT CALLBACK Panel::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
       return 0;
     }
     case WM_SETFOCUS:
-      SetFocus(desktop.groups[panel->index].collapsed ? panel->toggle : panel->list);
+      SetFocus(panel->collapsed() ? panel->toggle : panel->list);
       return 0;
     case WM_CONTEXTMENU:
       panel->contextMenu({GET_X_LPARAM(l), GET_Y_LPARAM(l)});
@@ -2730,8 +3116,8 @@ LRESULT CALLBACK Panel::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
       if (notification->code == LVN_GETEMPTYMARKUP) {
         auto markup = reinterpret_cast<NMLVEMPTYMARKUP *>(l);
         markup->dwFlags = EMF_CENTERED;
-        wcsncpy_s(markup->szMarkup, lang::text(panel->mapped() ? L"映射文件夹为空" :
-                   panel->index ? L"将桌面文件拖到这里" : L"暂无未分组项目"), _TRUNCATE);
+      wcsncpy_s(markup->szMarkup, lang::text(panel->mapped() ? L"映射文件夹为空" :
+                   L"将桌面文件拖到这里"), _TRUNCATE);
         return TRUE;
       }
       if (notification->code == NM_DBLCLK && reinterpret_cast<NMITEMACTIVATE *>(l)->iItem >= 0)
@@ -2760,6 +3146,9 @@ LRESULT CALLBACK Panel::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
       }
       break;
     }
+    case renameCreatedBoxMessage:
+      desktop.renameBox(*panel, std::exchange(panel->pendingTitle, std::wstring{}));
+      return 0;
     case WM_COMMAND:
       if (const auto command = static_cast<Command>(LOWORD(w));
           command == RemoveTab || command == MoveTabLeft || command == MoveTabRight)
@@ -2770,9 +3159,13 @@ LRESULT CALLBACK Panel::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
     case dragMessage:
       if (GetAsyncKeyState(VK_LBUTTON) < 0) desktop.drag(*panel, static_cast<int>(w));
       return 0;
-    case detachBoxTabMessage:
-      if (w && w <= desktop.groups[panel->index].tabs.size())
-        desktop.detachPanelTab(panel->index, w, {GET_X_LPARAM(l), GET_Y_LPARAM(l)});
+    case dropBoxTabMessage:
+      if (const auto request = std::exchange(panel->pendingTabDrop, std::nullopt)) {
+        if (request->target) {
+          if (auto *target = desktop.panelForWindow(request->target))
+            desktop.movePanelTab(*panel, request->tab, *target, request->slot, true);
+        } else desktop.detachPanelTab(panel->index, request->tab, request->bounds);
+      }
       return 0;
     case finishBoxGestureMessage:
       if (panel->gestureEdge) panel->finishGesture(w != FALSE);
@@ -2786,7 +3179,7 @@ LRESULT CALLBACK Panel::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
         desktop.finishDrag(window, true);
         return 0;
       }
-      if (!panel->hasSurface() && panel->pageCount && !desktop.groups[panel->index].collapsed) {
+      if (!panel->hasSurface() && panel->pageCount > 1 && !panel->collapsed()) {
         const auto footer = panel->pageFooter();
         const POINT point{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
         if (PtInRect(&footer, point)) {
@@ -2805,6 +3198,8 @@ LRESULT CALLBACK Panel::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
       if (panel->gestureEdge && panel->gestureEdge != HTCAPTION) return 0;
       [[fallthrough]];
     case WM_CANCELMODE:
+      panel->cancelTabDrag();
+      panel->cancelCollapseHold();
       if (panel->gestureEdge) {
         panel->finishGesture(false);
         return 0;
@@ -2848,15 +3243,15 @@ void Panel::openSurface() {
   events.wheel = [this](int delta) { return pageWheel(delta); };
   events.beginDrag = [this](int row) { PostMessageW(window, dragMessage, row, 0); };
   events.tab = [this](size_t tab) { showTab(tab); };
-  events.tabDropped = [this](size_t tab, POINT start, POINT end) {
-    const auto dpi = GetDpiForWindow(window);
-    if ((std::abs(end.x - start.x) >= GetSystemMetricsForDpi(SM_CXDRAG, dpi) ||
-         std::abs(end.y - start.y) >= GetSystemMetricsForDpi(SM_CYDRAG, dpi)) &&
-        !desktop.panelAt(end) && desktop.desktopDropAt(end))
-      PostMessageW(window, detachBoxTabMessage, tab, MAKELPARAM(end.x, end.y));
-    else
-      showTab(tab);
-  };
+  events.tabWheel = [this](int delta) { return wheelTabs(delta); };
+  events.tabPressed = [this](size_t tab, POINT screen, RECT bounds) { beginTabDrag(tab, screen, bounds); };
+  events.tabMoved = [this](POINT screen) { moveTabDrag(screen); };
+  events.tabReleased = [this](POINT screen) { endTabDrag(screen); };
+  events.tabCanceled = [this] { cancelTabDrag(); };
+  events.collapsePressed = [this](POINT start) { beginCollapseHold(start); };
+  events.collapseMoved = [this](POINT screen) { moveCollapseHold(screen); };
+  events.collapseReleased = [this] { return finishCollapseHold(); };
+  events.collapseCanceled = [this] { cancelCollapseHold(); };
   events.headerCommand = [this](int button) {
     constexpr Command commands[]{IconView, ListViewMode, ToggleGroup};
     if (button >= 0 && button < static_cast<int>(std::size(commands)))
@@ -2869,11 +3264,6 @@ void Panel::openSurface() {
   };
   surface = std::make_unique<winui::Surface>(window, std::move(events));
   if (hasSurface()) {
-    // Let the island compose directly over the desktop when it has no backdrop.
-    const auto style = GetWindowLongPtrW(window, GWL_EXSTYLE);
-    SetWindowLongPtrW(window, GWL_EXSTYLE, style | WS_EX_NOREDIRECTIONBITMAP);
-    SetWindowPos(window, nullptr, 0, 0, 0, 0,
-                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
     for (auto control : {list, toggle, tabs, viewButtons[0], viewButtons[1]}) ShowWindow(control, SW_HIDE);
     surface->show(true);
   }
@@ -2883,17 +3273,31 @@ void Panel::openSurface() {
 bool Desktop::openPanel(size_t index) {
   auto panel = std::make_unique<Panel>(*this, index);
   const auto bounds = visibleBounds(groups[index].bounds);
-  auto handle = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, panelClass, groups[index].name.c_str(),
-                                WS_POPUP | WS_CLIPCHILDREN,
-                                bounds.left, bounds.top,
-                                bounds.right - bounds.left, bounds.bottom - bounds.top,
-                                nullptr, nullptr, instance, panel.get());
+  const auto create = [&](DWORD extendedStyle) {
+    return CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | extendedStyle, panelClass, groups[index].name.c_str(),
+                           WS_POPUP | WS_CLIPCHILDREN, bounds.left, bounds.top,
+                           bounds.right - bounds.left, bounds.bottom - bounds.top,
+                           nullptr, nullptr, instance, panel.get());
+  };
+  HWND handle = nullptr;
+#ifdef FOLDERNOTE_WINUI
+  if (useWinui) {
+    // No redirection bitmap must be set before the HWND and its island are created.
+    handle = create(WS_EX_NOREDIRECTIONBITMAP);
+    if (handle) {
+      panel->openSurface();
+      if (!panel->hasSurface()) {
+        panel.reset();
+        panel = std::make_unique<Panel>(*this, index);
+        handle = nullptr;
+      }
+    }
+  }
+#endif
+  if (!handle) handle = create(0);
   if (!handle) return false;
   constexpr COLORREF noBorder = 0xfffffffe;
   DwmSetWindowAttribute(handle, DWMWA_BORDER_COLOR, &noBorder, sizeof(noBorder));
-#ifdef FOLDERNOTE_WINUI
-  if (useWinui) panel->openSurface();
-#endif
   // The client paints the only outline in both renderers.
   const DWMNCRENDERINGPOLICY frame = DWMNCRP_DISABLED;
   DwmSetWindowAttribute(handle, DWMWA_NCRENDERING_POLICY, &frame, sizeof(frame));
@@ -2904,7 +3308,7 @@ bool Desktop::openPanel(size_t index) {
   panel->setCollapsed();
   panel->windowPositionReady = true;
   panels.push_back(std::move(panel));
-  updateScene();
+  updateShadows();
   lower(handle);
   return true;
 }
@@ -2958,20 +3362,8 @@ void Panel::updateShadow() {
   if (bitmap) DeleteObject(bitmap);
 }
 
-void Desktop::updateScene() {
+void Desktop::updateShadows() {
   for (const auto &panel : panels) panel->updateShadow();
-  auto region = CreateRectRgn(0, 0, 0, 0);
-  if (!region) return;
-  for (const auto child : looseWindows) {
-    RECT bounds{};
-    if (!GetWindowRect(child, &bounds)) continue;
-    OffsetRect(&bounds, -sceneBounds.left, -sceneBounds.top);
-    if (auto shape = CreateRectRgnIndirect(&bounds)) {
-      CombineRgn(region, region, shape, RGN_OR);
-      DeleteObject(shape);
-    }
-  }
-  if (!SetWindowRgn(scene, region, TRUE)) DeleteObject(region);
 }
 
 void Desktop::highlight(HWND target) {
@@ -2990,7 +3382,6 @@ void Desktop::highlight(HWND target) {
 }
 
 Panel *Desktop::mergeTargetAt(POINT point, const Panel &source) const {
-  if (!source.index) return nullptr;
   const auto hit = WindowFromPoint(point);
   if (!hit || (!panelAt(point) && !desktopDropAt(point))) return nullptr;
   for (auto child = GetTopWindow(nullptr); child; child = GetWindow(child, GW_HWNDNEXT)) {
@@ -3005,21 +3396,25 @@ Panel *Desktop::mergeTargetAt(POINT point, const Panel &source) const {
     const bool inside = !region || GetWindowRgn(child, region) == ERROR ||
                         PtInRegion(region, point.x - bounds.left, point.y - bounds.top);
     if (region) DeleteObject(region);
-    if (inside) return (*panel)->index ? panel->get() : nullptr;
+    if (inside) return panel->get();
   }
   return nullptr;
 }
 
 Panel *Desktop::panelAt(POINT point) const {
-  const auto root = GetAncestor(WindowFromPoint(point), GA_ROOT);
-  const auto found = std::find_if(panels.begin(), panels.end(), [root](const auto &panel) { return panel->window == root; });
+  return panelForWindow(GetAncestor(WindowFromPoint(point), GA_ROOT));
+}
+
+Panel *Desktop::panelForWindow(HWND handle) const {
+  if (!handle) return nullptr;
+  const auto found = std::find_if(panels.begin(), panels.end(), [handle](const auto &panel) { return panel->window == handle; });
   return found == panels.end() ? nullptr : found->get();
 }
 
 bool Desktop::desktopDropAt(POINT point) const {
   const auto hit = WindowFromPoint(point);
-  if (hit == scene || std::find(looseWindows.begin(), looseWindows.end(), hit) != looseWindows.end()) return true;
   const auto root = GetAncestor(hit, GA_ROOT);
+  if (desktopIcons && root == desktopIcons->window()) return true;
   if (quick::isDesktop(root)) return true;
 
   // Show Desktop may expose a wallpaper-only WorkerW owned by Explorer.
@@ -3042,34 +3437,27 @@ void Desktop::tray(DWORD action) const {
   Shell_NotifyIconW(action, &icon);
 }
 
-bool Desktop::commit(std::vector<Group> changed, HWND owner, const std::vector<LooseItem> *placements,
-                     bool refreshContents) {
+bool Desktop::commit(std::vector<Group> changed, HWND owner, bool refreshContents,
+                     std::optional<std::vector<LooseItem>> placements) {
   try {
-    auto next = placements ? *placements : looseItems;
+    const bool movedIcon = placements.has_value();
+    auto next = placements ? std::move(*placements) : looseItems;
     std::erase_if(next, [&](const auto &item) {
       const auto contains = [&](const auto &paths) {
         return std::any_of(paths.begin(), paths.end(), [&](const auto &path) { return samePath(path, item.path); });
       };
-      return std::any_of(changed.begin() + 1, changed.end(), [&](const auto &group) {
+      return std::any_of(changed.begin(), changed.end(), [&](const auto &group) {
         return contains(group.paths) || std::any_of(group.tabs.begin(), group.tabs.end(),
                                                    [&](const auto &tab) { return contains(tab.paths); });
       });
     });
-    saveLayout({std::vector<Group>(changed.begin() + 1, changed.end()), next});
-    const auto &ungrouped = changed.front();
-    const auto &previous = groups.front();
-    if (!EqualRect(&ungrouped.bounds, &previous.bounds) || ungrouped.view != previous.view ||
-        ungrouped.sort != previous.sort || ungrouped.collapsed != previous.collapsed || ungrouped.iconSize != previous.iconSize) {
-      const UngroupedPlacement placement{ungrouped.bounds, static_cast<DWORD>(ungrouped.view),
-                                         static_cast<DWORD>(ungrouped.sort), ungrouped.collapsed, ungrouped.iconSize};
-      const auto error = RegSetKeyValueW(HKEY_CURRENT_USER, desktopSettings, ungroupedPlacement,
-                                        REG_BINARY, &placement, sizeof(placement));
-      if (error != ERROR_SUCCESS) fn::fail(lang::text(L"无法保存桌面盒子"), error);
-    }
+    // Keep legacy loose positions in the layout for older versions.
+    saveLayout({changed, next});
     groups = std::move(changed);
-    if (placements || next.size() != looseItems.size()) {
-      looseItems = std::move(next);
-      refreshLoose();
+    looseItems = std::move(next);
+    if (movedIcon) {
+      const DWORD saved = 1;
+      RegSetKeyValueW(HKEY_CURRENT_USER, desktopSettings, L"DesktopGroupsManagedLayout", REG_DWORD, &saved, sizeof(saved));
     }
     if (refreshContents) PostMessageW(window, refreshMessage, 0, 0);
     return true;
@@ -3079,20 +3467,212 @@ bool Desktop::commit(std::vector<Group> changed, HWND owner, const std::vector<L
   return false;
 }
 
-void Desktop::refreshUngrouped() {
-  auto items = ungroupedItems(groups);
-  if (items) std::erase_if(*items, [&](const auto &path) {
-    return std::any_of(looseItems.begin(), looseItems.end(), [&](const auto &item) { return samePath(item.path, path); });
-  });
-  if (!items) return;
-  std::sort(items->begin(), items->end());
-  auto previous = groups.front().paths;
-  std::sort(previous.begin(), previous.end());
-  if (previous == *items) return;
-  groups.front().paths = std::move(*items);
-  panels.front()->refresh(groups.front());
+std::wstring Desktop::boxItem(const std::wstring &path) const {
+  if (isDesktopShellItem(path)) {
+    if (desktopIcons &&
+        std::any_of(nativeItems.begin(), nativeItems.end(), [&](const auto &item) { return samePath(item.path, path); }))
+      return path;
+    PIDLIST_ABSOLUTE id = nullptr;
+    if (SUCCEEDED(SHParseDisplayName(path.c_str(), nullptr, &id, 0, nullptr)) && id) {
+      CoTaskMemFree(id);
+      return path;
+    }
+    return {};
+  }
+  return desktopItem(roots, path);
 }
 
+bool Desktop::startDesktopIcons() {
+  if (!managedIconsEnabled()) return true;
+  const auto snapshot = desktopIconPositions();
+  const auto paths = desktopIconPaths();
+  if (!snapshot || !paths || (snapshot->items.empty() && std::any_of(paths->begin(), paths->end(),
+      [&](const auto &path) { return !desktopItem(roots, path).empty(); }))) return false;
+  nativeItems = snapshot->items;
+  nativeDesktopSpacing = snapshot->spacing;
+  nativeDesktopIconSize = snapshot->iconSize;
+  desktopIconMetrics = {snapshot->iconSize, snapshot->spacing, snapshot->dpi, snapshot->labelFont};
+  if (const auto saved = appearanceValue(L"DesktopGroupsManagedIconSize", 0); saved >= 16 && saved <= 256)
+    desktopIconMetrics.iconSize = std::clamp(MulDiv(saved, snapshot->dpi, 96), 8, 256);
+  desktopIconMetrics.spacing = desktopSpacingForIcon(nativeDesktopSpacing, nativeDesktopIconSize, desktopIconMetrics.iconSize);
+  scannedIconPaths = *paths;
+  // The first managed session starts with the native layout, not old loose-item positions.
+  if (!appearanceValue(L"DesktopGroupsManagedLayout", 0)) looseItems.clear();
+  DesktopIconEvents events{
+    [this](HWND source, std::vector<std::wstring> paths, HICON icon, RECT bounds, POINT mouse) {
+      if (paths.empty() || menuOpen || editing || dragging || quitting) {
+        if (icon) DestroyIcon(icon);
+        return;
+      }
+      beginDrag(source, paths.front(), icon, nullptr, -1, false, &bounds, mouse);
+      if (dragging) {
+        dragItems = std::move(paths);
+        desktopDragStart = mouse;
+      }
+    },
+    [this](HWND source, const std::wstring &path, POINT point) {
+      if (menuOpen || editing || dragging || quitting) return;
+      menuOpen = true;
+      bool removed = false;
+      try { showItemMenu(source, path, point, false, removed); } catch (...) {}
+      menuOpen = false;
+      PostMessageW(window, refreshMessage, 0, 0);
+    },
+    [this](int delta) { PostMessageW(window, desktopZoomMessage, 0, delta); },
+    [this](POINT point) {
+      if (dragging) PostMessageW(window, endDesktopDragMessage, static_cast<WPARAM>(static_cast<INT_PTR>(point.x)), point.y);
+    },
+    [this](POINT point) {
+      desktopMenuPoint = point;
+      desktopMenuOpenedAt = GetTickCount64();
+    }
+  };
+  desktopIcons = std::make_unique<DesktopIcons>(instance, std::move(events));
+  if (!desktopIcons->window()) {
+    desktopIcons.reset();
+    return false;
+  }
+  if (!refreshDesktopIcons(false) || !setDesktopIconsHidden(true)) {
+    stopDesktopIcons();
+    return false;
+  }
+  ownsIconLayer = true;
+  lower();
+  return true;
+}
+
+void Desktop::zoomDesktopIcons(int delta) {
+  if (!desktopIcons || !ownsIconLayer || dragging || editing || menuOpen || quitting || !delta) return;
+  desktopWheelRemainder += std::clamp(delta, -WHEEL_DELTA * 12, WHEEL_DELTA * 12);
+  const auto steps = desktopWheelRemainder / WHEEL_DELTA;
+  desktopWheelRemainder %= WHEEL_DELTA;
+  if (!steps) return;
+  constexpr std::array sizes{16, 20, 24, 28, 32, 36, 40, 44, 48, 56, 64, 72, 80, 88, 96, 112, 128, 144, 160, 192, 256};
+  const auto dpi = desktopIconMetrics.dpi;
+  if (!dpi) return;
+  const int current = MulDiv(desktopIconMetrics.iconSize, 96, dpi);
+  const auto currentIndex = steps > 0 ? std::upper_bound(sizes.begin(), sizes.end(), current) - sizes.begin() - 1
+                                      : std::lower_bound(sizes.begin(), sizes.end(), current) - sizes.begin();
+  const int limit = std::max(16, MulDiv(static_cast<int>(std::min(nativeDesktopSpacing.cx,
+                                                               nativeDesktopSpacing.cy)), 96, dpi));
+  const auto nextIndex = std::clamp<std::ptrdiff_t>(currentIndex + steps, 0, sizes.size() - 1);
+  const DWORD next = steps > 0 ? std::min(sizes[nextIndex], limit) : sizes[nextIndex];
+  if (steps > 0 && next <= static_cast<DWORD>(current)) return;
+  const int pixels = std::clamp(MulDiv(next, dpi, 96), 8, 256);
+  if (pixels == desktopIconMetrics.iconSize) return;
+  const int previous = std::exchange(desktopIconMetrics.iconSize, pixels);
+  const auto previousSpacing = std::exchange(desktopIconMetrics.spacing,
+      desktopSpacingForIcon(nativeDesktopSpacing, nativeDesktopIconSize, pixels));
+  if (!refreshDesktopIcons(false)) {
+    desktopIconMetrics.iconSize = previous;
+    desktopIconMetrics.spacing = previousSpacing;
+    refreshDesktopIcons(false);
+    return;
+  }
+  RegSetKeyValueW(HKEY_CURRENT_USER, desktopSettings, L"DesktopGroupsManagedIconSize",
+                  REG_DWORD, &next, sizeof(next));
+}
+
+void Desktop::stopDesktopIcons() {
+  desktopIcons.reset();
+  desktopWheelRemainder = 0;
+  restoreDesktopIcons();
+  ownsIconLayer = false;
+}
+
+bool Desktop::refreshDesktopIcons(bool scan) {
+  if (!desktopIcons) return true;
+  if (scan) {
+    if (auto current = desktopIconPaths()) {
+      const auto contains = [](const auto &list, const auto &path) {
+        return std::any_of(list.begin(), list.end(), [&](const auto &entry) { return samePath(entry, path); });
+      };
+      std::erase_if(nativeItems, [&](const auto &item) {
+        return contains(scannedIconPaths, item.path) && !contains(*current, item.path);
+      });
+      for (const auto &path : *current) {
+        if (!contains(scannedIconPaths, path) && !desktopItem(roots, path).empty())
+          nativeItems.push_back({path, {LONG_MIN, LONG_MIN}});
+      }
+      scannedIconPaths = std::move(*current);
+    }
+  }
+
+  std::vector<LooseItem> visible;
+  const auto matches = [](const auto &record, const auto &path) { return samePath(record.path, path); };
+  const auto &spacing = desktopIconMetrics.spacing;
+  std::map<HMONITOR, POINT> origins;
+  std::vector<std::pair<size_t, HMONITOR>> outside;
+  const auto desktopPosition = [&](const LooseItem &item) {
+    const auto from = item.spacing.cx && item.spacing.cy ? item.spacing : nativeDesktopSpacing;
+    if (from.cx == spacing.cx && from.cy == spacing.cy) return item.position;
+    const auto display = MonitorFromPoint(item.position, MONITOR_DEFAULTTONULL);
+    MONITORINFO monitor{sizeof(monitor)};
+    if (!GetMonitorInfoW(display, &monitor)) return item.position;
+    const auto [entry, inserted] = origins.try_emplace(display);
+    if (inserted) entry->second = desktopGridOrigin(monitor.rcWork, nativeDesktopSpacing, nativeItems);
+    return scaleDesktopPosition(item.position, entry->second, nativeDesktopSpacing, from, spacing);
+  };
+  const auto append = [&](const LooseItem &item) {
+    const auto position = desktopPosition(item);
+    if (position.x != item.position.x || position.y != item.position.y) {
+      const auto display = MonitorFromPoint(item.position, MONITOR_DEFAULTTONULL);
+      MONITORINFO monitor{sizeof(monitor)};
+      if (GetMonitorInfoW(display, &monitor) && !PtInRect(&monitor.rcWork, position))
+        outside.emplace_back(visible.size(), display);
+    }
+    visible.push_back({item.path, position});
+  };
+  MONITORINFO monitor{sizeof(monitor)};
+  GetMonitorInfoW(MonitorFromPoint({}, MONITOR_DEFAULTTOPRIMARY), &monitor);
+  const RECT work = monitor.rcWork;
+  for (auto &item : nativeItems) {
+    if (std::any_of(groups.begin(), groups.end(), [&](const auto &group) {
+          const auto has = [&](const auto &paths) {
+            return std::any_of(paths.begin(), paths.end(), [&](const auto &path) { return samePath(item.path, path); });
+          };
+          return has(group.paths) || std::any_of(group.tabs.begin(), group.tabs.end(),
+                                                 [&](const auto &tab) { return has(tab.paths); });
+        })) continue;
+    const auto saved = std::find_if(looseItems.begin(), looseItems.end(), [&](const auto &record) {
+      return matches(record, item.path);
+    });
+    if (saved != looseItems.end() && MonitorFromPoint(saved->position, MONITOR_DEFAULTTONULL)) {
+      append(*saved);
+      continue;
+    }
+    if (item.position.x == LONG_MIN || !MonitorFromPoint(item.position, MONITOR_DEFAULTTONULL)) {
+      const auto origin = desktopGridOrigin(work, nativeDesktopSpacing, nativeItems);
+      const auto first = scaleDesktopPosition(origin, origin, nativeDesktopSpacing, nativeDesktopSpacing, spacing);
+      std::vector<POINT> occupied;
+      for (const auto &entry : nativeItems)
+        if (PtInRect(&work, entry.position)) occupied.push_back(desktopPosition(entry));
+      for (const auto &entry : looseItems)
+        if (PtInRect(&work, entry.position)) occupied.push_back(desktopPosition(entry));
+      auto position = snapDesktopPositions(work, first, spacing, std::span(&first, 1), occupied);
+      if (!position) continue;
+      item.position = position->front();
+      item.spacing = spacing;
+    }
+    append(item);
+  }
+  for (const auto &[index, display] : outside) {
+    MONITORINFO target{sizeof(target)};
+    if (!GetMonitorInfoW(display, &target)) return false;
+    const auto origin = origins.at(display);
+    const auto first = scaleDesktopPosition(origin, origin, nativeDesktopSpacing, nativeDesktopSpacing, spacing);
+    std::vector<POINT> occupied;
+    for (size_t i = 0; i < visible.size(); ++i)
+      if (i != index && PtInRect(&target.rcWork, visible[i].position)) occupied.push_back(visible[i].position);
+    auto &position = visible[index].position;
+    const auto nearest = snapDesktopPositions(target.rcWork, first, spacing, std::span(&position, 1), occupied);
+    if (!nearest) return false;
+    position = nearest->front();
+  }
+  if (!desktopIcons->update(visible, desktopIconMetrics)) return false;
+  lower();
+  return true;
+}
 bool Desktop::mergePanels(size_t source, size_t target) {
   if (editing || dragging || quitting) return false;
   auto changed = groups;
@@ -3103,18 +3683,15 @@ bool Desktop::mergePanels(size_t source, size_t target) {
   for (size_t i = source; i < panels.size(); ++i) panels[i]->index = i;
   auto &destination = *panels[target - (source < target ? 1 : 0)];
   destination.showTab(firstNewTab);
-  updateScene();
+  updateShadows();
   lower();
   return true;
 }
 
-void Desktop::detachPanelTab(size_t index, size_t tab, POINT point) {
-  if (editing || dragging || quitting) return;
+void Desktop::detachPanelTab(size_t index, size_t tab, RECT bounds) {
+  if (editing || dragging || quitting || index >= panels.size()) return;
   auto changed = groups;
   const auto owner = panels[index]->window;
-  const auto dpi = GetDpiForWindow(owner);
-  const auto width = MulDiv(360, dpi, 96), height = MulDiv(254, dpi, 96);
-  const auto bounds = visibleBounds({point.x - width / 2, point.y, point.x - width / 2 + width, point.y + height});
   const auto previous = groups;
   if (!detachTab(changed, index, tab, bounds) || !commit(std::move(changed), owner)) return;
   if (!openPanel(groups.size() - 1)) {
@@ -3123,120 +3700,42 @@ void Desktop::detachPanelTab(size_t index, size_t tab, POINT point) {
     return;
   }
   panels[index]->activeTab = 0;
+  panels[index]->currentPage = panels[index]->pageWheelRemainder = 0;
+  SetWindowTextW(owner, groups[index].name.c_str());
   panels[index]->refresh(groups[index]);
-  if (!groups.back().tabs.empty()) panels.back()->showTab(1);
+  panels[index]->resize();
 }
 
-void Desktop::refreshLoose() {
-  for (auto child : looseWindows) if (child) DestroyWindow(child);
-  looseWindows.assign(looseItems.size(), nullptr);
-  const auto dpi = GetDpiForWindow(scene);
-  const int width = MulDiv(92, dpi, 96), height = MulDiv(78, dpi, 96);
-  for (size_t i = 0; i < looseItems.size(); ++i) {
-    const auto &item = looseItems[i];
-    if (desktopItem(roots, item.path).empty()) continue;
-    const auto p = item.position;
-    MONITORINFO monitor{sizeof(monitor)};
-    if (!GetMonitorInfoW(MonitorFromPoint(p, MONITOR_DEFAULTTONEAREST), &monitor)) continue;
-    const auto x = std::clamp(p.x, monitor.rcWork.left, monitor.rcWork.right);
-    const auto y = std::clamp(p.y, monitor.rcWork.top, monitor.rcWork.bottom);
-    const auto bounds = visibleBounds({x - width / 2, y - height / 2, x - width / 2 + width, y - height / 2 + height});
-    auto child = CreateWindowExW(0, L"STATIC", fn::fs::path(item.path).filename().c_str(),
-                                 WS_CHILD | WS_CLIPSIBLINGS | SS_NOTIFY | SS_CENTER, bounds.left - sceneBounds.left,
-                                 bounds.top - sceneBounds.top, width, height, scene, nullptr, instance, nullptr);
-    if (!child) continue;
-    if (!SetWindowSubclass(child, looseProc, i + 1, reinterpret_cast<DWORD_PTR>(this))) {
-      DestroyWindow(child);
-      continue;
-    }
-    looseWindows[i] = child;
-    SetWindowPos(child, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+void Desktop::movePanelTab(Panel &source, size_t tab, Panel &target, size_t slot, bool selectMoved) {
+  if (dragging || quitting || source.tabDrag || target.tabDrag) return;
+  const bool same = &source == &target;
+  auto changed = groups;
+  if (!moveTab(changed, source.index, tab, target.index, slot) || !commit(std::move(changed), source.window, false)) return;
+  const auto next = slot - (same && slot > tab);
+  SetWindowTextW(source.window, groups[source.index].name.c_str());
+  if (same) {
+    auto &active = source.activeTab;
+    if (active == tab) active = next;
+    else if (tab < active && active <= next) --active;
+    else if (next <= active && active < tab) ++active;
+    source.resize();
+    if (selectMoved) source.showTab(next);
+    return;
   }
-  updateScene();
-}
-
-LRESULT CALLBACK Desktop::looseProc(HWND child, UINT message, WPARAM w, LPARAM l, UINT_PTR id, DWORD_PTR data) {
-  auto &desktop = *reinterpret_cast<Desktop *>(data);
-  if (message == WM_NCDESTROY) {
-    RemoveWindowSubclass(child, looseProc, id);
-    return DefSubclassProc(child, message, w, l);
-  }
-  if (id == 0 || id > desktop.looseItems.size()) return DefSubclassProc(child, message, w, l);
-  const auto &path = desktop.looseItems[id - 1].path;
-  switch (message) {
-  case WM_ERASEBKGND:
-    return 1;
-  case WM_PAINT: {
-    PAINTSTRUCT paint{};
-    auto dc = BeginPaint(child, &paint);
-    RECT area{};
-    GetClientRect(child, &area);
-    const auto dpi = GetDpiForWindow(child);
-    desktop.looseGlass.paint(child, dc, area, desktop.theme.colors.field, 140, true);
-    const int size = MulDiv(32, dpi, 96);
-    SHFILEINFOW info{};
-    if (SHGetFileInfoW(path.c_str(), 0, &info, sizeof(info), SHGFI_ICON | SHGFI_LARGEICON)) {
-      DrawIconEx(dc, (area.right - size) / 2, MulDiv(6, dpi, 96), info.hIcon, size, size, 0, nullptr, DI_NORMAL);
-      DestroyIcon(info.hIcon);
-    }
-    area.top = MulDiv(43, dpi, 96);
-    SelectObject(dc, GetStockObject(DEFAULT_GUI_FONT));
-    ui::text(dc, fn::fs::path(path).filename().native(), area, desktop.theme.colors.text,
-             DT_CENTER | DT_WORDBREAK | DT_END_ELLIPSIS | DT_NOPREFIX);
-    EndPaint(child, &paint);
-    return 0;
-  }
-  case WM_LBUTTONDOWN:
-    if (!desktop.dragging && !desktop.editing && !desktop.menuOpen) {
-      POINT point{};
-      GetCursorPos(&point);
-      SetPropW(child, L"FolderNote.LoosePressed", reinterpret_cast<HANDLE>(1));
-      SetWindowLongPtrW(child, GWLP_USERDATA, MAKELPARAM(point.x, point.y));
-      SetForegroundWindow(desktop.scene);
-      SetCapture(child);
-    }
-    return 0;
-  case WM_MOUSEMOVE:
-    if (GetPropW(child, L"FolderNote.LoosePressed")) {
-      if (!(w & MK_LBUTTON)) RemovePropW(child, L"FolderNote.LoosePressed");
-      else {
-        const auto start = GetWindowLongPtrW(child, GWLP_USERDATA);
-        POINT point{};
-        GetCursorPos(&point);
-        if (std::abs(point.x - GET_X_LPARAM(start)) >= GetSystemMetrics(SM_CXDRAG) ||
-            std::abs(point.y - GET_Y_LPARAM(start)) >= GetSystemMetrics(SM_CYDRAG)) {
-          RemovePropW(child, L"FolderNote.LoosePressed");
-          if (GetCapture() == child) ReleaseCapture();
-          SHFILEINFOW info{};
-          SHGetFileInfoW(path.c_str(), 0, &info, sizeof(info), SHGFI_ICON | SHGFI_LARGEICON);
-          desktop.beginDrag(child, path, info.hIcon);
-        }
-      }
-    }
-    return 0;
-  case WM_LBUTTONUP:
-    if (GetCapture() == child) ReleaseCapture();
-    [[fallthrough]];
-  case WM_CAPTURECHANGED:
-    RemovePropW(child, L"FolderNote.LoosePressed");
-    return 0;
-  case WM_LBUTTONDBLCLK:
-    ShellExecuteW(desktop.scene, nullptr, path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-    return 0;
-  case WM_CONTEXTMENU: {
-    POINT point{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
-    bool removed = false;
-    desktop.menuOpen = true;
-    try { showItemMenu(desktop.scene, path, point, false, removed); } catch (...) {}
-    desktop.menuOpen = false;
-    return 0;
-  }
-  }
-  return DefSubclassProc(child, message, w, l);
+  if (source.activeTab == tab) {
+    source.activeTab = 0;
+    source.currentPage = source.pageWheelRemainder = 0;
+    source.refresh(groups[source.index]);
+  } else if (source.activeTab > tab) --source.activeTab;
+  source.resize();
+  SetWindowTextW(target.window, groups[target.index].name.c_str());
+  if (target.activeTab >= next) ++target.activeTab;
+  target.resize();
+  target.showTab(next);
 }
 
 void Desktop::lower(HWND raisedPanel) const {
-  if (panels.empty()) return;
+  if (panels.empty() && !desktopIcons) return;
   if (std::any_of(panels.begin(), panels.end(), [](const auto &panel) { return panel->movingOrSizing; })) return;
   const auto active = GetForegroundWindow();
   DWORD pid = 0;
@@ -3271,7 +3770,8 @@ void Desktop::lower(HWND raisedPanel) const {
     std::rotate(boxes.begin(), raised, raised + 1);
   auto above = GetWindow(host, GW_HWNDPREV);
   const auto belongsToDesktop = [&](HWND candidate) {
-    if (candidate == scene || std::find(boxes.begin(), boxes.end(), candidate) != boxes.end()) return true;
+    if (desktopIcons && candidate == desktopIcons->window()) return true;
+    if (std::find(boxes.begin(), boxes.end(), candidate) != boxes.end()) return true;
     return std::any_of(panels.begin(), panels.end(), [candidate](const auto &panel) { return panel->shadow == candidate; });
   };
   while (above && (!IsWindowVisible(above) || belongsToDesktop(above))) above = GetWindow(above, GW_HWNDPREV);
@@ -3298,7 +3798,7 @@ void Desktop::lower(HWND raisedPanel) const {
     above = item;
   };
   for (const auto box : boxes) placeBehind(box);
-  placeBehind(scene);
+  if (desktopIcons && IsWindowVisible(desktopIcons->window())) placeBehind(desktopIcons->window());
   for (const auto &panel : panels)
     if (panel->shadow && panel->shadowSize.cx) placeBehind(panel->shadow);
 }
@@ -3323,7 +3823,7 @@ void Desktop::manage() {
   menuOpen = false;
   PostMessageW(window, WM_NULL, 0, 0);
   if (quitting) return;
-  if (command == NewGroup) action(nullptr, NewGroup);
+  if (command == NewGroup) createBox(point, window);
   if (command >= 100 && command - 100 < panels.size()) {
     auto &panel = *panels[command - 100];
     panel.showDockedBox(true);
@@ -3332,36 +3832,57 @@ void Desktop::manage() {
   }
 }
 
+void Desktop::createBox(POINT point, HWND owner) {
+  if (menuOpen || editing || dragging || quitting) return;
+  Group group;
+  group.name = lang::text(L"新建盒子");
+  const auto monitor = MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST);
+  const auto dpi = GetDpiForSystem();
+  group.bounds = visibleBounds({point.x, point.y, point.x + MulDiv(360, dpi, 96),
+                                point.y + MulDiv(254, dpi, 96)}, monitor);
+  auto changed = groups;
+  changed.push_back(std::move(group));
+  if (!commit(std::move(changed), owner)) return;
+  if (!openPanel(groups.size() - 1)) {
+    auto previous = groups;
+    previous.pop_back();
+    commit(std::move(previous), owner);
+    report(owner, lang::text(L"无法打开桌面盒子。"));
+    return;
+  }
+  panels.back()->beginTitleRename();
+}
+
+void Desktop::renameBox(Panel &panel, std::wstring name) {
+  const auto first = name.find_first_not_of(L" \t\r\n");
+  if (quitting || first == name.npos) return;
+  name = name.substr(first, name.find_last_not_of(L" \t\r\n") - first + 1);
+  const auto index = panel.index;
+  if (name == groups[index].name) return;
+  auto changed = groups;
+  changed[index].name = std::move(name);
+  if (!commit(std::move(changed), panel.window)) return;
+  SetWindowTextW(panel.window, groups[index].name.c_str());
+#ifdef FOLDERNOTE_WINUI
+  panel.syncSurfaceHeader();
+#endif
+  InvalidateRect(panel.window, nullptr, FALSE);
+  InvalidateRect(panel.tabs, nullptr, FALSE);
+}
+
 void Desktop::action(Panel *panel, Command command, size_t tabIndex) {
-  if (editing || dragging || quitting) return;
+  if (editing || dragging || quitting || (panel && panel->tabDrag)) return;
+  if (command == NewGroup) {
+    POINT point{};
+    if (GetCursorPos(&point)) createBox(point, panel ? panel->window : window);
+    return;
+  }
   struct EditScope {
     bool &active;
     explicit EditScope(bool &flag) : active(flag) { active = true; }
     ~EditScope() { active = false; }
   } scope(editing);
   const auto owner = panel ? panel->window : window;
-  if (command == NewGroup) {
-    Group group;
-    if (!askName(instance, panel ? owner : nullptr, L"新建盒子", group.name) || quitting) return;
-    const auto work = ui::mouseWorkArea();
-    const auto dpi = GetDpiForSystem();
-    group.bounds = ui::centeredRect(work, MulDiv(360, dpi, 96), MulDiv(254, dpi, 96));
-    const auto offset = static_cast<LONG>(groups.size() % 7) * MulDiv(24, dpi, 96);
-    OffsetRect(&group.bounds, offset, offset);
-    group.bounds = visibleBounds(group.bounds);
-    auto changed = groups;
-    changed.push_back(std::move(group));
-    if (!commit(std::move(changed), owner)) return;
-    if (!openPanel(groups.size() - 1)) {
-      auto previous = groups;
-      previous.pop_back();
-      commit(std::move(previous), owner);
-      report(owner, lang::text(L"无法打开桌面盒子。"));
-    } else {
-      lower();
-    }
-    return;
-  }
   if (!panel || quitting) return;
   const auto index = panel->index;
   const int selected = panel->selection();
@@ -3378,22 +3899,9 @@ void Desktop::action(Panel *panel, Command command, size_t tabIndex) {
       next.titleStyle = command == TitleText ? TitleStyle::Text :
                         command == TitleIcon ? TitleStyle::Icon : TitleStyle::IconAndText;
     }
-    if (index) {
-      auto changed = groups;
-      changed[index] = std::move(next);
-      if (!commit(std::move(changed), owner, nullptr, false)) return;
-    } else {
-      const DWORD titleMode = static_cast<DWORD>(next.titleStyle);
-      const auto iconResult = RegSetKeyValueW(HKEY_CURRENT_USER, desktopSettings, ungroupedTitleIcon, REG_SZ,
-          next.titleIcon.c_str(), static_cast<DWORD>((next.titleIcon.size() + 1) * sizeof(wchar_t)));
-      const auto styleResult = RegSetKeyValueW(HKEY_CURRENT_USER, desktopSettings, ungroupedTitleStyle,
-                                               REG_DWORD, &titleMode, sizeof(titleMode));
-      if (iconResult != ERROR_SUCCESS || styleResult != ERROR_SUCCESS) {
-        report(owner, lang::text(L"无法保存桌面盒子"));
-        return;
-      }
-      groups.front() = std::move(next);
-    }
+    auto changed = groups;
+    changed[index] = std::move(next);
+    if (!commit(std::move(changed), owner, false)) return;
     panel->resize();
     InvalidateRect(owner, nullptr, FALSE);
     return;
@@ -3419,17 +3927,9 @@ void Desktop::action(Panel *panel, Command command, size_t tabIndex) {
   case MoveTabLeft:
   case MoveTabRight: {
     const auto count = groups[index].tabs.size();
-    if (!index || !tabIndex || tabIndex > count || (command == MoveTabLeft ? tabIndex == 1 : tabIndex == count)) return;
-    const auto target = command == MoveTabLeft ? tabIndex - 1 : tabIndex + 1;
-    auto changed = groups;
-    std::swap(changed[index].tabs[tabIndex - 1], changed[index].tabs[target - 1]);
-    if (!commit(std::move(changed), owner, nullptr, false)) return;
-    if (panel->activeTab == tabIndex) panel->activeTab = target;
-    else if (panel->activeTab == target) panel->activeTab = tabIndex;
-#ifdef FOLDERNOTE_WINUI
-    panel->syncSurfaceHeader();
-#endif
-    InvalidateRect(panel->tabs, nullptr, FALSE);
+    if (tabIndex > count || (command == MoveTabLeft ? tabIndex == 0 : tabIndex == count)) return;
+    const auto slot = command == MoveTabLeft ? tabIndex - 1 : tabIndex + 2;
+    movePanelTab(*panel, tabIndex, *panel, slot, false);
     return;
   }
   case AddTab:
@@ -3447,6 +3947,7 @@ void Desktop::action(Panel *panel, Command command, size_t tabIndex) {
     changed[index].tabs.push_back(std::move(tab));
     changed[index].collapsed = false;
     if (commit(std::move(changed), owner)) {
+      panel->autoCollapsed = false;
       panel->showTab(groups[index].tabs.size());
       panel->setCollapsed();
     }
@@ -3457,7 +3958,7 @@ void Desktop::action(Panel *panel, Command command, size_t tabIndex) {
     auto changed = groups;
     auto &tabs = changed[index].tabs;
     tabs.erase(tabs.begin() + tabIndex - 1);
-    if (commit(std::move(changed), owner, nullptr, false)) {
+    if (commit(std::move(changed), owner, false)) {
       if (panel->activeTab == tabIndex) panel->activeTab = 0;
       else if (panel->activeTab > tabIndex) --panel->activeTab;
       panel->refresh(groups[index]);
@@ -3468,19 +3969,9 @@ void Desktop::action(Panel *panel, Command command, size_t tabIndex) {
   case ScrollDisplay: case PageDisplay: {
     const auto mode = command == PageDisplay ? DisplayMode::Pages : DisplayMode::Scroll;
     if (groups[index].displayMode == mode) return;
-    if (index) {
-      auto changed = groups;
-      changed[index].displayMode = mode;
-      if (!commit(std::move(changed), owner, nullptr, false)) return;
-    } else {
-      const DWORD value = mode == DisplayMode::Pages;
-      if (RegSetKeyValueW(HKEY_CURRENT_USER, desktopSettings, ungroupedDisplayMode,
-                          REG_DWORD, &value, sizeof(value)) != ERROR_SUCCESS) {
-        report(owner, lang::text(L"无法保存桌面盒子"));
-        return;
-      }
-      groups.front().displayMode = mode;
-    }
+    auto changed = groups;
+    changed[index].displayMode = mode;
+    if (!commit(std::move(changed), owner, false)) return;
     panel->currentPage = panel->pageWheelRemainder = 0;
     panel->resize();
     panel->renderPage(groups[index]);
@@ -3498,25 +3989,39 @@ void Desktop::action(Panel *panel, Command command, size_t tabIndex) {
     }
     return;
   }
+  case ToggleBoxGlass:
+  case InheritBoxGlass: {
+    auto changed = groups;
+    auto &glass = changed[index].glass;
+    if (command == InheritBoxGlass) glass.reset();
+    else glass = !panel->backgroundGlass();
+    if (commit(std::move(changed), owner, false)) panel->applyBackground();
+    return;
+  }
+  case ToggleAutoCollapse: {
+    auto changed = groups;
+    changed[index].autoCollapse = !changed[index].autoCollapse;
+    if (commit(std::move(changed), owner, false)) {
+      panel->autoCollapseAt = 0;
+      panel->autoCollapsed = false;
+      panel->setCollapsed();
+    }
+    return;
+  }
   case ToggleGroup: {
     auto changed = groups;
-    changed[index].collapsed = !changed[index].collapsed;
-    if (commit(std::move(changed), owner)) panel->setCollapsed();
+    changed[index].collapsed = !panel->collapsed();
+    if (commit(std::move(changed), owner, false)) {
+      panel->autoCollapsed = false;
+      panel->autoCollapseAt = 0;
+      panel->setCollapsed();
+    }
     return;
   }
   case RenameGroup: {
     auto name = groups[index].name;
     if (!askName(instance, owner, L"重命名盒子", name) || quitting) return;
-    auto changed = groups;
-    changed[index].name = std::move(name);
-    if (commit(std::move(changed), owner)) {
-      SetWindowTextW(owner, groups[index].name.c_str());
-#ifdef FOLDERNOTE_WINUI
-      panel->syncSurfaceHeader();
-#endif
-      InvalidateRect(owner, nullptr, FALSE);
-      InvalidateRect(panel->tabs, nullptr, FALSE);
-    }
+    renameBox(*panel, std::move(name));
     return;
   }
   case DeleteGroup: {
@@ -3527,25 +4032,22 @@ void Desktop::action(Panel *panel, Command command, size_t tabIndex) {
     if (commit(std::move(changed), owner)) {
       panels.erase(panels.begin() + index);
       for (size_t i = index; i < panels.size(); ++i) panels[i]->index = i;
-      updateScene();
+      updateShadows();
     }
     return;
   }
   case OpenItem:
     if (selected >= 0 && static_cast<size_t>(selected) < panel->displayed.size()) {
       const auto &item = panel->displayed[selected];
-      const auto path = !index || panel->mapped() ? item : desktopItem(roots, item);
+      const auto path = panel->mapped() ? item : boxItem(item);
       if (path.empty() ||
           reinterpret_cast<INT_PTR>(ShellExecuteW(owner, nullptr, path.c_str(), nullptr, nullptr, SW_SHOWNORMAL)) <= 32)
         report(owner, lang::text(L"无法打开此桌面项目。"));
     }
     return;
   case RemoveItem:
-    if (index && !panel->mapped() && selected >= 0 && static_cast<size_t>(selected) < panel->displayed.size()) {
-      auto changed = groups;
-      auto &items = manualItems(changed[index], panel->activeTab);
-      std::erase_if(items, [&](const auto &item) { return samePath(item, panel->displayed[selected]); });
-      if (commit(std::move(changed), owner)) panel->refresh(groups[index]);
+    if (!panel->mapped() && selected >= 0 && static_cast<size_t>(selected) < panel->displayed.size()) {
+      ungroup(std::span(&panel->displayed[selected], 1), owner);
     }
     return;
   default:
@@ -3556,25 +4058,38 @@ void Desktop::action(Panel *panel, Command command, size_t tabIndex) {
 void Desktop::drag(Panel &panel, int index) {
   const auto &items = panel.displayed;
   if (index < 0 || static_cast<size_t>(index) >= items.size() || panel.mapped() || editing || dragging || quitting) return;
-  const auto path = desktopItem(roots, items[index]);
+  const auto path = boxItem(items[index]);
   if (path.empty()) return;
   LVITEMW item{};
   item.mask = LVIF_IMAGE;
   item.iItem = index;
   const auto images = ListView_GetImageList(panel.list, groups[panel.index].view == View::List ? LVSIL_SMALL : LVSIL_NORMAL);
+  RECT preview{};
+  POINT cursor{};
+  bool hasPreview = false;
+#ifdef FOLDERNOTE_WINUI
+  if (panel.hasSurface()) hasPreview = panel.surface->imageBounds(index, preview);
+#endif
+  if (!panel.hasSurface() && ListView_GetItemRect(panel.list, index, &preview, LVIR_ICON)) {
+    MapWindowPoints(panel.list, HWND_DESKTOP, reinterpret_cast<POINT *>(&preview), 2);
+    hasPreview = !IsRectEmpty(&preview);
+  }
+  if (hasPreview) hasPreview = GetCursorPos(&cursor) != FALSE;
   beginDrag(panel.window, path, images && ListView_GetItem(panel.list, &item) && item.iImage >= 0 ?
                                     ImageList_GetIcon(images, item.iImage, ILD_TRANSPARENT) : nullptr,
-            panel.list, index, groups[panel.index].view == View::List);
+            panel.list, index, groups[panel.index].view == View::List,
+            hasPreview ? &preview : nullptr, cursor);
   if (dragging && (ListView_GetItemState(panel.list, index, LVIS_SELECTED) & LVIS_SELECTED)) {
     dragItems.clear();
     for (int row = -1; (row = ListView_GetNextItem(panel.list, row, LVNI_SELECTED)) >= 0;) {
       if (static_cast<size_t>(row) >= items.size()) continue;
-      if (auto selected = desktopItem(roots, items[row]); !selected.empty()) dragItems.push_back(std::move(selected));
+      if (auto selected = boxItem(items[row]); !selected.empty()) dragItems.push_back(std::move(selected));
     }
   }
 }
 
-void Desktop::beginDrag(HWND source, std::wstring path, HICON icon, HWND list, int row, bool listMode) {
+void Desktop::beginDrag(HWND source, std::wstring path, HICON icon, HWND list, int row, bool listMode,
+                        const RECT *sourceImage, POINT mouse) {
   dragPath = std::move(path);
   dragItems = {dragPath};
   dragWindow = source;
@@ -3583,6 +4098,8 @@ void Desktop::beginDrag(HWND source, std::wstring path, HICON icon, HWND list, i
   dragLabel = fn::fs::path(dragPath).filename().native();
   const auto dpi = GetDpiForWindow(source);
   const auto px = [dpi](int value) { return MulDiv(value, dpi, 96); };
+  dragImageOnly = sourceImage && icon;
+  dragAnchor = {-px(14), -px(14)};
   dragSize = {px(92), px(78)};
   dragIconRect = {px(30), px(6), px(62), px(38)};
   dragLabelRect = {0, px(43), dragSize.cx, dragSize.cy};
@@ -3600,6 +4117,11 @@ void Desktop::beginDrag(HWND source, std::wstring path, HICON icon, HWND list, i
     ListView_GetItemText(list, row, 0, text, ARRAYSIZE(text));
     if (*text) dragLabel = text;
   }
+  if (dragImageOnly) {
+    dragSize = {sourceImage->right - sourceImage->left, sourceImage->bottom - sourceImage->top};
+    dragAnchor = {std::clamp(mouse.x - sourceImage->left, 0L, dragSize.cx - 1),
+                  std::clamp(mouse.y - sourceImage->top, 0L, dragSize.cy - 1)};
+  }
   dragging = SetTimer(window, dragTimer, 10, nullptr) != 0;
   if (!dragging) {
     dragWindow = nullptr;
@@ -3613,13 +4135,38 @@ void Desktop::beginDrag(HWND source, std::wstring path, HICON icon, HWND list, i
                                WS_POPUP,
                                0, 0, 0, 0, window, nullptr, instance, nullptr);
   if (dragPreview) {
+    if (dragImageOnly) {
+      BITMAPINFO info{};
+      info.bmiHeader = {sizeof(BITMAPINFOHEADER), dragSize.cx, -dragSize.cy, 1, 32, BI_RGB};
+      void *pixels = nullptr;
+      const auto bitmap = CreateDIBSection(nullptr, &info, DIB_RGB_COLORS, &pixels, nullptr, 0);
+      const auto dc = bitmap ? CreateCompatibleDC(nullptr) : nullptr;
+      POINT cursor{}, origin{};
+      if (GetCursorPos(&cursor)) origin = {cursor.x - dragAnchor.x, cursor.y - dragAnchor.y};
+      POINT offset{};
+      BLENDFUNCTION blend{AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
+      bool drawn = false;
+      if (dc && pixels) {
+        const auto old = SelectObject(dc, bitmap);
+        if (old && old != HGDI_ERROR) {
+          std::fill_n(static_cast<DWORD *>(pixels), static_cast<size_t>(dragSize.cx) * dragSize.cy, 0);
+          drawn = DrawIconEx(dc, 0, 0, dragIcon, dragSize.cx, dragSize.cy, 0, nullptr, DI_NORMAL) &&
+              UpdateLayeredWindow(dragPreview, nullptr, &origin, &dragSize, dc, &offset, 0, &blend, ULW_ALPHA);
+          SelectObject(dc, old);
+        }
+      }
+      if (dc) DeleteDC(dc);
+      if (bitmap) DeleteObject(bitmap);
+      if (!drawn) DestroyWindow(std::exchange(dragPreview, nullptr));
+      updateDragFeedback();
+      return;
+    }
     if (!SetWindowSubclass(dragPreview, dragPreviewProc, 1, reinterpret_cast<DWORD_PTR>(this))) {
       DestroyWindow(std::exchange(dragPreview, nullptr));
       return;
     }
     SetLayeredWindowAttributes(dragPreview, 0, 225, LWA_ALPHA);
     SendMessageW(dragPreview, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), FALSE);
-    const auto dpi = GetDpiForWindow(source);
     const auto diameter = MulDiv(14, dpi, 96);
     auto shape = CreateRoundRectRgn(0, 0, dragSize.cx, dragSize.cy, diameter, diameter);
     if (shape && !SetWindowRgn(dragPreview, shape, FALSE)) DeleteObject(shape);
@@ -3651,15 +4198,14 @@ void Desktop::updateDragFeedback() {
   POINT point{};
   if (!GetCursorPos(&point)) return;
   auto *target = panelAt(point);
-  const auto found = std::find_if(panels.begin(), panels.end(), [target](const auto &panel) {
-    return target == panel.get() && !panel->mapped();
-  });
-  const auto highlighted = found == panels.end() ? nullptr : (*found)->window;
+  const auto folder = dropFolder(target, point);
+  const bool intoFolder = !folder.empty();
+  const bool groupDrop = target && !target->mapped() && !intoFolder;
+  const auto highlighted = groupDrop ? target->window : nullptr;
   RECT marker{};
   if (highlighted) {
-    auto &panel = **found;
-    panel.autoscroll(point);
-    marker = panel.insertion(point).marker;
+    target->autoscroll(point);
+    marker = target->insertion(point).marker;
   }
   const bool changedTarget = highlighted != dropHighlight;
   if (changedTarget) {
@@ -3673,18 +4219,18 @@ void Desktop::updateDragFeedback() {
   }
   if (!EqualRect(&marker, &dropMarker)) {
     if (highlighted) {
-      InvalidateRect((*found)->list, &dropMarker, FALSE);
-      InvalidateRect((*found)->list, &marker, FALSE);
+      InvalidateRect(target->list, &dropMarker, FALSE);
+      InvalidateRect(target->list, &marker, FALSE);
     }
     dropMarker = marker;
   } else if (changedTarget && highlighted && !IsRectEmpty(&marker)) {
     // A different panel can have an insertion marker at the same local point.
-    InvalidateRect((*found)->list, &marker, FALSE);
+    InvalidateRect(target->list, &marker, FALSE);
   }
-  SetCursor(LoadCursorW(nullptr, (target ? !target->mapped() : desktopDropAt(point)) ? IDC_SIZEALL : IDC_NO));
+  const bool allowed = intoFolder ? canMoveInto(dragItems, folder) : groupDrop || (!target && desktopDropAt(point));
+  SetCursor(LoadCursorW(nullptr, allowed ? IDC_SIZEALL : IDC_NO));
   if (dragPreview) {
-    const int dpi = GetDpiForWindow(dragWindow);
-    const int x = point.x + MulDiv(14, dpi, 96), y = point.y + MulDiv(14, dpi, 96);
+    const int x = point.x - dragAnchor.x, y = point.y - dragAnchor.y;
     if (!IsWindowVisible(dragPreview)) {
       SetWindowPos(dragPreview, HWND_TOPMOST, x, y, dragSize.cx, dragSize.cy, SWP_NOACTIVATE | SWP_SHOWWINDOW);
       UpdateWindow(dragPreview);
@@ -3697,7 +4243,7 @@ void Desktop::updateDragFeedback() {
   }
 }
 
-void Desktop::finishDrag(HWND source, bool apply) {
+void Desktop::finishDrag(HWND source, bool apply, std::optional<POINT> release) {
   if (!dragging || source != dragWindow) return;
   dragging = false;
   KillTimer(window, dragTimer);
@@ -3715,39 +4261,170 @@ void Desktop::finishDrag(HWND source, bool apply) {
   SetCursor(LoadCursorW(nullptr, IDC_ARROW));
   dragPath.clear();
   auto paths = std::move(dragItems);
-  POINT point{};
+  POINT point = release.value_or(POINT{});
   dragWindow = nullptr;
-  if (!apply || quitting || !GetCursorPos(&point)) return;
-  if (auto target = panelAt(point)) {
+  if (!apply || quitting || (!release && !GetCursorPos(&point))) return;
+  auto *target = panelAt(point);
+  if (const auto folder = dropFolder(target, point); !folder.empty()) {
+    moveInto(paths, folder, source);
+  } else if (target) {
     assign(*target, paths, point);
   } else if (desktopDropAt(point)) {
-    auto changed = groups;
-    const auto included = [&](const auto &path) {
-      return std::any_of(paths.begin(), paths.end(), [&](const auto &candidate) { return samePath(candidate, path); });
-    };
-    for (auto group = changed.begin() + 1; group != changed.end(); ++group) {
-      const auto remove = [&](auto &paths) {
-        std::erase_if(paths, included);
-      };
-      remove(group->paths);
-      for (auto &tab : group->tabs) remove(tab.paths);
-    }
-    auto placements = looseItems;
-    std::erase_if(placements, [&](const auto &item) { return included(item.path); });
-    const int spacing = MulDiv(92, GetDpiForWindow(scene), 96);
-    MONITORINFO monitor{sizeof(monitor)};
-    const bool hasWorkArea = GetMonitorInfoW(MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST), &monitor) != FALSE;
-    const LONG startX = point.x;
-    for (auto &path : paths) {
-      placements.push_back({std::move(path), point});
-      point.x += spacing;
-      if (hasWorkArea && point.x >= monitor.rcWork.right - spacing / 2) {
-        point.x = startX;
-        point.y += spacing;
-      }
-    }
-    commit(std::move(changed), source, &placements);
+    ungroup(paths, source, point);
   }
+}
+
+std::wstring Desktop::dropFolder(Panel *panel, POINT point) const {
+  std::wstring path;
+  if (panel) {
+    if (panel->collapsed()) return {};
+    RECT bounds{};
+    GetClientRect(panel->window, &bounds);
+    bounds.top = panel->headerHeight();
+    auto client = point;
+    ScreenToClient(panel->window, &client);
+    if (!PtInRect(&bounds, client)) return {};
+
+    int row = -1;
+#ifdef FOLDERNOTE_WINUI
+    if (panel->hasSurface()) row = panel->surface->hit(point);
+#endif
+    if (!panel->hasSurface() && IsWindowVisible(panel->list)) {
+      LVHITTESTINFO item{};
+      item.pt = point;
+      ScreenToClient(panel->list, &item.pt);
+      row = ListView_HitTest(panel->list, &item);
+    }
+    if (row >= 0 && static_cast<size_t>(row) < panel->displayed.size()) path = panel->displayed[row];
+    if (path.empty() || isDesktopShellItem(path) || !PathIsDirectoryW(path.c_str())) {
+      return folderForTab(groups[panel->index], panel->activeTab);
+    }
+  } else if (desktopIcons && GetAncestor(WindowFromPoint(point), GA_ROOT) == desktopIcons->window()) {
+    path = desktopIcons->itemAt(point);
+    if (path.empty() || isDesktopShellItem(path) || !PathIsDirectoryW(path.c_str())) return {};
+  }
+  return path;
+}
+
+bool Desktop::canMoveInto(std::span<const std::wstring> paths, const std::wstring &folder) const {
+  return !paths.empty() && std::all_of(paths.begin(), paths.end(), [&](const auto &path) {
+    if (path.empty() || isDesktopShellItem(path) || samePath(path, folder)) return false;
+    if (folder.size() > path.size() && folder[path.size()] == L'\\' &&
+        CompareStringOrdinal(path.data(), static_cast<int>(path.size()), folder.data(),
+                             static_cast<int>(path.size()), TRUE) == CSTR_EQUAL) return false;
+    return !samePath(fn::fs::path(path).parent_path().native(), folder);
+  });
+}
+
+void Desktop::moveInto(std::span<const std::wstring> paths, const std::wstring &folder, HWND owner) {
+  if (editing || quitting || !canMoveInto(paths, folder)) return;
+  struct TransferScope {
+    bool &active;
+    explicit TransferScope(bool &flag) : active(flag) { active = true; }
+    ~TransferScope() { active = false; }
+  } transfer(editing);
+
+  using ItemId = std::unique_ptr<void, decltype(&CoTaskMemFree)>;
+  std::vector<ItemId> ownedIds;
+  std::vector<PCIDLIST_ABSOLUTE> ids;
+  ownedIds.reserve(paths.size());
+  ids.reserve(paths.size());
+  for (const auto &path : paths) {
+    PIDLIST_ABSOLUTE id = nullptr;
+    HRESULT result = SHParseDisplayName(path.c_str(), nullptr, &id, 0, nullptr);
+    ownedIds.emplace_back(static_cast<void *>(id), CoTaskMemFree);
+    if (FAILED(result) || !id) return;
+    ids.push_back(id);
+  }
+  Microsoft::WRL::ComPtr<IShellItemArray> items;
+  Microsoft::WRL::ComPtr<IShellItem> destination;
+  HRESULT result = SHCreateShellItemArrayFromIDLists(static_cast<UINT>(ids.size()), ids.data(), &items);
+  if (SUCCEEDED(result))
+    result = SHCreateItemFromParsingName(folder.c_str(), nullptr, IID_PPV_ARGS(&destination));
+  if (SUCCEEDED(result))
+    result = quick::transfer::perform(owner, items.Get(), destination.Get(), quick::MenuMode::Move, [&] { return !quitting; });
+
+  const auto moved = [&](const std::wstring &path) {
+    return std::any_of(paths.begin(), paths.end(), [&](const auto &source) {
+      return samePath(source, path) && GetFileAttributesW(source.c_str()) == INVALID_FILE_ATTRIBUTES &&
+          GetLastError() == ERROR_FILE_NOT_FOUND;
+    });
+  };
+  auto changed = groups;
+  auto positions = looseItems;
+  bool removed = std::erase_if(positions, [&](const auto &item) { return moved(item.path); }) != 0;
+  for (auto &group : changed) {
+    removed |= std::erase_if(group.paths, moved) != 0;
+    for (auto &tab : group.tabs) removed |= std::erase_if(tab.paths, moved) != 0;
+  }
+  std::erase_if(nativeItems, [&](const auto &item) { return moved(item.path); });
+  // A cancelled transfer can still have completed some of the requested moves.
+  if (removed) commit(std::move(changed), owner, true, std::move(positions));
+  else PostMessageW(window, refreshMessage, 0, 0);
+  if (FAILED(result) && !quitting) report(owner, lang::text(L"无法完成复制 / 移动操作"));
+}
+
+bool Desktop::ungroup(std::span<const std::wstring> paths, HWND owner, std::optional<POINT> location) {
+  auto changed = groups;
+  bool removed = false;
+  const auto included = [&](const auto &path) {
+    return std::any_of(paths.begin(), paths.end(), [&](const auto &candidate) { return samePath(candidate, path); });
+  };
+  for (auto &group : changed) {
+    removed |= std::erase_if(group.paths, included) != 0;
+    for (auto &tab : group.tabs) removed |= std::erase_if(tab.paths, included) != 0;
+  }
+  if (!desktopIcons || !location) return removed && commit(std::move(changed), owner);
+
+  const auto visible = desktopIcons->positions();
+  const auto findPosition = [&](const auto &path) {
+    return std::find_if(visible.begin(), visible.end(), [&](const auto &item) { return samePath(item.path, path); });
+  };
+  std::vector<POINT> desired;
+  desired.reserve(paths.size());
+  auto point = *location;
+  for (const auto &path : paths) {
+    const auto visibleItem = owner == desktopIcons->window() ? findPosition(path) : visible.end();
+    if (visibleItem != visible.end()) {
+      desired.push_back({visibleItem->position.x + location->x - desktopDragStart.x,
+                         visibleItem->position.y + location->y - desktopDragStart.y});
+    } else {
+      desired.push_back(point);
+    }
+    point.x += desktopIconMetrics.spacing.cx;
+  }
+
+  MONITORINFO monitor{sizeof(monitor)};
+  if (GetMonitorInfoW(MonitorFromPoint(*location, MONITOR_DEFAULTTONULL), &monitor)) {
+    if (desktopSnapToGrid()) {
+      std::vector<POINT> occupied;
+      for (const auto &item : visible)
+        if (!included(item.path)) occupied.push_back(item.position);
+      auto work = monitor.rcWork;
+      const auto radius = desktopIconMetrics.iconSize / 2;
+      const auto centerToTop = desktopIconMetrics.spacing.cy / 2 - MulDiv(6, desktopIconMetrics.dpi, 96);
+      work.left += radius;
+      work.right -= radius;
+      work.top += centerToTop;
+      work.bottom -= std::max(0L, desktopIconMetrics.iconSize - centerToTop);
+      const auto origin = desktopGridOrigin(monitor.rcWork, nativeDesktopSpacing, nativeItems);
+      const auto spacing = desktopIconMetrics.spacing;
+      const auto first = scaleDesktopPosition(origin, origin, nativeDesktopSpacing, nativeDesktopSpacing, spacing);
+      auto snapped = snapDesktopPositions(work, first, spacing, desired, occupied);
+      if (!snapped) return false;
+      desired = std::move(*snapped);
+    }
+    // Saved positions must stay on a monitor, even when the pointer grabbed an edge of the tile.
+    for (auto &p : desired) {
+      if (MonitorFromPoint(p, MONITOR_DEFAULTTONULL)) continue;
+      p.x = std::clamp(p.x, monitor.rcWork.left, monitor.rcWork.right - 1);
+      p.y = std::clamp(p.y, monitor.rcWork.top, monitor.rcWork.bottom - 1);
+    }
+  }
+  auto positions = looseItems;
+  std::erase_if(positions, [&](const auto &item) { return included(item.path); });
+  for (size_t i = 0; i < paths.size(); ++i) positions.push_back({paths[i], desired[i], desktopIconMetrics.spacing});
+  return commit(std::move(changed), owner, true, std::move(positions));
 }
 
 Insertion Panel::insertion(POINT point) const {
@@ -3755,7 +4432,7 @@ Insertion Panel::insertion(POINT point) const {
   Insertion insertion;
 #ifdef FOLDERNOTE_WINUI
   if (surface && surface->available()) {
-    if (!index || group.sort != Sort::Manual || group.collapsed) return insertion;
+    if (group.sort != Sort::Manual || collapsed()) return insertion;
     insertion.item = surface->hit(point);
     RECT item{};
     if (insertion.item >= 0 && surface->itemBounds(insertion.item, item)) {
@@ -3765,7 +4442,7 @@ Insertion Panel::insertion(POINT point) const {
     return insertion;
   }
 #endif
-  if (!index || group.sort != Sort::Manual || !IsWindowVisible(list)) return insertion;
+  if (group.sort != Sort::Manual || !IsWindowVisible(list)) return insertion;
   LVHITTESTINFO hit{};
   hit.pt = point;
   ScreenToClient(list, &hit.pt);
@@ -3841,7 +4518,6 @@ bool Desktop::drop(Panel &panel, HDROP files, POINT point) {
 bool Desktop::assign(Panel &panel, const std::vector<std::wstring> &paths, POINT point) {
   if (editing || quitting || panel.mapped()) return false;
   auto changed = groups;
-  auto placements = looseItems;
   bool rejected = false, accepted = false, updated = false;
   const auto insertion = panel.insertion(point);
   auto &items = manualItems(changed[panel.index], panel.activeTab);
@@ -3849,24 +4525,14 @@ bool Desktop::assign(Panel &panel, const std::vector<std::wstring> &paths, POINT
       ? std::find(items.begin(), items.end(), panel.displayed[insertion.item]) : items.end();
   size_t insertAt = static_cast<size_t>(anchor - items.begin()) + (anchor != items.end() && insertion.after);
   for (const auto &candidate : paths) {
-    const auto path = desktopItem(roots, candidate);
+    const auto path = boxItem(candidate);
     if (path.empty()) rejected = true;
     else {
       accepted = true;
       const auto found = std::find_if(items.begin(), items.end(), [&](const auto &item) { return samePath(item, path); });
       const bool exists = found != items.end();
       const size_t from = exists ? static_cast<size_t>(found - items.begin()) : items.size();
-      if (!panel.index) {
-        updated |= std::erase_if(placements, [&](const auto &item) { return samePath(item.path, path); }) != 0;
-        for (size_t groupIndex = 1; groupIndex < changed.size(); ++groupIndex) {
-          auto remove = [&](auto &list) {
-            updated |= std::erase_if(list, [&](const auto &item) { return samePath(item, path); }) != 0;
-          };
-          remove(changed[groupIndex].paths);
-          for (auto &tab : changed[groupIndex].tabs) remove(tab.paths);
-        }
-        continue;
-      }
+
       if (!exists && !addItem(changed, panel.index, path, panel.activeTab)) continue;
       if (groups[panel.index].sort != Sort::Manual) {
         updated |= !exists;
@@ -3881,8 +4547,7 @@ bool Desktop::assign(Panel &panel, const std::vector<std::wstring> &paths, POINT
   }
   if (rejected) PostMessageW(panel.window, rejectedMessage, 0, 0);
   if (updated) {
-    if (!commit(std::move(changed), panel.window, placements.size() != looseItems.size() ? &placements : nullptr)) return false;
-    PostMessageW(window, refreshMessage, 0, 0);
+    if (!commit(std::move(changed), panel.window)) return false;
   }
   return accepted;
 }
@@ -3917,13 +4582,17 @@ LRESULT CALLBACK Desktop::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
     }
     if (message == ui::themeChangedMessage() || message == WM_THEMECHANGED || message == WM_SETTINGCHANGE) {
       desktop->theme.reset(ui::configuredTheme());
-      if (message == WM_SETTINGCHANGE) desktop->looseGlass.reset();
       if (!desktop->previewingAppearance) desktop->style = configuredAppearance();
       for (const auto &panel : desktop->panels) {
         panel->applyTheme(desktop->theme.colors);
         panel->resize();
       }
-      desktop->updateScene();
+      desktop->updateShadows();
+      if (message == WM_SETTINGCHANGE && desktop->desktopIcons) {
+        if (const auto snapshot = desktopIconPositions())
+          desktop->desktopIconMetrics.labelFont = snapshot->labelFont;
+        PostMessageW(window, refreshMessage, 0, 0);
+      }
     }
     switch (message) {
     case WM_TIMER:
@@ -3931,9 +4600,13 @@ LRESULT CALLBACK Desktop::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
         POINT cursor{};
         if (GetCursorPos(&cursor)) {
           const auto now = GetTickCount64();
+          const auto underPointer = GetAncestor(WindowFromPoint(cursor), GA_ROOT);
           for (const auto &panel : desktop->panels) {
             panel->tickDock(cursor, now);
-            if (!panel->dockHidden) panel->updateHeaderActions(cursor);
+            if (!panel->dockHidden) {
+              panel->tickAutoCollapse(underPointer == panel->window, now);
+              panel->updateHeaderActions(cursor);
+            }
           }
         }
         return 0;
@@ -3954,10 +4627,14 @@ LRESULT CALLBACK Desktop::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
         if (!desktop->editing && !desktop->dragging && !desktop->menuOpen &&
             now - desktop->lastFolderRefresh > 2000) {
           desktop->lastFolderRefresh = now;
-          setDesktopIconsHidden(true);
-          desktop->refreshUngrouped();
+          if (desktop->ownsIconLayer) {
+            if (!desktop->refreshDesktopIcons(true) || !setDesktopIconsHidden(true)) {
+              desktop->stopDesktopIcons();
+              RemovePropW(window, managedIconsProperty);
+            }
+          }
           for (const auto &panel : desktop->panels)
-            if (!panel->movingOrSizing && panel->mapped() && !desktop->groups[panel->index].collapsed)
+            if (!panel->movingOrSizing && panel->mapped() && !panel->collapsed())
               panel->refresh(desktop->groups[panel->index]);
         }
       }
@@ -3965,22 +4642,30 @@ LRESULT CALLBACK Desktop::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
     case WM_DISPLAYCHANGE:
       for (const auto &panel : desktop->panels)
         if (panel->gestureEdge) panel->finishGesture(false);
-      desktop->looseGlass.reset();
-      desktop->sceneBounds = {GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_YVIRTUALSCREEN), 0, 0};
-      SetWindowPos(desktop->scene, nullptr, desktop->sceneBounds.left, desktop->sceneBounds.top,
-                   GetSystemMetrics(SM_CXVIRTUALSCREEN), GetSystemMetrics(SM_CYVIRTUALSCREEN),
-                   SWP_NOACTIVATE | SWP_NOZORDER);
       for (const auto &panel : desktop->panels) {
         panel->setDockSide(DockSide::None);
         panel->place(visibleBounds(desktop->groups[panel->index].bounds));
         panel->setCollapsed();
         RedrawWindow(panel->window, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
       }
-      desktop->refreshLoose();
+      if (!desktop->refreshDesktopIcons(false)) {
+        desktop->stopDesktopIcons();
+        RemovePropW(window, managedIconsProperty);
+      }
       return 0;
     case refreshMessage:
-      desktop->refreshUngrouped();
       for (size_t i = 0; i < desktop->panels.size(); ++i) desktop->panels[i]->refresh(desktop->groups[i]);
+      if (!desktop->refreshDesktopIcons(false)) {
+        desktop->stopDesktopIcons();
+        RemovePropW(window, managedIconsProperty);
+      }
+      return 0;
+    case desktopZoomMessage:
+      desktop->zoomDesktopIcons(static_cast<int>(l));
+      return 0;
+    case endDesktopDragMessage:
+      desktop->finishDrag(desktop->dragWindow, GetAsyncKeyState(VK_ESCAPE) >= 0,
+                          POINT{static_cast<LONG>(static_cast<INT_PTR>(w)), static_cast<LONG>(l)});
       return 0;
     case trayMessage:
       if (l == WM_RBUTTONUP || l == WM_LBUTTONUP) PostMessageW(window, manageMessage, 0, 0);
@@ -3988,9 +4673,13 @@ LRESULT CALLBACK Desktop::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
     case manageMessage:
       if (!desktop->quitting && IsWindowEnabled(window)) desktop->manage();
       return 0;
-    case createMessage:
-      if (!desktop->menuOpen) desktop->action(nullptr, NewGroup);
+    case createMessage: {
+      POINT point{static_cast<LONG>(static_cast<INT_PTR>(w)), static_cast<LONG>(l)};
+      if (const auto anchor = std::exchange(desktop->desktopMenuPoint, std::nullopt);
+          anchor && GetTickCount64() - desktop->desktopMenuOpenedAt <= 15000) point = *anchor;
+      desktop->createBox(point, window);
       return 0;
+    }
     case WM_CLOSE:
       desktop->quitting = true;
       desktop->finishDrag(desktop->dragWindow, false);
@@ -4053,6 +4742,8 @@ bool enabled() {
                       nullptr, &value, &bytes) == ERROR_SUCCESS && value == 1;
 }
 
+bool managedIconsEnabled() { return appearanceValue(L"DesktopGroupsManagedIcons", 0) == 1; }
+
 bool stop() {
   const auto removed = startup({});
   const auto menuRemoved = configureDesktopMenu({});
@@ -4064,7 +4755,10 @@ bool sync(const std::wstring &installedExecutable) {
   try {
     const auto exe = installedExecutable.empty() ? quick::executable() : installedExecutable;
     if (!startup(exe) || !configureDesktopMenu(exe)) return false;
-    if (!installedExecutable.empty() && !stopProcess()) return false;
+    const auto running = receiver();
+    if ((!installedExecutable.empty() ||
+         (running && ((GetPropW(running, managedIconsProperty) != nullptr) != managedIconsEnabled()))) &&
+        !stopProcess()) return false;
     const auto window = receiver();
     return window ? GetPropW(window, readyProperty) != nullptr : launch(exe, false);
   } catch (...) {
@@ -4083,13 +4777,15 @@ bool showManager() {
 }
 
 int run(HINSTANCE instance, bool manage, bool create) {
+  POINT creationPoint{};
+  if (create) GetCursorPos(&creationPoint);
   if (!enabled()) return 0;
   const auto mutex = CreateMutexW(nullptr, FALSE, mutexName);
   if (!mutex) return 1;
   DWORD status = WaitForSingleObject(mutex, 0);
   if (status == WAIT_TIMEOUT && (manage || create)) {
     for (int i = 0; i < 40 && status == WAIT_TIMEOUT; ++i) {
-      if (auto window = receiver(); window && notifyManager(window, create ? createMessage : manageMessage)) break;
+      if (auto window = receiver(); window && notifyManager(window, create ? createMessage : manageMessage, creationPoint)) break;
       status = WaitForSingleObject(mutex, 50);
     }
   }
@@ -4108,14 +4804,7 @@ int run(HINSTANCE instance, bool manage, bool create) {
         manager.lpfnWndProc = Desktop::proc;
         manager.lpszClassName = receiverClass;
         panel.style = CS_DBLCLKS;
-        WNDCLASSW sceneClassInfo{};
-        sceneClassInfo.hInstance = instance;
-        sceneClassInfo.lpszClassName = sceneClass;
-        sceneClassInfo.lpfnWndProc = [](HWND window, UINT message, WPARAM w, LPARAM l) -> LRESULT {
-          if (message == WM_CLOSE) return 0;
-          return DefWindowProcW(window, message, w, l);
-        };
-        if (!RegisterClassW(&panel) || !RegisterClassW(&manager) || !RegisterClassW(&sceneClassInfo)) throw 0;
+        if (!RegisterClassW(&panel) || !RegisterClassW(&manager)) throw 0;
 #ifdef FOLDERNOTE_WINUI
         winui::Runtime xaml;
 #endif
@@ -4125,24 +4814,21 @@ int run(HINSTANCE instance, bool manage, bool create) {
 #endif
         if (!CreateWindowExW(WS_EX_TOOLWINDOW, receiverClass, L"", WS_POPUP, 0, 0, 0, 0,
                              nullptr, nullptr, instance, &desktop)) throw 0;
-        desktop.sceneBounds = {GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_YVIRTUALSCREEN), 0, 0};
-        desktop.scene = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, sceneClass, L"",
-                                       WS_POPUP | WS_CLIPCHILDREN, desktop.sceneBounds.left, desktop.sceneBounds.top,
-                                       GetSystemMetrics(SM_CXVIRTUALSCREEN), GetSystemMetrics(SM_CYVIRTUALSCREEN),
-                                       nullptr, nullptr, instance, nullptr);
-        if (!desktop.scene) throw 0;
+        // Migration from versions that hid the Explorer icon view. User changes to icon visibility are left alone.
+        restoreDesktopIcons();
         for (size_t i = 0; i < desktop.groups.size(); ++i)
           if (!desktop.openPanel(i)) throw 0;
-        desktop.refreshLoose();
-        if (!setDesktopIconsHidden(true))
+        if (!desktop.startDesktopIcons())
           throw fn::Error{lang::text(L"无法接管桌面图标。")};
-        desktop.hold.start(desktop.window, createMessage);
+        if (desktop.ownsIconLayer && !SetPropW(desktop.window, managedIconsProperty, reinterpret_cast<HANDLE>(1)))
+          throw 0;
         desktop.tray(NIM_ADD);
         if (!SetTimer(desktop.window, 1, 400, nullptr)) throw 0;
         if (!SetTimer(desktop.window, headerTimer, 70, nullptr)) throw 0;
         if (!SetPropW(desktop.window, readyProperty, reinterpret_cast<HANDLE>(1))) throw 0;
         if (manage) PostMessageW(desktop.window, manageMessage, 0, 0);
-        if (create) PostMessageW(desktop.window, createMessage, 0, 0);
+        if (create) PostMessageW(desktop.window, createMessage,
+                                 static_cast<WPARAM>(static_cast<INT_PTR>(creationPoint.x)), creationPoint.y);
         MSG message{};
         while (GetMessageW(&message, nullptr, 0, 0) > 0) {
 #ifdef FOLDERNOTE_WINUI

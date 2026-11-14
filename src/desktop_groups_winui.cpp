@@ -34,6 +34,7 @@
 #include <cmath>
 #include <iterator>
 #include <optional>
+#include <string_view>
 #include <utility>
 #include <windowsx.h>
 
@@ -147,14 +148,14 @@ struct PageMetrics {
   int width = 1, height = 1, iconSize = 1, columns = 1, rows = 1;
 };
 
-PageMetrics measurePage(HWND parent, bool listMode, int iconSize, int headerHeight, int cornerRadius, int spacing) {
+PageMetrics measurePage(HWND parent, bool listMode, int iconSize, int headerHeight, int cornerRadius, int spacing, bool showDots) {
   RECT viewport{};
   const auto dpi = GetDpiForWindow(parent);
   if (!dpi || !GetClientRect(parent, &viewport)) return {};
   const double dipPerPixel = 96.0 / dpi;
   const auto width = viewport.right * dipPerPixel - contentLeftPadding - contentRightPadding - viewLeftPadding;
   const auto height = viewport.bottom * dipPerPixel - headerHeight - contentTopPadding -
-      std::max(10, cornerRadius) - pageFooterHeight;
+      std::max(10, cornerRadius) - (showDots ? pageFooterHeight : 0);
   PageMetrics metrics;
   metrics.width = std::max(1, std::min(static_cast<int>(width), std::max(84, iconSize + 34) + spacing));
   metrics.height = std::max(1, std::min(static_cast<int>(height), (listMode ? 40 : iconSize + 54) + spacing));
@@ -294,6 +295,12 @@ struct Surface::State {
   std::array<ux::Shapes::Line, 2> resizeLines{nullptr, nullptr};
   controls::Canvas titleBar{nullptr};
   controls::TextBlock title{nullptr};
+  ux::Shapes::Rectangle tabInsertionMarker{nullptr};
+  std::optional<std::size_t> tabInsertionSlot;
+  mutable std::optional<double> singleTitleWidth;
+  controls::TextBox titleEditor{nullptr};
+  std::function<void(std::wstring)> finishTitleRename;
+  bool titleEditorReady = false;
   controls::Grid body{nullptr};
   controls::StackPanel pageDots{nullptr};
   std::function<void(int)> navigatePage;
@@ -328,15 +335,19 @@ struct Surface::State {
     double width = 0;
   };
   std::array<HeaderControl, 3> buttons;
+  ux::Input::Pointer collapsePointer{nullptr};
+  bool collapseMoveVisible = false;
   std::vector<HeaderControl> tabs;
   std::vector<std::wstring> titles;
   std::size_t activeTab = 0;
   std::optional<std::size_t> hoveredTab, pressedTab;
-  POINT tabPress{};
+  ux::Input::Pointer tabPointer{nullptr};
   dispatch::DispatcherQueueTimer tabHover{nullptr};
   COLORREF textColor{}, mutedColor{}, borderColor{}, accentColor{};
   ux::Media::SolidColorBrush selectedFill{nullptr}, selectedHoverFill{nullptr}, selectedPressedFill{nullptr};
+  ux::Media::SolidColorBrush borderlessItemBrush{nullptr};
   bool actionsVisible = true, collapsed = false, highlighted = false, highContrast = false;
+  BYTE boxOpacity = 255;
   int cornerRadius = 0;
   std::function<void()> frameCallback;
   ::winrt::event_token frameToken{};
@@ -367,6 +378,10 @@ struct Surface::State {
     if (px <= 0) return false;
     const double x = screen.x / px, y = screen.y / px;
     if (y < headerPadding || y >= headerHeight) return false;
+    if (finishTitleRename && x >= controls::Canvas::GetLeft(titleEditor) &&
+        x < controls::Canvas::GetLeft(titleEditor) + titleEditor.Width() &&
+        y >= controls::Canvas::GetTop(titleEditor) &&
+        y < controls::Canvas::GetTop(titleEditor) + titleEditor.Height()) return true;
     const auto hit = [x](const auto &control) {
       return x >= control.left && x < control.left + control.width;
     };
@@ -492,6 +507,101 @@ struct Surface::State {
     else button.label.Foreground(solidBrush(color));
   }
 
+  void hideTitleEditor() {
+    titleEditor.Visibility(ux::Visibility::Collapsed);
+    titleContent.Visibility(tabs.empty() ? ux::Visibility::Visible : ux::Visibility::Collapsed);
+    if (!tabs.empty()) tabs.front().box.Visibility(ux::Visibility::Visible);
+  }
+
+  void endTitleRename(bool accept) {
+    if (!finishTitleRename || !titleEditorReady) return;
+    titleEditorReady = false;
+    auto finish = std::exchange(finishTitleRename, {});
+    std::wstring name;
+    if (accept) {
+      const auto input = titleEditor.Text();
+      const std::wstring_view value(input.c_str(), input.size());
+      const auto first = value.find_first_not_of(L" \t\r\n");
+      if (first != value.npos) name = value.substr(first, value.find_last_not_of(L" \t\r\n") - first + 1);
+    }
+    hideTitleEditor();
+    finish(std::move(name));
+  }
+
+  void makeTitleEditor() {
+    titleEditor = controls::TextBox{};
+    titleEditor.Visibility(ux::Visibility::Collapsed);
+    titleEditor.UseSystemFocusVisuals(false);
+    titleEditor.MaxLength(static_cast<int>(groupNameLimit));
+    titleEditor.MinWidth(0);
+    titleEditor.MinHeight(0);
+    titleEditor.Padding({6, 1, 4, 1});
+    titleEditor.FontSize(13);
+    titleEditor.CornerRadius({4, 4, 4, 4});
+    ux::Automation::AutomationProperties::SetName(titleEditor, lang::text(L"盒子名称"));
+    titleEditor.KeyDown([this](auto const &, const ux::Input::KeyRoutedEventArgs &args) {
+      using ::winrt::Windows::System::VirtualKey;
+      if (args.Key() != VirtualKey::Enter && args.Key() != VirtualKey::Escape) return;
+      args.Handled(true);
+      endTitleRename(args.Key() == VirtualKey::Enter);
+    });
+    titleEditor.LostFocus([this](auto const &, auto const &) { endTitleRename(true); });
+    titleBar.Children().Append(titleEditor);
+    controls::Canvas::SetZIndex(titleEditor, 1);
+  }
+
+  void paintCollapseButton() {
+    auto &toggle = buttons[2];
+    toggle.label.Text(collapseMoveVisible ? L"\uECE9" : collapsed ? L"\uE70D" : L"\uE70E");
+    ux::Automation::AutomationProperties::SetName(toggle.box, lang::text(collapsed ? L"展开盒子" : L"折叠盒子"));
+    if (collapseMoveVisible) paintHeaderButton(toggle, textColor);
+  }
+
+  void endCollapsePress(bool canceled) {
+    if (!collapsePointer) return;
+    const auto pointer = std::exchange(collapsePointer, nullptr);
+    buttons[2].box.ReleasePointerCapture(pointer);
+    if (canceled && events.collapseCanceled) events.collapseCanceled();
+  }
+
+  void configureCollapseButton(controls::Border const &button) {
+    using ::winrt::Microsoft::UI::Input::PointerDeviceType;
+    button.PointerPressed([this](auto const &sender, ux::Input::PointerRoutedEventArgs const &args) {
+      if (!events.collapsePressed || collapsePointer || args.Pointer().PointerDeviceType() != PointerDeviceType::Mouse) return;
+      const auto clicked = sender.template as<controls::Border>();
+      if (!args.GetCurrentPoint(clicked).Properties().IsLeftButtonPressed()) return;
+      POINT point{};
+      const auto pointer = args.Pointer();
+      if (!GetCursorPos(&point) || !clicked.CapturePointer(pointer)) return;
+      args.Handled(true);
+      collapsePointer = pointer;
+      clicked.Focus(ux::FocusState::Pointer);
+      events.collapsePressed(point);
+    });
+    button.PointerMoved([this](auto const &, ux::Input::PointerRoutedEventArgs const &args) {
+      if (!collapsePointer || collapsePointer.PointerId() != args.Pointer().PointerId()) return;
+      args.Handled(true);
+      POINT point{};
+      if (events.collapseMoved && GetCursorPos(&point)) events.collapseMoved(point);
+    });
+    button.PointerReleased([this](auto const &sender, ux::Input::PointerRoutedEventArgs const &args) {
+      if (!collapsePointer || collapsePointer.PointerId() != args.Pointer().PointerId()) return;
+      args.Handled(true);
+      const auto clicked = sender.template as<controls::Border>();
+      POINT point{};
+      const auto bounds = headerControlBounds(clicked);
+      const bool click = GetCursorPos(&point) && PtInRect(&bounds, point);
+      endCollapsePress(false);
+      const bool moved = events.collapseReleased && events.collapseReleased();
+      if (!moved && click && events.headerCommand) events.headerCommand(2);
+    });
+    const auto cancel = [this](auto const &, ux::Input::PointerRoutedEventArgs const &args) {
+      if (collapsePointer && collapsePointer.PointerId() == args.Pointer().PointerId()) endCollapsePress(true);
+    };
+    button.PointerCanceled(cancel);
+    button.PointerCaptureLost(cancel);
+  }
+
   void makeHeader() {
     title = controls::TextBlock{};
     title.FontWeight({600});
@@ -510,6 +620,7 @@ struct Surface::State {
     titleContent.Children().Append(title);
     controls::Canvas::SetLeft(titleContent, 14);
     titleBar.Children().Append(titleContent);
+    makeTitleEditor();
     tabHover = dispatch::DispatcherQueue::GetForCurrentThread().CreateTimer();
     tabHover.Interval(std::chrono::milliseconds(140));
     tabHover.IsRepeating(false);
@@ -525,15 +636,25 @@ struct Surface::State {
         control.label.FontFamily(ux::Media::FontFamily(L"Segoe MDL2 Assets"));
         control.label.HorizontalAlignment(ux::HorizontalAlignment::Center);
         control.box.Child(control.label);
+        configureCollapseButton(control.box);
       }
       control.box.PointerEntered([this, i](auto const &, auto const &) { paintHeaderButton(buttons[i], textColor); });
-      control.box.PointerExited([this, i](auto const &, auto const &) { paintHeaderButton(buttons[i], mutedColor); });
+      control.box.PointerExited([this, i](auto const &, auto const &) {
+        paintHeaderButton(buttons[i], i == 2 && collapseMoveVisible ? textColor : mutedColor);
+      });
       control.box.Tapped([this, i](auto const &, ux::Input::TappedRoutedEventArgs const &args) {
         args.Handled(true);
+        if (i == 2 && events.collapsePressed &&
+            args.PointerDeviceType() == ::winrt::Microsoft::UI::Input::PointerDeviceType::Mouse) return;
         if (events.headerCommand) events.headerCommand(i);
       });
       control.box.KeyDown([this, i](auto const &, ux::Input::KeyRoutedEventArgs const &args) {
         const auto key = args.Key();
+        if (i == 2 && collapsePointer && key == ::winrt::Windows::System::VirtualKey::Escape) {
+          args.Handled(true);
+          endCollapsePress(true);
+          return;
+        }
         if ((key == ::winrt::Windows::System::VirtualKey::Enter || key == ::winrt::Windows::System::VirtualKey::Space) &&
             events.headerCommand) {
           args.Handled(true);
@@ -544,10 +665,36 @@ struct Surface::State {
     }
   }
 
+  RECT headerControlBounds(const controls::Border &control) const {
+    const auto bounds = control.TransformToVisual(root).TransformBounds(
+        {0, 0, static_cast<float>(control.ActualWidth()), static_cast<float>(control.ActualHeight())});
+    const double scale = GetDpiForWindow(islandWindow) / 96.0;
+    POINT origin{};
+    if (scale <= 0 || !ClientToScreen(islandWindow, &origin)) return {};
+    return {origin.x + std::lround(bounds.X * scale), origin.y + std::lround(bounds.Y * scale),
+            origin.x + std::lround((bounds.X + bounds.Width) * scale),
+            origin.y + std::lround((bounds.Y + bounds.Height) * scale)};
+  }
+
+  void endTabPress(bool canceled) {
+    if (!pressedTab) return;
+    const auto index = *std::exchange(pressedTab, std::nullopt);
+    auto pointer = std::exchange(tabPointer, nullptr);
+    if (pointer && index < tabs.size()) tabs[index].box.ReleasePointerCapture(pointer);
+    paintTabs();
+    if (canceled && events.tabCanceled) events.tabCanceled();
+  }
+
+  bool wheelOnTab(int delta) {
+    if (!events.tabWheel || !delta) return false;
+    tabHover.Stop();
+    return events.tabWheel(delta);
+  }
+
   void makeTabs() {
     tabHover.Stop();
     hoveredTab.reset();
-    pressedTab.reset();
+    endTabPress(true);
     for (const auto &tab : tabs) {
       uint32_t index{};
       if (titleBar.Children().IndexOf(tab.box, index)) titleBar.Children().RemoveAt(index);
@@ -557,6 +704,7 @@ struct Surface::State {
     if (titles.size() < 2) return;
     for (std::size_t index = 0; index < titles.size(); ++index) {
       auto control = makeHeaderControl(titles[index].c_str());
+      control.box.UseSystemFocusVisuals(false);
       control.box.CornerRadius({5, 5, 0, 0});
       control.box.Padding({8, 0, 8, 0});
       control.label.Text(titles[index]);
@@ -589,29 +737,65 @@ struct Surface::State {
           paintTabs();
         }
       });
+      control.box.PointerWheelChanged([this](auto const &sender, ux::Input::PointerRoutedEventArgs const &args) {
+        using Modifiers = ::winrt::Windows::System::VirtualKeyModifiers;
+        const auto tab = sender.template as<controls::Border>();
+        const auto point = args.GetCurrentPoint(tab);
+        const auto properties = point.Properties();
+        if (args.KeyModifiers() != Modifiers::None || properties.IsHorizontalMouseWheel() ||
+            properties.IsLeftButtonPressed() || properties.IsRightButtonPressed() || properties.IsMiddleButtonPressed()) return;
+        if (wheelOnTab(properties.MouseWheelDelta())) args.Handled(true);
+      });
       control.box.PointerPressed([this, index](auto const &sender, ux::Input::PointerRoutedEventArgs const &args) {
         const auto tab = sender.template as<controls::Border>();
         if (!args.GetCurrentPoint(tab).Properties().IsLeftButtonPressed()) return;
+        args.Handled(true);
+        if (pressedTab) return;
         tabHover.Stop();
         tab.Focus(ux::FocusState::Pointer);
-        if (GetCursorPos(&tabPress) && tab.CapturePointer(args.Pointer())) pressedTab = index;
-        args.Handled(true);
+        POINT start{};
+        const auto bounds = headerControlBounds(tab);
+        const auto pointer = args.Pointer();
+        if (!GetCursorPos(&start) || IsRectEmpty(&bounds) || !tab.CapturePointer(pointer)) return;
+        pressedTab = index;
+        tabPointer = pointer;
+        paintTabs();
+        if (events.tabPressed) events.tabPressed(index, start, bounds);
       });
-      control.box.PointerReleased([this, index](auto const &sender, ux::Input::PointerRoutedEventArgs const &args) {
-        if (pressedTab != index) return;
-        pressedTab.reset();
-        const auto tab = sender.template as<controls::Border>();
-        tab.ReleasePointerCapture(args.Pointer());
-        POINT end{};
+      control.box.PointerMoved([this, index](auto const &, ux::Input::PointerRoutedEventArgs const &args) {
+        if (pressedTab != index || args.Pointer().PointerId() != tabPointer.PointerId()) return;
         args.Handled(true);
-        if (index && events.tabDropped && GetCursorPos(&end)) events.tabDropped(index, tabPress, end);
+        POINT current{};
+        if (events.tabMoved && GetCursorPos(&current)) events.tabMoved(current);
+      });
+      control.box.PointerReleased([this, index](auto const &, ux::Input::PointerRoutedEventArgs const &args) {
+        if (pressedTab != index || args.Pointer().PointerId() != tabPointer.PointerId()) return;
+        args.Handled(true);
+        POINT end{};
+        if (!GetCursorPos(&end)) {
+          endTabPress(true);
+          return;
+        }
+        endTabPress(false);
+        if (events.tabReleased) events.tabReleased(end);
         else if (events.tab) events.tab(index);
       });
-      control.box.PointerCaptureLost([this, index](auto const &, auto const &) {
-        if (pressedTab == index) pressedTab.reset();
-      });
+      const auto cancel = [this, index](auto const &, ux::Input::PointerRoutedEventArgs const &args) {
+        if (pressedTab == index && tabPointer && args.Pointer().PointerId() == tabPointer.PointerId()) endTabPress(true);
+      };
+      control.box.PointerCaptureLost(cancel);
+      control.box.PointerCanceled(cancel);
+      control.box.GotFocus([this](auto const &, auto const &) { paintTabs(); });
+      control.box.LostFocus([this](auto const &, auto const &) { paintTabs(); });
       control.box.KeyDown([this, index](auto const &, ux::Input::KeyRoutedEventArgs const &args) {
         using Key = ::winrt::Windows::System::VirtualKey;
+        if (pressedTab) {
+          if (args.Key() == Key::Escape) {
+            args.Handled(true);
+            endTabPress(true);
+          }
+          return;
+        }
         auto next = index;
         if (args.Key() == Key::Left) next = index ? index - 1 : tabs.size() - 1;
         else if (args.Key() == Key::Right) next = (index + 1) % tabs.size();
@@ -628,10 +812,17 @@ struct Surface::State {
     for (std::size_t index = 0; index < tabs.size(); ++index) {
       const bool selected = index == activeTab;
       const bool hot = hoveredTab == index;
+      const bool pressed = pressedTab == index;
       auto &tab = tabs[index];
-      tab.label.Foreground(solidBrush(selected || hot ? textColor : mutedColor));
-      tab.box.Background(solidBrush(highContrast && selected ? accentColor : mutedColor,
-                                    selected ? (highContrast ? 255 : 44) : hot ? 26 : 0));
+      tab.label.Foreground(solidBrush(selected || hot || pressed ? textColor : mutedColor));
+      const bool contrastFill = highContrast && (selected || pressed);
+      const int selectedAlpha = selected ? MulDiv(44, boxOpacity, 255) : 0;
+      const int hoverAlpha = hot ? 26 : 0;
+      const auto alpha = static_cast<BYTE>(contrastFill ? 255 : pressed ? 72 : selectedAlpha + hoverAlpha);
+      tab.box.Background(solidBrush(contrastFill ? accentColor : mutedColor, alpha));
+      const bool focused = tab.box.FocusState() == ux::FocusState::Keyboard;
+      tab.box.BorderThickness({0, 0, 0, focused || (selected && !boxOpacity) ? 1.0 : 0.0});
+      tab.box.BorderBrush(solidBrush(focused ? accentColor : mutedColor, focused ? 220 : 96));
     }
   }
 
@@ -662,8 +853,66 @@ struct Surface::State {
         tabs.front().label.MaxWidth(std::max(0.0, tabWidth - 40));
     }
     const double titleSpace = std::max(0.0, width - (actionsVisible ? 3 : 1) * buttonWidth - 24);
-    title.Width(std::max(0.0, titleSpace - (titleStyle == TitleStyle::Text ? 0 : 25)));
+    const auto titleWidth = std::max(0.0, titleSpace - (titleStyle == TitleStyle::Text ? 0 : 25));
+    if (title.Width() != titleWidth) {
+      title.Width(titleWidth);
+      singleTitleWidth.reset();
+    }
     controls::Canvas::SetTop(titleContent, (headerHeight - 20) / 2);
+    if (finishTitleRename) {
+      const auto editorWidth = tabs.empty() ? titleSpace
+          : std::min(titleSpace, std::max(82.0, tabs.front().width));
+      titleEditor.Width(editorWidth);
+      const auto height = std::max(1.0, std::min(27.0, headerHeight - 16));
+      titleEditor.Height(height);
+      controls::Canvas::SetLeft(titleEditor, tabs.empty() ? 12.0 : std::max(8.0, tabs.front().left));
+      controls::Canvas::SetTop(titleEditor, (headerHeight - height) / 2);
+    }
+    positionTabInsertion();
+  }
+
+  double tabInsertionLimit() const { return buttons[actionsVisible ? 0 : 2].left; }
+
+  double singleTitleRight() const {
+    auto right = controls::Canvas::GetLeft(titleContent) + (titleStyle == TitleStyle::Text ? 0 : 25);
+    if (titleStyle != TitleStyle::Icon) {
+      if (!singleTitleWidth) {
+        controls::TextBlock label;
+        label.Text(title.Text());
+        label.FontFamily(title.FontFamily());
+        label.FontSize(title.FontSize());
+        label.FontWeight(title.FontWeight());
+        label.Measure({static_cast<float>(title.Width()), static_cast<float>(headerHeight)});
+        singleTitleWidth = label.DesiredSize().Width;
+      }
+      right += *singleTitleWidth;
+    }
+    return std::clamp(right, 0.0, tabInsertionLimit());
+  }
+
+  void positionTabInsertion() {
+    if (!tabInsertionMarker) return;
+    const auto slot = tabInsertionSlot;
+    const auto right = tabInsertionLimit();
+    if (!slot || *slot > std::max<std::size_t>(1, tabs.size()) || right <= headerPadding * 2) {
+      tabInsertionMarker.Visibility(ux::Visibility::Collapsed);
+      return;
+    }
+    double x = 0;
+    if (*slot == 0) {
+      x = tabs.empty() ? controls::Canvas::GetLeft(titleContent) - 4 : tabs.front().left;
+    } else if (tabs.empty()) {
+      x = singleTitleRight() + 4;
+    } else {
+      const auto &previous = tabs[*slot - 1];
+      x = previous.left + previous.width;
+    }
+    const double height = std::clamp(headerHeight - 2 * headerPadding, 1.0, 18.0);
+    tabInsertionMarker.Height(height);
+    controls::Canvas::SetLeft(tabInsertionMarker, std::clamp(x - 1.0, headerPadding, right - 4));
+    controls::Canvas::SetTop(tabInsertionMarker, (headerHeight - height) / 2);
+    tabInsertionMarker.Fill(solidBrush(accentColor, highContrast ? 255 : 220));
+    tabInsertionMarker.Visibility(ux::Visibility::Visible);
   }
 
   void showActions(bool visible) {
@@ -745,9 +994,9 @@ struct Surface::State {
   void positionBody() {
     const auto bottom = static_cast<double>(std::max(10, cornerRadius));
     body.Margin({contentLeftPadding, headerHeight + contentTopPadding, contentRightPadding,
-                 bottom + (pageCount > 0 ? pageFooterHeight : 0)});
+                 bottom + (pageCount > 1 ? pageFooterHeight : 0)});
     pageDots.Margin({0, 0, 0, bottom});
-    pageDots.Visibility(pageCount > 0 && !collapsed ? ux::Visibility::Visible : ux::Visibility::Collapsed);
+    pageDots.Visibility(pageCount > 1 && !collapsed ? ux::Visibility::Visible : ux::Visibility::Collapsed);
   }
 
   void paintPageDot(const PageDot &dot, bool active, bool hover) {
@@ -777,17 +1026,29 @@ struct Surface::State {
       container.ClearValue(ux::FrameworkElement::HeightProperty());
       container.ClearValue(ux::FrameworkElement::MinHeightProperty());
     }
-    const auto presenter = visualChild<controls::Primitives::ListViewItemPresenter>(container);
+    auto presenter = visualChild<controls::Primitives::ListViewItemPresenter>(container);
+    if (!presenter && container.ApplyTemplate())
+      presenter = visualChild<controls::Primitives::ListViewItemPresenter>(container);
     if (!presenter) return;
+    using Presenter = controls::Primitives::ListViewItemPresenter;
+    const std::array outlineProperties{
+        Presenter::PointerOverBorderBrushProperty(), Presenter::SelectedBorderBrushProperty(),
+        Presenter::SelectedInnerBorderBrushProperty(), Presenter::SelectedPointerOverBorderBrushProperty(),
+        Presenter::SelectedPressedBorderBrushProperty(), Presenter::SelectedDisabledBorderBrushProperty()};
     if (highContrast) {
-      using Presenter = controls::Primitives::ListViewItemPresenter;
       for (const auto &property : {Presenter::SelectedBorderThicknessProperty(), Presenter::SelectionIndicatorVisualEnabledProperty(),
           Presenter::SelectedBackgroundProperty(), Presenter::SelectedPointerOverBackgroundProperty(),
           Presenter::SelectedPressedBackgroundProperty()}) presenter.ClearValue(property);
+      if (!listMode) for (const auto &property : outlineProperties) presenter.ClearValue(property);
       return;
     }
-    if (listMode) presenter.SelectionIndicatorVisualEnabled(false);
-    else presenter.SelectedBorderThickness({});
+    if (listMode) {
+      presenter.SelectionIndicatorVisualEnabled(false);
+    } else {
+      // The standard icon template applies a pointer-over outline independently of selection thickness.
+      for (const auto &property : outlineProperties) presenter.SetValue(property, borderlessItemBrush);
+      presenter.SelectedBorderThickness({});
+    }
     presenter.SelectedBackground(selectedFill);
     presenter.SelectedPointerOverBackground(selectedHoverFill);
     presenter.SelectedPressedBackground(selectedPressedFill);
@@ -841,7 +1102,7 @@ struct Surface::State {
   }
 
   void positionPageDots() {
-    if (pageCount <= 0) return;
+    if (pageCount <= 1) return;
     RECT area{};
     const auto dpi = GetDpiForWindow(parent);
     if (!dpi || !GetClientRect(parent, &area)) return;
@@ -1096,7 +1357,8 @@ struct Surface::State {
   void updatePageLayout(bool viewChanged = false) {
     if (!view) return;
     const auto paged = pageCount > 0;
-    const auto metrics = paged ? measurePage(parent, details, size, static_cast<int>(headerHeight), cornerRadius, spacing) : PageMetrics{};
+    const auto metrics = paged ? measurePage(parent, details, size, static_cast<int>(headerHeight), cornerRadius,
+                                             spacing, pageCount > 1) : PageMetrics{};
     const auto iconSize = paged ? metrics.iconSize : size;
     const auto pageHeight = paged ? metrics.height : 0;
     if (viewChanged || templateIconSize != iconSize || templatePageHeight != pageHeight) {
@@ -1194,6 +1456,7 @@ Surface::Surface(HWND parent, Events events) : state(std::make_unique<State>()) 
     state->selectedFill = solidBrush(0, 0);
     state->selectedHoverFill = solidBrush(0, 0);
     state->selectedPressedFill = solidBrush(0, 0);
+    state->borderlessItemBrush = solidBrush(0, 0);
     state->root.Background(state->backgroundTint);
     const auto resizeCursor = ::winrt::box_value(ux::Input::PointerEventHandler(
         [state = state.get()](auto const &, const auto &args) { state->trackResizeCursor(args); }));
@@ -1281,6 +1544,14 @@ Surface::Surface(HWND parent, Events events) : state(std::make_unique<State>()) 
       return;
     }
     state->makeHeader();
+    state->tabInsertionMarker = ux::Shapes::Rectangle{};
+    state->tabInsertionMarker.Width(2);
+    state->tabInsertionMarker.RadiusX(1);
+    state->tabInsertionMarker.RadiusY(1);
+    state->tabInsertionMarker.IsHitTestVisible(false);
+    state->tabInsertionMarker.Visibility(ux::Visibility::Collapsed);
+    controls::Canvas::SetZIndex(state->tabInsertionMarker, 2);
+    state->titleBar.Children().Append(state->tabInsertionMarker);
     state->showActions(false);
     CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(state->factory.put()));
     state->makeView(false, 32);
@@ -1312,7 +1583,12 @@ void Surface::show(bool visible) {
   try {
     const auto bridge = state->island.SiteBridge();
     if (visible) bridge.Show();
-    else bridge.Hide();
+    else {
+      state->endTabPress(true);
+      state->endCollapsePress(true);
+      state->endTitleRename(false);
+      bridge.Hide();
+    }
   } catch (...) {}
 }
 
@@ -1410,17 +1686,19 @@ void Surface::itemSpacing(int spacing) {
   }
 }
 
-int Surface::pageCapacity(bool listMode, int logicalIconSize, int titleHeight, int cornerRadius, int spacing) const {
+int Surface::pageCapacity(bool listMode, int logicalIconSize, int titleHeight, int cornerRadius, int spacing, bool showDots) const {
   if (!available()) return 1;
-  const auto metrics = measurePage(state->parent, listMode, logicalIconSize, titleHeight, cornerRadius, std::clamp(spacing, 0, 24));
+  const auto metrics = measurePage(state->parent, listMode, logicalIconSize, titleHeight, cornerRadius,
+                                   std::clamp(spacing, 0, 24), showDots);
   return metrics.columns * metrics.rows;
 }
 
 void Surface::pagination(int page, int pages, std::function<void(int)> navigate) {
   if (!available()) return;
   try {
-    const bool changed = (state->pageCount > 0) != (pages > 0);
-    if (pages <= 0) {
+    const bool pagingChanged = (state->pageCount > 0) != (pages > 0);
+    const bool dotsChanged = (state->pageCount > 1) != (pages > 1);
+    if (pages <= 1 && !state->dots.empty()) {
       state->pageDots.Children().Clear();
       state->dots.clear();
       state->firstDot = -1;
@@ -1428,9 +1706,9 @@ void Surface::pagination(int page, int pages, std::function<void(int)> navigate)
     state->pageCount = pages;
     state->page = std::clamp(page, 0, std::max(0, pages - 1));
     state->navigatePage = std::move(navigate);
-    if (changed) {
-      state->positionBody();
-      state->configurePageScroll();
+    if (dotsChanged) state->positionBody();
+    if (pagingChanged) state->configurePageScroll();
+    if (pagingChanged || dotsChanged) {
       state->updatePageLayout();
     }
     state->positionPageDots();
@@ -1443,6 +1721,7 @@ void Surface::appearance(bool dark, bool highContrast, COLORREF tint, BYTE opaci
   if (!available()) return;
   try {
     state->highContrast = highContrast;
+    if (std::exchange(state->boxOpacity, opacity) != opacity) state->paintTabs();
     state->updateRealizedItems();
     state->positionPageDots();
     state->root.RequestedTheme(highContrast ? ux::ElementTheme::Default
@@ -1507,12 +1786,15 @@ void Surface::header(const std::vector<std::wstring> &titles, std::size_t active
       state->titles = titles;
       state->makeTabs();
       state->title.Text(titles.empty() ? L"" : titles.front());
+      state->singleTitleWidth.reset();
     }
     if (state->cachedIcon != icon) {
       state->cachedIcon = icon;
       state->titleImage = imageSource(state->factory.get(), icon);
     }
-    state->titleContent.Visibility(titles.size() > 1 ? ux::Visibility::Collapsed : ux::Visibility::Visible);
+    state->titleContent.Visibility(titles.size() > 1 || state->finishTitleRename ?
+        ux::Visibility::Collapsed : ux::Visibility::Visible);
+    if (state->finishTitleRename && !state->tabs.empty()) state->tabs.front().box.Visibility(ux::Visibility::Collapsed);
     state->title.Visibility(style == TitleStyle::Icon ? ux::Visibility::Collapsed : ux::Visibility::Visible);
     state->titleIcon.Visibility(style == TitleStyle::Text ? ux::Visibility::Collapsed : ux::Visibility::Visible);
     state->titleIcon.Source(state->titleImage);
@@ -1520,9 +1802,7 @@ void Surface::header(const std::vector<std::wstring> &titles, std::size_t active
     state->title.Foreground(solidBrush(text));
     state->showActions(actionsVisible);
     for (auto &button : state->buttons) state->paintHeaderButton(button, muted);
-    auto &toggle = state->buttons[2];
-    toggle.label.Text(collapsed ? L"\uE70D" : L"\uE70E");
-    ux::Automation::AutomationProperties::SetName(toggle.box, lang::text(collapsed ? L"展开盒子" : L"折叠盒子"));
+    state->paintCollapseButton();
     state->paintTabs();
     state->paintOutline();
     state->positionHeader();
@@ -1534,6 +1814,45 @@ void Surface::header(const std::vector<std::wstring> &titles, std::size_t active
 void Surface::showActions(bool visible) {
   if (!available()) return;
   try { state->showActions(visible); } catch (...) {}
+}
+
+void Surface::showCollapseMove(bool visible) {
+  if (!available() || std::exchange(state->collapseMoveVisible, visible) == visible) return;
+  try {
+    state->paintHeaderButton(state->buttons[2], visible ? state->textColor : state->mutedColor);
+    state->paintCollapseButton();
+  } catch (...) {}
+}
+
+bool Surface::beginTitleRename(std::function<void(std::wstring)> commit) {
+  if (!available() || state->finishTitleRename || state->titles.empty() || !commit) return false;
+  try {
+    state->finishTitleRename = std::move(commit);
+    state->positionHeader();
+    if (state->titleEditor.Width() < 28) {
+      state->finishTitleRename = {};
+      return false;
+    }
+    state->titleEditor.Text(state->titles.front());
+    state->titleContent.Visibility(ux::Visibility::Collapsed);
+    if (!state->tabs.empty()) state->tabs.front().box.Visibility(ux::Visibility::Collapsed);
+    state->titleEditor.Visibility(ux::Visibility::Visible);
+    state->titleBar.UpdateLayout();
+    SetForegroundWindow(state->parent);
+    const auto foreground = GetForegroundWindow();
+    if (foreground == state->parent || GetWindowThreadProcessId(foreground, nullptr) == GetCurrentThreadId()) {
+      SetActiveWindow(state->parent);
+      SetFocus(state->islandWindow);
+      if (state->titleEditor.Focus(ux::FocusState::Programmatic) && state->finishTitleRename) {
+        state->titleEditor.SelectAll();
+        state->titleEditorReady = true;
+        return true;
+      }
+    }
+  } catch (...) {}
+  state->finishTitleRename = {};
+  try { state->hideTitleEditor(); } catch (...) {}
+  return false;
 }
 
 void Surface::highlight(bool highlighted) {
@@ -1559,6 +1878,36 @@ std::optional<std::size_t> Surface::tabAt(POINT screen) const {
   }
   return std::nullopt;
 }
+
+std::optional<std::size_t> Surface::tabInsertion(POINT screen) const {
+  if (!available() || state->finishTitleRename) return std::nullopt;
+  if (!ScreenToClient(state->islandWindow, &screen)) return std::nullopt;
+  const auto dpi = GetDpiForWindow(state->islandWindow);
+  if (!dpi) return std::nullopt;
+  const double x = screen.x * 96.0 / dpi, y = screen.y * 96.0 / dpi;
+  if (x < 0 || x >= state->tabInsertionLimit() || y < 0 || y >= state->headerHeight) return std::nullopt;
+  if (state->tabs.empty()) {
+    try {
+      const auto left = controls::Canvas::GetLeft(state->titleContent);
+      return x < (left + state->singleTitleRight()) / 2 ? 0 : 1;
+    } catch (...) { return std::nullopt; }
+  }
+  for (std::size_t i = 0; i < state->tabs.size(); ++i) {
+    const auto &tab = state->tabs[i];
+    if (x < tab.left + tab.width / 2) return i;
+  }
+  return state->tabs.size();
+}
+
+void Surface::showTabInsertion(std::optional<std::size_t> slot) {
+  if (!available() || std::exchange(state->tabInsertionSlot, slot) == slot) return;
+  try { state->positionTabInsertion(); } catch (...) {}
+}
+bool Surface::wheelOnTab(POINT screen, int delta) {
+  if (!tabAt(screen)) return false;
+  try { return state->wheelOnTab(delta); }
+  catch (const ::winrt::hresult_error &error) { logFailure(L"scroll box tabs", error); return false; }
+}
 int Surface::hit(POINT point) const {
   if (!available()) return -1;
   try { return state->hit(point); } catch (...) { return -1; }
@@ -1576,6 +1925,24 @@ bool Surface::itemBounds(int row, RECT &screen) const {
     ClientToScreen(state->islandWindow, &from);
     screen = {from.x, from.y, from.x + static_cast<LONG>(std::lround(bounds.Width * scale)),
               from.y + static_cast<LONG>(std::lround(bounds.Height * scale))};
+    return !IsRectEmpty(&screen);
+  } catch (...) { return false; }
+}
+
+bool Surface::imageBounds(int row, RECT &screen) const {
+  if (!available()) return false;
+  try {
+    const auto container = state->view.ContainerFromIndex(row).try_as<controls::ContentControl>();
+    const auto root = container ? container.ContentTemplateRoot().try_as<ux::FrameworkElement>() : nullptr;
+    const auto image = root ? root.FindName(L"FileImage").try_as<ux::FrameworkElement>() : nullptr;
+    if (!image) return false;
+    const auto bounds = image.TransformToVisual(state->root).TransformBounds(
+        {0, 0, static_cast<float>(image.ActualWidth()), static_cast<float>(image.ActualHeight())});
+    const double scale = GetDpiForWindow(state->islandWindow) / 96.0;
+    POINT origin{static_cast<LONG>(std::lround(bounds.X * scale)), static_cast<LONG>(std::lround(bounds.Y * scale))};
+    if (!ClientToScreen(state->islandWindow, &origin)) return false;
+    screen = {origin.x, origin.y, origin.x + static_cast<LONG>(std::lround(bounds.Width * scale)),
+              origin.y + static_cast<LONG>(std::lround(bounds.Height * scale))};
     return !IsRectEmpty(&screen);
   } catch (...) { return false; }
 }

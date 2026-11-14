@@ -17,6 +17,33 @@ void check(bool condition, const char *message) {
   if (!condition) throw std::runtime_error(message);
 }
 
+void exerciseDesktopGrid() {
+  const RECT screen{-500, -100, 0, 400};
+  const POINT origin{-445, -55};
+  const SIZE spacing{100, 110};
+  const POINT desired[]{{-496, -80}, {-310, -67}, {-345, 51}, {40, 440}};
+  const POINT occupied[]{{-345, -55}, {-430, 63}};
+  const auto positions = desktop_groups::snapDesktopPositions(screen, origin, spacing, desired, occupied);
+  check(positions && positions->size() == 4, "snap all dragged icons on the destination monitor");
+  const POINT expected[]{{-445, -55}, {-245, -55}, {-345, 55}, {-45, 385}};
+  for (size_t i = 0; i < std::size(expected); ++i)
+    check((*positions)[i].x == expected[i].x && (*positions)[i].y == expected[i].y,
+          "stay on the Explorer lattice, reserve free cells, and constrain near edges");
+  check(!desktop_groups::snapDesktopPositions({-455, -70, -435, -40}, origin, spacing, desired, {}),
+        "leave the layout alone when there are not enough grid cells");
+
+  const SIZE original{165, 204};
+  const auto smaller = desktop_groups::desktopSpacingForIcon(original, 147, 80);
+  check(smaller.cx == 98 && smaller.cy == 137, "retain native padding around zoomed desktop icons");
+  const desktop_groups::LooseItem native[]{{L"one", {82, 98}}, {L"two", {247, 302}}, {L"three", {97, 104}, smaller}};
+  const auto nativeOrigin = desktop_groups::desktopGridOrigin({0, 0, 2477, 1080}, original, native);
+  check(nativeOrigin.x == 82 && nativeOrigin.y == 98, "infer the same native origin from positions across columns and rows");
+  const auto moved = desktop_groups::scaleDesktopPosition(native[1].position, nativeOrigin, original, original, smaller);
+  check(moved.x == 147 && moved.y == 202, "existing icons compact to adjacent cells on the smaller grid");
+  const auto restored = desktop_groups::scaleDesktopPosition(moved, nativeOrigin, original, smaller, original);
+  check(restored.x == 247 && restored.y == 302, "saved cells return to native coordinates at native size");
+}
+
 void exerciseShadow() {
   using namespace desktop_groups;
   using Region = std::unique_ptr<std::remove_pointer_t<HRGN>, decltype(&DeleteObject)>;
@@ -277,14 +304,28 @@ void exercise(const fn::fs::path &root) {
         "atomically replace the layout file");
   check(edited[0].opacity == 0 && !edited[1].opacity,
         "preserve explicit zero background opacity separately from the default");
+  check(!loaded[0].glass && !loaded[1].glass, "layouts without glass overrides inherit the global style");
+  check(!loaded[0].autoCollapse && !loaded[1].autoCollapse, "layouts default to manual collapse");
+  changed[0].glass = true;
+  changed[1].glass = false;
+  changed[0].autoCollapse = true;
+  save(changed, layout);
+  const auto glass = load(layout);
+  check(glass[0].glass == true && glass[1].glass == false, "persist per-box glass overrides in either direction");
+  check(glass[0].autoCollapse && !glass[1].autoCollapse, "persist automatic collapse independently for each box");
+  changed[1].glass.reset();
+  save(changed, layout);
+  check(!load(layout)[1].glass, "clearing a glass override restores inheritance");
 
   const auto looseFile = root / L"loose.json";
-  Layout withLoose{loaded, {{folder.native(), {-820, 320}}, {(personal / L"其他.txt").native(), {800, -100}}}};
+  Layout withLoose{loaded, {{folder.native(), {-820, 320}}, {(personal / L"其他.txt").native(), {800, -100}, {98, 137}}}};
   saveLayout(withLoose, looseFile);
   const auto looseLayout = loadLayout(looseFile);
   check(looseLayout.groups.size() == loaded.size() && looseLayout.looseItems.size() == 2 &&
         looseLayout.looseItems[0].path == folder.native() && looseLayout.looseItems[0].position.x == -820 &&
-        looseLayout.looseItems[0].position.y == 320 && looseLayout.looseItems[1].position.y == -100,
+        looseLayout.looseItems[0].position.y == 320 && looseLayout.looseItems[1].position.y == -100 &&
+        looseLayout.looseItems[0].spacing.cx == 0 && looseLayout.looseItems[1].spacing.cx == 98 &&
+        looseLayout.looseItems[1].spacing.cy == 137,
         "preserve loose desktop paths and virtual screen coordinates");
   withLoose.looseItems.push_back({documentPath, {}});
   rejected = false;
@@ -305,38 +346,69 @@ void exercise(const fn::fs::path &root) {
         "preserve unaffected loose placements when saving through the group-only API");
 
   std::vector<Group> stack = loaded;
-  stack.insert(stack.begin(), Group{});
-  stack[1].paths.push_back(folder.native());
-  check(!mergeGroups(stack, 0, 2) && !mergeGroups(stack, 1, 0) && !mergeGroups(stack, 1, 1) &&
-        !mergeGroups(stack, 1, 3) && stack.size() == 3, "reject invalid merge and synthetic desktop");
-  check(mergeGroups(stack, 1, 2) && stack.size() == 2 &&
-        stack[1].name == loaded[1].name && stack[1].paths == loaded[1].paths && stack[1].tabs.size() == 4 &&
-        stack[1].tabs[1].name == loaded[0].name && stack[1].tabs[1].paths == std::vector<std::wstring>{folder.native()} &&
-        stack[1].tabs[2].paths == std::vector<std::wstring>{documentPath} &&
-        stack[1].tabs[3].folder == folder.native(), "merge default, manual and mapped tabs in order");
-  stack[1].view = View::List;
-  stack[1].sort = Sort::Modified;
-  stack[1].iconSize = 64;
-  stack[1].displayMode = DisplayMode::Pages;
-  stack[1].itemSpacing = maxItemSpacing;
+  stack[0].paths.push_back(folder.native());
+  std::vector<Group> empty;
+  check(!mergeGroups(empty, 0, 1) && !mergeGroups(stack, 0, 2) && !mergeGroups(stack, 2, 0) &&
+        !mergeGroups(stack, 0, 0) && stack.size() == 2, "reject invalid merges");
+  auto intoFirst = loaded;
+  check(mergeGroups(intoFirst, 1, 0) && intoFirst.size() == 1 && intoFirst.front().name == loaded[0].name &&
+        intoFirst.front().tabs.back().name == L"资料", "merge into the first box");
+  check(mergeGroups(stack, 0, 1) && stack.size() == 1 &&
+        stack[0].name == loaded[1].name && stack[0].paths == loaded[1].paths && stack[0].tabs.size() == 4 &&
+        stack[0].tabs[1].name == loaded[0].name && stack[0].tabs[1].paths == std::vector<std::wstring>{folder.native()} &&
+        stack[0].tabs[2].paths == std::vector<std::wstring>{documentPath} &&
+        stack[0].tabs[3].folder == folder.native(), "merge the first box's default, manual and mapped tabs in order");
+  stack[0].view = View::List;
+  stack[0].sort = Sort::Modified;
+  stack[0].iconSize = 64;
+  stack[0].displayMode = DisplayMode::Pages;
+  stack[0].itemSpacing = maxItemSpacing;
+  stack[0].glass = false;
+  stack[0].autoCollapse = true;
   const RECT detachedBounds{-500, 40, -110, 370};
-  check(!detachTab(stack, 0, 1, detachedBounds) && !detachTab(stack, 1, 0, detachedBounds) &&
-        !detachTab(stack, 1, 5, detachedBounds) && !detachTab(stack, 1, 1, {}),
-        "reject invalid detach and synthetic desktop");
-  check(detachTab(stack, 1, 4, detachedBounds) && stack.size() == 3 && stack[1].tabs.size() == 3 &&
-        stack.back().name == L"映射" && stack.back().paths.empty() && stack.back().tabs.size() == 1 &&
-        stack.back().tabs[0].folder == folder.native() && EqualRect(&stack.back().bounds, &detachedBounds),
-        "detach mapped tab without flattening its contents");
-  check(detachTab(stack, 1, 3, detachedBounds) && stack.size() == 4 && stack[1].tabs.size() == 2 &&
+  check(!detachTab(empty, 0, 1, detachedBounds) && !detachTab(stack, 1, 1, detachedBounds) &&
+        !detachTab(stack, 0, 5, detachedBounds) &&
+        !detachTab(stack, 0, 1, {}), "reject invalid detaches");
+  check(detachTab(stack, 0, 4, detachedBounds) && stack.size() == 2 && stack[0].tabs.size() == 3 &&
+        stack.back().name == L"映射" && stack.back().paths.empty() && stack.back().tabs.empty() &&
+        stack.back().folder == folder.native() && EqualRect(&stack.back().bounds, &detachedBounds),
+        "detach a mapped tab into the only tab of a new box");
+  check(!addItem(stack, 1, documentPath) && stack[0].tabs[2].paths == std::vector<std::wstring>{documentPath},
+        "reject a manual assignment to a mapped main tab without disturbing the existing assignment");
+  check(detachTab(stack, 0, 3, detachedBounds) && stack.size() == 3 && stack[0].tabs.size() == 2 &&
         stack.back().name == L"常用" && stack.back().paths == std::vector<std::wstring>{documentPath} &&
         stack.back().tabs.empty() && stack.back().view == View::List && stack.back().sort == Sort::Modified &&
         stack.back().iconSize == 64 && stack.back().displayMode == DisplayMode::Pages &&
-        stack.back().itemSpacing == maxItemSpacing && !stack.back().collapsed,
+        stack.back().itemSpacing == maxItemSpacing && stack.back().glass == false && stack.back().autoCollapse &&
+        !stack.back().collapsed,
         "detach manual tab and retain display preferences");
-  stack.erase(stack.begin());
   const auto stackFile = root / L"stack.json";
   save(stack, stackFile);
-  check(load(stackFile).size() == 3, "roundtrip resulting group layout");
+  auto savedStack = load(stackFile);
+  check(savedStack.size() == 3 && savedStack[1].folder == folder.native() && savedStack[1].tabs.empty() &&
+        savedStack[0].folder.empty() && savedStack[2].folder.empty(),
+        "roundtrip the mapped primary tab and ordinary manual boxes");
+  check(mergeGroups(savedStack, 1, 0) && savedStack.front().tabs.back().name == L"映射" &&
+        savedStack.front().tabs.back().folder == folder.native() && savedStack.front().tabs.back().paths.empty(),
+        "merge a standalone mapped box back as a mapped tab");
+
+  std::vector<Group> legacyMapped{
+      {L"Mapped", detachedBounds, {}, false, {{L"Mapped", folder.native(), {}}}},
+      {L"Manual", detachedBounds, {}, false, {{L"Manual", {}, {}}}},
+      {L"Different", detachedBounds, {}, false, {{L"Mapped", folder.native(), {}}}},
+      {L"Retain", detachedBounds, {}, false, {{L"Retain", folder.native(), {}}, {L"Extra", {}, {}}}},
+      {L"Retain tint", detachedBounds, {}, false, {{L"Retain tint", folder.native(), {}, RGB(42, 63, 84)}}},
+      {L"With items", detachedBounds, {documentPath}, false, {{L"With items", folder.native(), {}}}}};
+  const auto legacyMappedFile = root / L"legacy-mapped.json";
+  save(legacyMapped, legacyMappedFile);
+  auto promoted = load(legacyMappedFile);
+  check(promoted.size() == legacyMapped.size() && promoted[0].folder == folder.native() && promoted[0].tabs.empty(),
+        "promote the single duplicate legacy mapped tab on load");
+  for (size_t i = 1; i < legacyMapped.size(); ++i)
+    check(promoted[i].folder.empty() && promoted[i].tabs.size() == legacyMapped[i].tabs.size() &&
+          promoted[i].tabs.front().name == legacyMapped[i].tabs.front().name &&
+          promoted[i].tabs.front().folder == legacyMapped[i].tabs.front().folder,
+          "preserve non-duplicate legacy tabs");
 
   const auto sourceTint = RGB(0, 0, 0), hostTint = RGB(70, 92, 114);
   std::vector<Group> nested{
@@ -361,13 +433,76 @@ void exercise(const fn::fs::path &root) {
           "detaching restores original tint or inherits the host color for a regular tab");
   };
   checkDetachedTint(6, L"Mapped", sourceTint);
-  check(nested.back().tabs[0].folder == folder.native() && !nested.back().tabs[0].detachedTint,
-        "detaching a mapped tab consumes its original color");
+  check(nested.back().folder == folder.native() && nested.back().tabs.empty(),
+        "detaching a mapped tab retains its folder and consumes its original color");
   checkDetachedTint(5, L"Original extra", sourceTint);
   checkDetachedTint(4, L"Original", sourceTint);
   checkDetachedTint(3, L"Default extra", std::nullopt);
   checkDetachedTint(2, L"Default", std::nullopt);
   checkDetachedTint(1, L"Host extra", nested[1].tint);
+
+  std::vector<Group> movingTabs{
+      {L"Source", detachedBounds, {sharedPath}, false,
+       {{L"First", {}, {documentPath}}, {L"Mapped", folder.native(), {}}, {L"Last", {}, {}}}},
+      {L"Standalone", detachedBounds, {}, false},
+      {L"Destination", detachedBounds, {}, false, {{L"Existing", {}, {}}}}};
+  movingTabs[0].tint = sourceTint;
+  movingTabs[1].tint = hostTint;
+  movingTabs[2].tint = RGB(105, 85, 64);
+  const auto sourceOrder = [&] {
+    std::vector<std::wstring> names{movingTabs[0].name};
+    for (const auto &tab : movingTabs[0].tabs) names.push_back(tab.name);
+    return names;
+  };
+  const std::vector<std::wstring> originalOrder{L"Source", L"First", L"Mapped", L"Last"};
+  check(!moveTab(movingTabs, 1, 0, 0, 0) && !detachTab(movingTabs, 1, 0, detachedBounds) &&
+        !moveTab(movingTabs, 0, 4, 1, 0) && !moveTab(movingTabs, 0, 1, 1, 2) &&
+        movingTabs[0].paths == std::vector<std::wstring>{sharedPath} &&
+        sourceOrder() == originalOrder && movingTabs[1].tabs.empty(),
+        "reject moving or detaching a box's only tab and invalid header positions");
+  check(!moveTab(movingTabs, 0, 0, 0, 0) && !moveTab(movingTabs, 0, 0, 0, 1) &&
+        !moveTab(movingTabs, 0, 2, 0, 2) && !moveTab(movingTabs, 0, 2, 0, 3) &&
+        sourceOrder() == originalOrder, "dropping on either edge of the same tab is a no-op");
+  check(moveTab(movingTabs, 0, 1, 0, 4) &&
+        sourceOrder() == std::vector<std::wstring>{L"Source", L"Mapped", L"Last", L"First"} &&
+        movingTabs[0].tabs.back().paths == std::vector<std::wstring>{documentPath} &&
+        !movingTabs[0].tabs.back().detachedTint, "reorder rightward using the trailing original slot");
+  check(moveTab(movingTabs, 0, 3, 0, 1) && sourceOrder() == originalOrder,
+        "reorder an additional tab leftward using the original slot");
+  check(moveTab(movingTabs, 0, 0, 0, 2) &&
+        sourceOrder() == std::vector<std::wstring>{L"First", L"Source", L"Mapped", L"Last"} &&
+        movingTabs[0].paths == std::vector<std::wstring>{documentPath} &&
+        movingTabs[0].tabs.front().paths == std::vector<std::wstring>{sharedPath},
+        "move the primary tab right and promote its neighbor with the correct contents");
+  check(moveTab(movingTabs, 0, 1, 0, 0) && sourceOrder() == originalOrder &&
+        movingTabs[0].paths == std::vector<std::wstring>{sharedPath},
+        "move the former primary left to its original slot");
+  check(moveTab(movingTabs, 0, 2, 0, 0) && moveTab(movingTabs, 0, 0, 1, 0) &&
+        sourceOrder() == std::vector<std::wstring>{L"Source", L"First", L"Last"} &&
+        movingTabs[0].paths == std::vector<std::wstring>{sharedPath} && movingTabs[0].folder.empty() &&
+        movingTabs[1].name == L"Mapped" && movingTabs[1].folder == folder.native() &&
+        movingTabs[1].tabs.size() == 1 && movingTabs[1].tabs.front().name == L"Standalone" &&
+        movingTabs[1].tint == hostTint,
+        "move a mapped primary to the first slot of a standalone box and promote the source's next tab");
+  const auto movedTabsFile = root / L"moved-tabs.json";
+  save(movingTabs, movedTabsFile);
+  movingTabs = load(movedTabsFile);
+  check(moveTab(movingTabs, 1, 0, 2, 0) && movingTabs[1].name == L"Standalone" && movingTabs[1].tabs.empty() &&
+        movingTabs[2].name == L"Mapped" && movingTabs[2].folder == folder.native() &&
+        movingTabs[2].tabs.size() == 2 && movingTabs[2].tabs[0].name == L"Destination" &&
+        movingTabs[2].tabs[1].name == L"Existing",
+        "reload the mapped primary and move it in front of another box's original primary");
+  check(detachTab(movingTabs, 2, 0, detachedBounds) && movingTabs[2].name == L"Destination" &&
+        movingTabs[2].folder.empty() && movingTabs[2].tabs.size() == 1 &&
+        movingTabs.back().name == L"Mapped" &&
+        movingTabs.back().folder == folder.native() && movingTabs.back().tabs.empty() &&
+        movingTabs.back().tint == sourceTint,
+        "detaching a transferred primary keeps its mapped folder and original source tint");
+  check(detachTab(movingTabs, 0, 0, detachedBounds) && movingTabs[0].name == L"First" &&
+        movingTabs[0].paths == std::vector<std::wstring>{documentPath} &&
+        movingTabs.back().name == L"Source" && movingTabs.back().paths == std::vector<std::wstring>{sharedPath} &&
+        movingTabs.back().tint == sourceTint,
+        "detaching the manual primary preserves both tabs' distinct file assignments");
 
   const std::uint16_t invalidState[] = {2, 0, 1, 0, 5, 0, 7, 0, 405, 0, 307, 0, 2, 0, 1, 0, L'A', 0, 0};
   check(RegSetKeyValueW(HKEY_CURRENT_USER, settings, value, REG_BINARY, invalidState,
@@ -397,6 +532,7 @@ int main() {
     registry.redirect(files.root.filename().native());
     exercise(files.root);
     exerciseShadow();
+    exerciseDesktopGrid();
   } catch (const fn::Error &error) {
     std::wcerr << error.message << L'\n';
     return 1;

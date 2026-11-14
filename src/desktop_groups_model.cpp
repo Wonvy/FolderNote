@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <map>
 #include <memory>
 #include <optional>
 #include <roapi.h>
@@ -61,27 +62,31 @@ void validateGroups(const std::vector<Group> &groups, PathSet &paths, const wcha
   const auto validName = [](const std::wstring &name) {
     return !name.empty() && name.size() <= groupNameLimit && name.find(L'\0') == std::wstring::npos;
   };
+  const auto validDetachedTint = [](const std::optional<std::optional<COLORREF>> &tint) {
+    return !tint || !*tint || **tint <= 0x00ffffff;
+  };
   const auto validatePaths = [&](const std::vector<std::wstring> &entries) {
     for (const auto &path : entries) {
-      if (path.empty() || quick::normalize(path) != path || !paths.insert(path).second)
+      if (path.empty() || (quick::normalize(path) != path && !isDesktopShellItem(path)) || !paths.insert(path).second)
         fn::fail(lang::text(message), ERROR_INVALID_DATA);
     }
   };
   for (const auto &group : groups) {
     if (!validName(group.name) || std::find(iconSizes.begin(), iconSizes.end(), group.iconSize) == iconSizes.end() ||
         (group.opacity && (*group.opacity < 0 || *group.opacity > 100)) ||
-        (group.tint && *group.tint > 0x00ffffff) ||
+        (group.tint && *group.tint > 0x00ffffff) || !validDetachedTint(group.primaryDetachedTint) ||
         group.titleHeight < 28 || group.titleHeight > 80 ||
         group.titleStyle < TitleStyle::Text || group.titleStyle > TitleStyle::IconAndText ||
         group.titleIcon.find(L'\0') != std::wstring::npos ||
         group.view < View::Icons || group.view > View::List ||
         group.displayMode < DisplayMode::Scroll || group.displayMode > DisplayMode::Pages ||
         group.itemSpacing < 0 || group.itemSpacing > maxItemSpacing ||
+        (!group.folder.empty() && (quick::normalize(group.folder) != group.folder || !group.paths.empty())) ||
         group.sort < Sort::Manual || group.sort > Sort::Modified || !validBounds(group.bounds))
       fn::fail(lang::text(message), ERROR_INVALID_DATA);
     validatePaths(group.paths);
     for (const auto &tab : group.tabs) {
-      if (!validName(tab.name) || (tab.detachedTint && *tab.detachedTint && **tab.detachedTint > 0x00ffffff) ||
+      if (!validName(tab.name) || !validDetachedTint(tab.detachedTint) ||
           (!tab.folder.empty() && (quick::normalize(tab.folder) != tab.folder || !tab.paths.empty())))
         fn::fail(lang::text(message), ERROR_INVALID_DATA);
       validatePaths(tab.paths);
@@ -93,7 +98,8 @@ void validate(const Layout &layout, const wchar_t *message) {
   PathSet paths;
   validateGroups(layout.groups, paths, message);
   for (const auto &item : layout.looseItems) {
-    if (item.path.empty() || quick::normalize(item.path) != item.path || !paths.insert(item.path).second)
+    if (item.path.empty() || (quick::normalize(item.path) != item.path && !isDesktopShellItem(item.path)) ||
+        !paths.insert(item.path).second)
       fn::fail(lang::text(message), ERROR_INVALID_DATA);
   }
 }
@@ -233,6 +239,16 @@ LONG numberField(IJsonObject *object, const wchar_t *name) {
   return static_cast<LONG>(number);
 }
 
+std::optional<std::optional<COLORREF>> detachedTintField(const ComPtr<IJsonObject> &object, const wchar_t *name) {
+  if (!hasField(object, name)) return std::nullopt;
+  ComPtr<IJsonValue> tint;
+  checkJson(object->GetNamedValue(HStringReference(name).Get(), &tint));
+  JsonValueType type{};
+  checkJson(tint->get_ValueType(&type));
+  if (type == JsonValueType_Null) return std::optional<std::optional<COLORREF>>(std::in_place);
+  return std::optional<std::optional<COLORREF>>(std::in_place, static_cast<COLORREF>(numberField(object.Get(), name)));
+}
+
 template<typename Enum, size_t N>
 Enum enumField(IJsonObject *object, const wchar_t *name, const std::array<const wchar_t *, N> &values) {
   const auto value = stringField(object, name);
@@ -311,24 +327,29 @@ Layout parseJson(std::string_view utf8) {
     if (hasField(entry, L"itemSpacing")) group.itemSpacing = numberField(entry.Get(), L"itemSpacing");
     if (hasField(entry, L"iconSize")) group.iconSize = numberField(entry.Get(), L"iconSize");
     if (hasField(entry, L"opacity")) group.opacity = numberField(entry.Get(), L"opacity");
+    if (hasField(entry, L"glass")) {
+      boolean glass = false;
+      checkJson(entry->GetNamedBoolean(HStringReference(L"glass").Get(), &glass));
+      group.glass = glass != 0;
+    }
+    if (hasField(entry, L"autoCollapse")) {
+      boolean autoCollapse = false;
+      checkJson(entry->GetNamedBoolean(HStringReference(L"autoCollapse").Get(), &autoCollapse));
+      group.autoCollapse = autoCollapse != 0;
+    }
     if (hasField(entry, L"tint")) group.tint = static_cast<COLORREF>(numberField(entry.Get(), L"tint"));
     if (hasField(entry, L"titleHeight")) group.titleHeight = numberField(entry.Get(), L"titleHeight");
     if (hasField(entry, L"titleStyle")) group.titleStyle = static_cast<TitleStyle>(numberField(entry.Get(), L"titleStyle"));
     if (hasField(entry, L"titleIcon")) group.titleIcon = stringField(entry.Get(), L"titleIcon");
+    if (hasField(entry, L"folder")) group.folder = stringField(entry.Get(), L"folder");
+    group.primaryDetachedTint = detachedTintField(entry, L"primaryDetachedTint");
     group.paths = pathsField(entry.Get());
     JsonArrayReader tabs(entry.Get(), L"tabs");
     group.tabs.reserve(tabs.size);
     for (unsigned j = 0; j < tabs.size; ++j) {
       const auto tab = tabs.objectAt(j);
-      Tab item{stringField(tab.Get(), L"name"), stringField(tab.Get(), L"folder"), pathsField(tab.Get())};
-      if (hasField(tab, L"detachedTint")) {
-        ComPtr<IJsonValue> tint;
-        checkJson(tab->GetNamedValue(HStringReference(L"detachedTint").Get(), &tint));
-        JsonValueType type{};
-        checkJson(tint->get_ValueType(&type));
-        if (type == JsonValueType_Null) item.detachedTint.emplace();
-        else item.detachedTint.emplace(static_cast<COLORREF>(numberField(tab.Get(), L"detachedTint")));
-      }
+      Tab item{stringField(tab.Get(), L"name"), stringField(tab.Get(), L"folder"), pathsField(tab.Get()),
+               detachedTintField(tab, L"detachedTint")};
       group.tabs.push_back(std::move(item));
     }
     groups.push_back(std::move(group));
@@ -338,11 +359,24 @@ Layout parseJson(std::string_view utf8) {
     layout.looseItems.reserve(loose.size);
     for (unsigned i = 0; i < loose.size; ++i) {
       const auto item = loose.objectAt(i);
-      layout.looseItems.push_back({stringField(item.Get(), L"path"),
-                                   {numberField(item.Get(), L"x"), numberField(item.Get(), L"y")}});
+      LooseItem entry{stringField(item.Get(), L"path"),
+                      {numberField(item.Get(), L"x"), numberField(item.Get(), L"y")}};
+      if (hasField(item, L"columnSpacing") && hasField(item, L"rowSpacing")) {
+        const SIZE spacing{numberField(item.Get(), L"columnSpacing"), numberField(item.Get(), L"rowSpacing")};
+        if (spacing.cx > 0 && spacing.cx <= 2048 && spacing.cy > 0 && spacing.cy <= 2048) entry.spacing = spacing;
+      }
+      layout.looseItems.push_back(std::move(entry));
     }
   }
   validate(layout, readError);
+  for (auto &group : groups) {
+    if (!group.folder.empty() || !group.paths.empty() || group.primaryDetachedTint || group.tabs.size() != 1) continue;
+    auto &tab = group.tabs.front();
+    // Earlier releases detached a mapped tab into a box with an empty main tab and a duplicate title.
+    if (tab.name != group.name || tab.folder.empty() || tab.detachedTint) continue;
+    group.folder = std::move(tab.folder);
+    group.tabs.clear();
+  }
   return layout;
 }
 
@@ -395,13 +429,26 @@ std::string formatJson(const Layout &layout) {
     content += L",\n      \"iconSize\": " + std::to_wstring(group.iconSize);
     if (group.itemSpacing > 0) content += L",\n      \"itemSpacing\": " + std::to_wstring(group.itemSpacing);
     if (group.opacity) content += L",\n      \"opacity\": " + std::to_wstring(*group.opacity);
+    if (group.glass) {
+      content += L",\n      \"glass\": ";
+      content += *group.glass ? L"true" : L"false";
+    }
+    if (group.autoCollapse) content += L",\n      \"autoCollapse\": true";
     if (group.tint) content += L",\n      \"tint\": " + std::to_wstring(*group.tint);
+    if (group.primaryDetachedTint) {
+      content += L",\n      \"primaryDetachedTint\": ";
+      content += *group.primaryDetachedTint ? std::to_wstring(**group.primaryDetachedTint) : L"null";
+    }
     if (group.titleHeight != 36) content += L",\n      \"titleHeight\": " + std::to_wstring(group.titleHeight);
     if (group.titleStyle != TitleStyle::Text)
       content += L",\n      \"titleStyle\": " + std::to_wstring(static_cast<int>(group.titleStyle));
     if (!group.titleIcon.empty()) {
       content += L",\n      \"titleIcon\": ";
       quote(content, group.titleIcon);
+    }
+    if (!group.folder.empty()) {
+      content += L",\n      \"folder\": ";
+      quote(content, group.folder);
     }
     content += L",\n      \"paths\": ";
     appendPaths(content, group.paths);
@@ -432,7 +479,11 @@ std::string formatJson(const Layout &layout) {
     content += L"\n    {\"path\": ";
     quote(content, item.path);
     content += L", \"x\": " + std::to_wstring(item.position.x) + L", \"y\": " +
-               std::to_wstring(item.position.y) + L"}";
+               std::to_wstring(item.position.y);
+    if (item.spacing.cx > 0 && item.spacing.cy > 0)
+      content += L", \"columnSpacing\": " + std::to_wstring(item.spacing.cx) +
+                 L", \"rowSpacing\": " + std::to_wstring(item.spacing.cy);
+    content += L'}';
   }
   if (!layout.looseItems.empty()) content += L"\n  ";
   content += L"]\n}\n";
@@ -562,6 +613,87 @@ bool samePath(const std::wstring &a, const std::wstring &b) {
   return quick::same(a, b);
 }
 
+SIZE desktopSpacingForIcon(SIZE nativeSpacing, int nativeIconSize, int iconSize) {
+  const auto spacing = [&](LONG step) { return std::clamp(step - nativeIconSize + iconSize, LONG(iconSize), 2048L); };
+  return {spacing(nativeSpacing.cx), spacing(nativeSpacing.cy)};
+}
+
+POINT desktopGridOrigin(const RECT &work, SIZE nativeSpacing, std::span<const LooseItem> nativeItems) {
+  const POINT fallback{work.left + nativeSpacing.cx / 2, work.top + nativeSpacing.cy / 2};
+  auto origin = fallback;
+  std::map<LONG, int> columns, rows;
+  const auto count = [](auto &counts, LONG coordinate, LONG start, LONG step, LONG &best) {
+    const auto remainder = (coordinate - start) % step;
+    const auto offset = (remainder + step + step / 2) % step - step / 2;
+    if (++counts[offset] > counts[best - start]) best = start + offset;
+  };
+  if (nativeSpacing.cx <= 0 || nativeSpacing.cy <= 0) return origin;
+  for (const auto &item : nativeItems) {
+    if (item.spacing.cx || item.spacing.cy || !PtInRect(&work, item.position)) continue;
+    count(columns, item.position.x, fallback.x, nativeSpacing.cx, origin.x);
+    count(rows, item.position.y, fallback.y, nativeSpacing.cy, origin.y);
+  }
+  return origin;
+}
+
+POINT scaleDesktopPosition(POINT position, POINT nativeOrigin, SIZE nativeSpacing, SIZE from, SIZE to) {
+  const auto scale = [](LONG coordinate, LONG origin, LONG nativeStep, LONG oldStep, LONG newStep) {
+    const auto oldOrigin = origin + (oldStep - nativeStep) / 2;
+    const auto newOrigin = origin + (newStep - nativeStep) / 2;
+    return newOrigin + MulDiv(coordinate - oldOrigin, newStep, oldStep);
+  };
+  return {scale(position.x, nativeOrigin.x, nativeSpacing.cx, from.cx, to.cx),
+          scale(position.y, nativeOrigin.y, nativeSpacing.cy, from.cy, to.cy)};
+}
+
+std::optional<std::vector<POINT>> snapDesktopPositions(const RECT &work, POINT origin, SIZE spacing,
+    std::span<const POINT> desired, std::span<const POINT> occupied) {
+  if (!validBounds(work) || spacing.cx <= 0 || spacing.cy <= 0) return std::nullopt;
+  const auto index = [](LONG coordinate, LONG base, LONG step) { return (double(coordinate) - base) / step; };
+  const auto firstColumn = static_cast<long long>(std::ceil(index(work.left, origin.x, spacing.cx)));
+  const auto lastColumn = static_cast<long long>(std::floor(index(work.right - 1, origin.x, spacing.cx)));
+  const auto firstRow = static_cast<long long>(std::ceil(index(work.top, origin.y, spacing.cy)));
+  const auto lastRow = static_cast<long long>(std::floor(index(work.bottom - 1, origin.y, spacing.cy)));
+  if (firstColumn > lastColumn || firstRow > lastRow) return std::nullopt;
+
+  std::set<std::pair<long long, long long>> used;
+  for (const auto point : occupied) {
+    if (!PtInRect(&work, point)) continue;
+    used.emplace(std::clamp(std::llround(index(point.x, origin.x, spacing.cx)), firstColumn, lastColumn),
+                 std::clamp(std::llround(index(point.y, origin.y, spacing.cy)), firstRow, lastRow));
+  }
+  std::vector<POINT> positions;
+  positions.reserve(desired.size());
+  for (const auto target : desired) {
+    double closest = std::numeric_limits<double>::infinity();
+    std::pair<long long, long long> cell{};
+    POINT position{};
+    for (auto row = firstRow; row <= lastRow; ++row) {
+      for (auto column = firstColumn; column <= lastColumn; ++column) {
+        if (used.contains({column, row})) continue;
+        const POINT candidate{static_cast<LONG>(origin.x + column * spacing.cx),
+                              static_cast<LONG>(origin.y + row * spacing.cy)};
+        const double dx = double(candidate.x) - target.x, dy = double(candidate.y) - target.y;
+        const double distance = dx * dx + dy * dy;
+        if (distance >= closest) continue;
+        closest = distance;
+        cell = {column, row};
+        position = candidate;
+      }
+    }
+    if (!std::isfinite(closest)) return std::nullopt;
+    used.insert(cell);
+    positions.push_back(position);
+  }
+  return positions;
+}
+
+bool isDesktopShellItem(const std::wstring &path) {
+  if (!path.starts_with(L"::{") || path.size() != 40 || path.back() != L'}') return false;
+  GUID id{};
+  return SUCCEEDED(CLSIDFromString(path.c_str() + 2, &id));
+}
+
 std::wstring desktopItem(const std::vector<std::wstring> &roots, const std::wstring &path) {
   auto normalized = quick::normalize(path);
   if (normalized.empty()) return {};
@@ -578,11 +710,18 @@ std::wstring desktopItem(const std::vector<std::wstring> &roots, const std::wstr
   return (item.parent_path() / data.cFileName).native();
 }
 
+const std::wstring &folderForTab(const Group &group, size_t tab) {
+  static const std::wstring empty;
+  if (!tab) return group.folder;
+  return tab <= group.tabs.size() ? group.tabs[tab - 1].folder : empty;
+}
+
 bool addItem(std::vector<Group> &groups, size_t target, const std::wstring &path, size_t tab) {
   if (target >= groups.size()) return false;
   auto &group = groups[target];
-  if (tab > group.tabs.size() || (tab && !group.tabs[tab - 1].folder.empty())) return false;
+  if (tab > group.tabs.size() || !folderForTab(group, tab).empty()) return false;
   auto normalized = quick::normalize(path);
+  if (normalized.empty() && isDesktopShellItem(path)) normalized = path;
   if (normalized.empty()) return false;
   auto &items = tab ? group.tabs[tab - 1].paths : group.paths;
   if (std::any_of(items.begin(), items.end(), [&](const auto &item) { return samePath(item, normalized); }))
@@ -600,13 +739,40 @@ bool addItem(std::vector<Group> &groups, size_t target, const std::wstring &path
   return true;
 }
 
+namespace {
+Tab takePrimaryTab(Group &group) {
+  Tab tab{std::move(group.name), std::move(group.folder), std::move(group.paths), group.primaryDetachedTint};
+  if (!tab.detachedTint) tab.detachedTint.emplace(group.tint);
+  return tab;
+}
+
+void setPrimaryTab(Group &group, Tab &&tab) {
+  group.name = std::move(tab.name);
+  group.folder = std::move(tab.folder);
+  group.paths = std::move(tab.paths);
+  group.primaryDetachedTint = tab.detachedTint;
+}
+
+Tab removeTab(Group &group, size_t index) {
+  if (index) {
+    const auto position = group.tabs.begin() + (index - 1);
+    Tab tab = std::move(*position);
+    group.tabs.erase(position);
+    return tab;
+  }
+  auto tab = takePrimaryTab(group);
+  setPrimaryTab(group, std::move(group.tabs.front()));
+  group.tabs.erase(group.tabs.begin());
+  return tab;
+}
+}
+
 bool mergeGroups(std::vector<Group> &groups, size_t source, size_t target) {
-  if (!source || !target || source == target || source >= groups.size() || target >= groups.size()) return false;
+  if (source == target || source >= groups.size() || target >= groups.size()) return false;
   auto &from = groups[source];
   auto &tabs = groups[target].tabs;
   tabs.reserve(tabs.size() + 1 + from.tabs.size());
-  tabs.push_back({std::move(from.name), {}, std::move(from.paths)});
-  tabs.back().detachedTint.emplace(from.tint);
+  tabs.push_back(takePrimaryTab(from));
   for (auto &tab : from.tabs) {
     if (!tab.detachedTint) tab.detachedTint.emplace(from.tint);
     tabs.push_back(std::move(tab));
@@ -616,32 +782,52 @@ bool mergeGroups(std::vector<Group> &groups, size_t source, size_t target) {
 }
 
 bool detachTab(std::vector<Group> &groups, size_t group, size_t tabIndex, RECT bounds) {
-  if (!group || group >= groups.size() || !tabIndex || tabIndex > groups[group].tabs.size() ||
+  if (group >= groups.size() || groups[group].tabs.empty() || tabIndex > groups[group].tabs.size() ||
       !validBounds(bounds)) return false;
+  groups.reserve(groups.size() + 1);
   auto &from = groups[group];
-  const auto position = from.tabs.begin() + (tabIndex - 1);
   Group detached;
-  detached.name = position->name;
   detached.bounds = bounds;
   detached.view = from.view;
   detached.sort = from.sort;
   detached.iconSize = from.iconSize;
   detached.opacity = from.opacity;
-  detached.tint = position->detachedTint.value_or(from.tint);
+  detached.glass = from.glass;
+  detached.autoCollapse = from.autoCollapse;
   detached.titleHeight = from.titleHeight;
   detached.titleStyle = from.titleStyle;
   detached.titleIcon = from.titleIcon;
   detached.displayMode = from.displayMode;
   detached.itemSpacing = from.itemSpacing;
-  if (position->folder.empty()) detached.paths = position->paths;
-  else {
-    detached.tabs.push_back(*position);
-    detached.tabs.back().detachedTint.reset();
-  }
-  // Adding the new group can reallocate the vector.
+  auto tab = removeTab(from, tabIndex);
+  detached.tint = tab.detachedTint.value_or(from.tint);
+  setPrimaryTab(detached, std::move(tab));
+  detached.primaryDetachedTint.reset();
   groups.push_back(std::move(detached));
-  auto &tabs = groups[group].tabs;
-  tabs.erase(tabs.begin() + (tabIndex - 1));
+  return true;
+}
+
+bool moveTab(std::vector<Group> &groups, size_t source, size_t tab, size_t target, size_t insertion) {
+  if (source >= groups.size() || target >= groups.size()) return false;
+  auto &from = groups[source];
+  auto &to = groups[target];
+  if (tab > from.tabs.size() || insertion > to.tabs.size() + 1 || from.tabs.empty()) return false;
+
+  size_t destination = insertion;
+  if (source == target) {
+    if (insertion == tab || insertion == tab + 1) return false;
+    if (insertion > tab) --destination;
+  } else {
+    to.tabs.reserve(to.tabs.size() + 1);
+  }
+  auto item = removeTab(from, tab);
+  if (source != target && !item.detachedTint) item.detachedTint.emplace(from.tint);
+  if (destination == 0) {
+    to.tabs.insert(to.tabs.begin(), takePrimaryTab(to));
+    setPrimaryTab(to, std::move(item));
+  } else {
+    to.tabs.insert(to.tabs.begin() + (destination - 1), std::move(item));
+  }
   return true;
 }
 }
