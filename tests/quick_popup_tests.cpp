@@ -66,6 +66,18 @@ int main() {
       session.activate(0, 2); check(!session.done && session.panels.size() == 2); // History click expands.
       session.key(VK_RETURN); check(session.done && session.selected == 42);
     }
+    {
+      Session session(instance, ui::ThemeMode::Light);
+      auto &panel = session.create(model(), {50, 50}, false);
+      RECT item{};
+      SendMessageW(panel.list, LB_GETITEMRECT, 1, reinterpret_cast<LPARAM>(&item));
+      const auto point = MAKELPARAM(item.left + 24, (item.top + item.bottom) / 2);
+      SendMessageW(panel.list, WM_MOUSEMOVE, 0, point);
+      check(panel.selected == 1);
+      SendMessageW(panel.list, WM_RBUTTONDOWN, MK_RBUTTON, point);
+      SendMessageW(panel.list, WM_RBUTTONUP, 0, point);
+      check(session.done && session.selected == 41);
+    }
     for (UINT event : {UINT(WM_ACTIVATEAPP), UINT(WM_ACTIVATE), UINT(WM_CAPTURECHANGED), UINT(WM_CANCELMODE), UINT(WM_CLOSE)}) {
       Session session(instance, ui::ThemeMode::System); session.create(model(), {50, 50}, false);
       session.expand(0, 1); session.armed = true;
@@ -194,6 +206,43 @@ int main() {
       session.key(VK_RIGHT); check(panel.selectedAction == 1);
       session.key(VK_LEFT); check(panel.selectedAction == 0);
       session.key(VK_RETURN); check(session.done && session.selected == 52);
+    }
+    {
+      Session session(instance, ui::ThemeMode::Dark);
+      auto root = std::make_shared<Branch>();
+      root->compact = true;
+      int preview = 55, persisted = 55, writes = 0;
+      Item item;
+      item.title = L"背景不透明度";
+      item.slider = Slider{25, 100, 55, [&](int value) { preview = value; },
+                           [&](int value) {
+                             if (value == 25) return false;
+                             persisted = value;
+                             ++writes;
+                             return true;
+                           }};
+      root->items.push_back(std::move(item));
+      auto &panel = session.create(root, {50, 50}, false);
+      RECT row{};
+      SendMessageW(panel.list, LB_GETITEMRECT, 0, reinterpret_cast<LPARAM>(&row));
+      auto track = session.sliderTrack(row);
+      const auto mouseAt = [&](UINT message, LONG x) {
+        SendMessageW(panel.list, message, 0, MAKELPARAM(x, (track.top + track.bottom) / 2));
+      };
+      mouseAt(WM_LBUTTONDOWN, track.right - 1);
+      check(preview == 100 && writes == 0 && !session.done);
+      mouseAt(WM_MOUSEMOVE, track.left);
+      check(preview == 25 && writes == 0);
+      mouseAt(WM_LBUTTONUP, track.left);
+      check(preview == 55 && persisted == 55 && writes == 0 && !session.done);
+      mouseAt(WM_LBUTTONDOWN, track.right - 1);
+      mouseAt(WM_LBUTTONUP, track.right - 1);
+      check(preview == 100 && persisted == 100 && writes == 1 && !session.done);
+      session.key(VK_LEFT);
+      check(preview == 99 && persisted == 99 && writes == 2 && !session.done);
+      mouseAt(WM_LBUTTONDOWN, track.left);
+      session.key(VK_ESCAPE);
+      check(preview == 99 && persisted == 99 && writes == 2 && session.done);
     }
     {
       Session session(instance, ui::ThemeMode::Dark); session.create(compactModel(), {50, 50}, false);

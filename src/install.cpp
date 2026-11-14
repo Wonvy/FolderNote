@@ -4,6 +4,7 @@
 #include "context_inventory.h"
 #include "custom_explorer_entries.h"
 #include "desktop_folder_links.h"
+#include "desktop_groups.h"
 #include "explorer_entries.h"
 #include "navigation.h"
 #include "navigation_registration.h"
@@ -99,6 +100,7 @@ static void registerMenus(const fn::fs::path &active, bool modern) {
                            navigation::preferredAction());
 }
 static constexpr const wchar_t* payloadNames[]={L"FolderNote.exe",L"FolderNoteShell.dll",L"FolderNoteNavigation.dll",L"Install.exe",L"Uninstall.exe"};
+static constexpr auto winuiBootstrap = L"Microsoft.WindowsAppRuntime.Bootstrap.dll";
 static bool isVersionDirectory(const fn::fs::path& p) {
   const auto name=p.filename().native();GUID id{};
   return name.size()==38 && name.front()==L'{' && name.back()==L'}' && SUCCEEDED(CLSIDFromString(name.c_str(),&id));
@@ -115,6 +117,10 @@ static void removePayload(const fn::fs::path& p,std::wstring& remaining) {
   for(auto name:payloadNames)if(!DeleteFileW((p/name).c_str())) {
     DWORD code=GetLastError();if(code!=ERROR_FILE_NOT_FOUND&&code!=ERROR_PATH_NOT_FOUND)remaining+=(p/name).native()+L"\n";
   }
+  if (!DeleteFileW((p / winuiBootstrap).c_str())) {
+    const auto code = GetLastError();
+    if (code != ERROR_FILE_NOT_FOUND && code != ERROR_PATH_NOT_FOUND) remaining += (p / winuiBootstrap).native() + L"\n";
+  }
   RemoveDirectoryW(p.c_str()); // Only remove an empty folder; preserve unrelated files.
 }
 static fn::fs::path stageVersion(const fn::fs::path& source,const fn::fs::path& root) {
@@ -125,7 +131,12 @@ static fn::fs::path stageVersion(const fn::fs::path& source,const fn::fs::path& 
   GUID id; if(FAILED(CoCreateGuid(&id)))throw fn::Error{lang::text(L"无法生成安装版本标识。")};
   wchar_t token[40];StringFromGUID2(id,token,40);auto version=versions/token;
   if(!fn::fs::create_directory(version))throw fn::Error{lang::text(L"版本目录已经存在，安装未继续。")};
-  try {for(auto name:payloadNames)if(!CopyFileW((source/name).c_str(),(version/name).c_str(),TRUE))fn::fail(L"无法复制新版程序文件");}
+  try {
+    for(auto name:payloadNames)if(!CopyFileW((source/name).c_str(),(version/name).c_str(),TRUE))fn::fail(L"无法复制新版程序文件");
+    if (GetFileAttributesW((source / winuiBootstrap).c_str()) != INVALID_FILE_ATTRIBUTES &&
+        !CopyFileW((source / winuiBootstrap).c_str(), (version / winuiBootstrap).c_str(), TRUE))
+      fn::fail(L"无法复制新版程序文件");
+  }
   catch(...){std::wstring unused;removePayload(version,unused);throw;}
   return version;
 }
@@ -234,6 +245,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
       navigation::stop();
 #ifndef FOLDERNOTE_UNINSTALL_TEST
       quick::stopHelper();
+      if (!desktop_groups::stop())
+        throw fn::Error{lang::text(L"无法更新桌面盒子启动项。")};
 #endif
       navreg::unregisterUser();
       context::unregisterCommands();
@@ -327,6 +340,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
       navigation::reload();
 #ifndef FOLDERNOTE_UNINSTALL_TEST
       quick::syncHelper((active / L"FolderNote.exe").native());
+      if (!desktop_groups::sync((active / L"FolderNote.exe").native()))
+        throw fn::Error{lang::text(L"无法更新桌面盒子启动项。")};
 #endif
       MessageBoxW(nullptr,
                   lang::text(L"安装完成。从开始菜单搜索“FolderNote 设置”调整功能和主题。首次安装默认开启双击返回上一级，备注和中键快速定位默认关闭。覆盖升级保留已有选择、备注、置顶和历史记录。\n\n"

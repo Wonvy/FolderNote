@@ -4,7 +4,7 @@
 
 **Windows File Explorer tools · Version 1.9.4 · x64**
 
-FolderNote adds folder entry management, context menu management, folder notes, double-click navigation, a middle-click folder menu, and tabs for Windows 10. It uses a native Win32 settings window and requires no separate C++ runtime installation.
+FolderNote adds desktop boxes, folder entry management, context menu management, folder notes, double-click navigation, a middle-click folder menu, and tabs for Windows 10. It uses a native Win32 settings window and requires no separate C++ runtime installation.
 
 [User guide (Chinese)](docs/USER_GUIDE.md) · [Development and builds (Chinese)](docs/DEVELOPMENT.md) · [Changelog (Chinese)](CHANGELOG.md) · [Contributing (Chinese)](CONTRIBUTING.md)
 
@@ -26,6 +26,7 @@ FolderNote adds folder entry management, context menu management, folder notes, 
 | --- | --- | --- |
 | Context Menu Manager | Browse existing menus by Explorer object, hide or restore supported entries, and create ordered FolderNote commands. | Off |
 | Folder entries | Add folders in This PC, the navigation pane, or the desktop. Hide, show, or restore supported entries, and remove or recover supported This PC entries. | Available in Settings |
+| Desktop boxes | Preview frosted glass on the Features page. Enable and save to manage desktop icons in boxes and the Ungrouped desktop panel. Turn off and save to restore the Windows desktop icons. | Off |
 | Folder notes | Add, edit, clear, or repair notes from a folder's context menu. Show notes in the Comments column in File Explorer. | Off |
 | Double-click empty space | Go up one level or configure the gesture to go back. | Go up one level |
 | Middle-click folder menu | Open pinned, recent, and frequently used folders on the desktop or in File Explorer. Hover over folders to browse subfolders. You can also enable the menu in file and folder dialogs. | Off |
@@ -51,6 +52,13 @@ Add programs, websites, or CMD and PowerShell commands under **Custom commands**
 
 Select **Folder entries** and choose a location. Switch between list and icon views, collapse any of the three **This PC** groups, or select an entry to view its status, source, and target path where available. Select **Add folder…** to add your own folder to the selected location. See the [user guide](docs/USER_GUIDE.md#文件夹入口管理) for the hide, restore, and remove actions.
 
+## Organize the desktop
+
+1. In **Features**, enable **Desktop boxes** and save. FolderNote takes over the desktop icons and displays ungrouped files and folders in **Ungrouped desktop**. Frosted glass is on by default. Use **Box appearance** to preview and adjust the corner radius, background opacity, frosted glass, and drop shadow.
+2. Right-click an empty area of the desktop and select **New box**, or hold the right mouse button and release it. On Windows 11, the context menu command may be under **Show more options**. You can also create boxes from **Manage desktop boxes** or the notification area icon.
+3. Drag items into or between boxes. Right-click empty space inside a box to switch between **Icons** and **List** and choose manual order, name, type, or date modified. Collapse boxes to their headers, add tabs, or map a folder to display its contents in a tab.
+4. Turn off **Desktop boxes** and save to restore the Windows desktop icons. Grouping keeps files in their original locations.
+
 ## Install and get started
 
 1. Extract the entire installer archive. Run `Install.exe` for the standard edition or `Install-Win11.exe` for the Windows 11 first-level context menu test edition. Keep the EXE, DLL, and MSIX files together. The first installation may request administrator approval to register the navigation extension.
@@ -70,13 +78,16 @@ The standard edition uses the folder context menu on Windows 10 and **Show more 
 ## Data and background processes
 
 - Folder notes are stored in each folder's `desktop.ini`. Keep that file when copying folders. Repair can restore missing attributes. To restore deleted note contents, use a backup of the file.
-- Notes and visit history stay on your PC. The update check connects to GitHub. FolderNote has no notification-area icon.
+- Notes, visit history, and desktop group layouts stay on your PC. The update check connects to GitHub.
+- When desktop boxes are enabled, the desktop helper starts at sign-in and adds a notification area icon. Layouts are saved to `%LOCALAPPDATA%\Programs\FolderNote\DesktopGroups.json`. If the desktop helper exits unexpectedly, a recovery process restores the previous icon visibility.
 - The Explorer extension handles double-click navigation and Windows 10 tabs. A background helper supports the desktop middle-click menu and opening folders in new tabs. The helper exits when both features are off. Support for file and folder dialogs can be switched off separately.
 - Upgrades preserve settings, pinned folders, and history. Run `Uninstall.exe` to remove the app. Notes and preferences are retained.
 
 ## Build
 
 Install Visual Studio 2022 with Desktop development with C++, a Windows SDK, and CMake 3.24 or later.
+
+Desktop boxes use C++ and WinUI 3 by default. Install Microsoft Windows App Runtime 1.8 from the [Windows App SDK downloads archive](https://learn.microsoft.com/windows/apps/windows-app-sdk/downloads-archive) to use that interface. Desktop boxes use the Win32 interface when the runtime is unavailable.
 
 ```powershell
 cmake --preset windows-x64

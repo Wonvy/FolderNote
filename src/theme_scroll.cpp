@@ -16,14 +16,24 @@ void ScrollBar::create(HWND parent, int id, Theme &theme, std::function<void(int
   SetWindowSubclass(window_, proc, 1, reinterpret_cast<DWORD_PTR>(this));
 }
 void ScrollBar::configure(int total, int page, int position, UINT dpi, int line) {
+  total = std::max(0, total);
+  page = std::max(1, page);
+  line = std::max(1, line);
+  position = std::clamp(position, 0, std::max(0, total - page));
+  if (total == total_ && page == page_ && position == pos_ && dpi == dpi_ && line == line_) return;
   total_ = std::max(0, total); page_ = std::max(1, page); dpi_ = dpi; line_ = std::max(1, line);
   pos_ = std::clamp(position, 0, maximum());
   SCROLLINFO info{sizeof(info), SIF_RANGE | SIF_PAGE | SIF_POS | SIF_DISABLENOSCROLL};
   info.nMax = std::max(0, total_ - 1); info.nPage = page_; info.nPos = pos_;
   SetScrollInfo(window_, SB_CTL, &info, FALSE);
   if (!maximum()) stop();
-  ShowWindow(window_, maximum() ? SW_SHOWNOACTIVATE : SW_HIDE);
+  if (((GetWindowLongPtrW(window_, GWL_STYLE) & WS_VISIBLE) != 0) != (maximum() != 0))
+    ShowWindow(window_, maximum() ? SW_SHOWNOACTIVATE : SW_HIDE);
   InvalidateRect(window_, nullptr, FALSE);
+}
+void ScrollBar::setTrackColor(COLORREF color) {
+  trackColor_ = color;
+  if (window_) InvalidateRect(window_, nullptr, FALSE);
 }
 void ScrollBar::move(int x, int y, int width, int height) { MoveWindow(window_, x, y, width, height, TRUE); }
 RECT ScrollBar::thumb() const {
@@ -77,7 +87,12 @@ void ScrollBar::repeatPage() {
 }
 void ScrollBar::paint(HDC dc) {
   RECT rect{}; GetClientRect(window_, &rect);
-  FillRect(dc, &rect, surface_ ? theme_->field : theme_->background);
+  if (background_) background_(window_, dc);
+  else if (trackColor_) {
+    const auto previous = SetDCBrushColor(dc, *trackColor_);
+    FillRect(dc, &rect, reinterpret_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+    SetDCBrushColor(dc, previous);
+  } else FillRect(dc, &rect, surface_ ? theme_->field : theme_->background);
   if (maximum()) {
     auto bounds = thumb(); const auto &p = theme_->colors;
     auto color = dragging_ ? p.accent : hot_ ? p.text : p.muted;

@@ -1,6 +1,8 @@
 #include "core.h"
 #include "language.h"
 #include "context_commands.h"
+#include "desktop_groups.h"
+#include "desktop_groups_visibility.h"
 #include "navigation.h"
 #include "quick_folders.h"
 #include <climits>
@@ -318,6 +320,25 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
   CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
   int argc = 0;
   auto argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+  if (argc == 3 && std::wstring_view(argv[1]) == L"--desktop-groups-watch") {
+    wchar_t *end = nullptr;
+    const DWORD pid = wcstoul(argv[2], &end, 10);
+    const bool valid = pid && end && !*end;
+    LocalFree(argv);
+    const auto result = valid ? desktop_groups::watchDesktopIcons(pid) : 1;
+    CoUninitialize();
+    return result;
+  }
+  if (argc == 2 && (std::wstring_view(argv[1]) == L"--desktop-groups" ||
+                    std::wstring_view(argv[1]) == L"--desktop-groups-manage" ||
+                    std::wstring_view(argv[1]) == L"--desktop-groups-create")) {
+    const bool manage = std::wstring_view(argv[1]) == L"--desktop-groups-manage";
+    const bool create = std::wstring_view(argv[1]) == L"--desktop-groups-create";
+    LocalFree(argv);
+    const auto result = desktop_groups::run(inst, manage, create);
+    CoUninitialize();
+    return result;
+  }
   if (argc == 4 && std::wstring_view(argv[1]) == L"--context-command") {
     int result = 1;
     try { result = context::runCommand(argv[2], argv[3]); }

@@ -19,6 +19,8 @@ $expected = @(
     'HKEY_CURRENT_USER\Software\FolderNote\ExplorerEntryChanges\Navigation'
     'HKEY_CURRENT_USER\Software\FolderNote\ExplorerEntryChanges\Desktop'
     'HKEY_CURRENT_USER\Software\FolderNote\DesktopFolderLinkChanges'
+    'HKEY_CURRENT_USER\Software\Classes\DesktopBackground\shell\FolderNote.DesktopGroups.Create'
+    'HKEY_CURRENT_USER\Software\Classes\DesktopBackground\shell\FolderNote.DesktopGroups.Create\command'
     'HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run'
     'HKEY_CURRENT_USER\Software\Classes\Directory\shell\FolderNote.Edit'
     'HKEY_CURRENT_USER\Software\Classes\Directory\shell\FolderNote.Clear'

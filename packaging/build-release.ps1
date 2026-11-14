@@ -20,6 +20,9 @@ Compress-Archive -Path "$out\*" -DestinationPath $universalZip -Force
 
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $required = 'Install.exe', 'Uninstall.exe', 'FolderNote.exe', 'FolderNoteShell.dll', 'FolderNoteNavigation.dll'
+if (Test-Path -LiteralPath "$build\Release\Microsoft.WindowsAppRuntime.Bootstrap.dll") {
+    $required += 'Microsoft.WindowsAppRuntime.Bootstrap.dll'
+}
 foreach ($zip in $universalZip,$win11Zip) {
     $archive = [IO.Compression.ZipFile]::OpenRead($zip)
     try {

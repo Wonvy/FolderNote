@@ -20,6 +20,8 @@ if($LASTEXITCODE -ne 0){throw 'MSIX validation/packaging failed'}
 Copy-Item "$root\build\Release\Install-Win11.exe" $out
 Copy-Item "$root\build\Release\Uninstall.exe" $out
 Copy-Item "$root\build\Release\Install.exe","$root\build\Release\FolderNote.exe","$root\build\Release\FolderNoteShell.dll","$root\build\Release\FolderNoteNavigation.dll" $out
+$bootstrap = Join-Path $root "build\Release\Microsoft.WindowsAppRuntime.Bootstrap.dll"
+if (Test-Path -LiteralPath $bootstrap) { Copy-Item -LiteralPath $bootstrap -Destination $out }
 Copy-Item "$PSScriptRoot\README-Win11.md" $out
 Copy-Item "$root\README.md","$root\README.en.md" $out
 Copy-Item "$root\CHANGELOG.md","$root\CONTRIBUTING.md" $out

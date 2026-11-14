@@ -108,8 +108,87 @@ void inspectNewTabOption() {
         "new-tab checkbox text fits at current scale");
   navigation::showPage(navigation::SettingsPage::QuickFolders);
 }
+void inspectDesktopGroupsOption() {
+  navigation::showPage(navigation::SettingsPage::Features);
+  auto placement = std::find_if(navigation::placements.begin(), navigation::placements.end(), [](const auto &item) {
+    return item.window == navigation::desktopGroupsCheck;
+  });
+  check(placement != navigation::placements.end(), "desktop groups switch is in the feature scroller");
+  navigation::scrollPosition = navigation::scale(placement->y - 8);
+  navigation::layoutBody();
+  RECT client{}; GetClientRect(navigation::body, &client);
+  auto toggle = childBounds(navigation::desktopGroupsCheck, navigation::body);
+  auto manage = childBounds(navigation::desktopGroupsManager, navigation::body);
+  auto glass = childBounds(navigation::desktopGroupsGlassCheck, navigation::body);
+  auto preview = childBounds(navigation::desktopGroupsPreview, navigation::body);
+  check(toggle.left >= 0 && toggle.top >= 0 && toggle.right <= client.right && toggle.bottom <= client.bottom &&
+        glass.top >= toggle.bottom && manage.top >= glass.bottom && manage.bottom <= client.bottom &&
+        glass.right < preview.left && manage.right < preview.left && preview.right <= client.right && preview.bottom <= client.bottom,
+        "desktop groups switch, management button and preview fit in the scroller at every scale");
+  navigation::showPage(navigation::SettingsPage::QuickFolders);
+}
+void inspectDesktopGroupsPreview() {
+  auto dc = CreateCompatibleDC(nullptr);
+  auto display = GetDC(nullptr);
+  auto bitmap = CreateCompatibleBitmap(display, 300, 120);
+  ReleaseDC(nullptr, display);
+  auto original = SelectObject(dc, bitmap);
+  DRAWITEMSTRUCT item{};
+  item.CtlID = navigation::desktopGroupsPreviewId;
+  item.hDC = dc;
+  item.rcItem = {0, 0, 300, 120};
+  SendMessageW(navigation::desktopGroupsCheck, BM_SETCHECK, BST_CHECKED, 0);
+  SendMessageW(navigation::desktopGroupsGlassCheck, BM_SETCHECK, BST_CHECKED, 0);
+  SendMessageW(navigation::body, WM_DRAWITEM, item.CtlID, reinterpret_cast<LPARAM>(&item));
+  const auto glass = GetPixel(dc, 130, 101);
+  SendMessageW(navigation::desktopGroupsGlassCheck, BM_SETCHECK, BST_UNCHECKED, 0);
+  SendMessageW(navigation::body, WM_DRAWITEM, item.CtlID, reinterpret_cast<LPARAM>(&item));
+  const auto opaque = GetPixel(dc, 130, 101);
+  SendMessageW(navigation::desktopGroupsCheck, BM_SETCHECK, BST_UNCHECKED, 0);
+  SendMessageW(navigation::body, WM_DRAWITEM, item.CtlID, reinterpret_cast<LPARAM>(&item));
+  const auto disabled = GetPixel(dc, 130, 101);
+  SelectObject(dc, original);
+  DeleteObject(bitmap);
+  DeleteDC(dc);
+  const auto &colors = navigation::appearance->colors;
+  check(opaque == colors.field && (colors.highContrast ? glass == opaque : glass != opaque),
+        "preview depicts the staged glass choice and respects high contrast");
+  check(disabled != opaque, "disabled desktop groups preview omits the panel");
+  check(navigation::configuredDesktopGroupsGlass(), "toggling the preview does not persist the glass choice");
+}
 void scenarios() {
   Hub hub;
+  navigation::showPage(navigation::SettingsPage::BoxAppearance);
+  const auto radius = GetDlgItem(hub.window, navigation::boxRadius);
+  const auto shadow = GetDlgItem(hub.window, navigation::boxShadow);
+  const auto shadowOpacity = GetDlgItem(hub.window, navigation::boxShadowOpacity);
+  const auto shadowBlur = GetDlgItem(hub.window, navigation::boxShadowBlur);
+  const auto shadowOffset = GetDlgItem(hub.window, navigation::boxShadowOffset);
+  check(visibleStyle(radius) && visibleStyle(shadowOpacity) && visibleStyle(shadowBlur) && visibleStyle(shadowOffset) &&
+        visibleStyle(GetDlgItem(hub.window, navigation::boxPreview)), "box appearance page shows its controls");
+  const auto savedAppearance = desktop_groups::configuredAppearance();
+  check(!IsWindowEnabled(shadowOpacity) && !IsWindowEnabled(shadowBlur) && !IsWindowEnabled(shadowOffset),
+        "shadow sliders start disabled when shadow is off");
+  SendMessageW(shadow, BM_SETCHECK, BST_CHECKED, 0);
+  SendMessageW(hub.window, WM_COMMAND, MAKEWPARAM(navigation::boxShadow, BN_CLICKED), reinterpret_cast<LPARAM>(shadow));
+  SendMessageW(radius, TBM_SETPOS, TRUE, 4);
+  SendMessageW(shadowOpacity, TBM_SETPOS, TRUE, 78);
+  SendMessageW(shadowBlur, TBM_SETPOS, TRUE, 24);
+  SendMessageW(shadowOffset, TBM_SETPOS, TRUE, 16);
+  SendMessageW(hub.window, WM_HSCROLL, TB_THUMBTRACK, reinterpret_cast<LPARAM>(shadowOffset));
+  check(IsWindowEnabled(shadowOffset) && navigation::boxStyle.radius == 4 &&
+        navigation::boxStyle.shadowOpacity == 78 && navigation::boxStyle.shadowBlur == 24 &&
+        navigation::boxStyle.shadowOffset == 16 &&
+        desktop_groups::configuredAppearance() == savedAppearance, "appearance preview stages values before saving");
+  SendMessageW(shadow, BM_SETCHECK, BST_UNCHECKED, 0);
+  SendMessageW(hub.window, WM_COMMAND, MAKEWPARAM(navigation::boxShadow, BN_CLICKED), reinterpret_cast<LPARAM>(shadow));
+  check(!IsWindowEnabled(shadowOpacity) && SendMessageW(shadowOpacity, TBM_GETPOS, 0, 0) == 78,
+        "turning off shadow disables its controls and preserves the draft values");
+  SendMessageW(radius, TBM_SETPOS, TRUE, savedAppearance.radius);
+  SendMessageW(shadowOpacity, TBM_SETPOS, TRUE, savedAppearance.shadowOpacity);
+  SendMessageW(shadowBlur, TBM_SETPOS, TRUE, savedAppearance.shadowBlur);
+  SendMessageW(shadowOffset, TBM_SETPOS, TRUE, savedAppearance.shadowOffset);
+  SendMessageW(hub.window, WM_HSCROLL, TB_THUMBPOSITION, reinterpret_cast<LPARAM>(radius));
   navigation::showPage(navigation::SettingsPage::Preferences);
   check(visibleStyle(GetDlgItem(hub.window, navigation::languageChoice)) && visibleStyle(navigation::themeChoice),
         "language and theme controls are visible on Preferences");
@@ -160,6 +239,15 @@ void scenarios() {
   check(!GetDlgItem(navigation::body, 19) && !GetDlgItem(navigation::body, 20),
         "copy and move no longer require separate settings controls");
   check(!navigation::preferNewTabEnabled(), "new-tab preference defaults off");
+  check(!desktop_groups::enabled() && SendMessageW(navigation::desktopGroupsCheck, BM_GETCHECK, 0, 0) == BST_UNCHECKED &&
+        !IsWindowEnabled(navigation::desktopGroupsManager), "desktop groups are off by default");
+  check(SendMessageW(navigation::desktopGroupsGlassCheck, BM_GETCHECK, 0, 0) == BST_CHECKED,
+        "new desktop groups use glass by default");
+  inspectDesktopGroupsPreview();
+  SendMessageW(navigation::desktopGroupsCheck, BM_SETCHECK, BST_CHECKED, 0);
+  SendMessageW(hub.window, WM_COMMAND, MAKEWPARAM(navigation::desktopGroupsToggle, BN_CLICKED), 0);
+  check(!desktop_groups::enabled() && !IsWindowEnabled(navigation::desktopGroupsManager),
+        "desktop groups only become available after saving the draft");
   if (navigation::tabsSupported()) {
     check(GetDlgItem(navigation::body, 21) == navigation::preferNewTabCheck &&
           !IsWindowEnabled(navigation::preferNewTabCheck), "new-tab option starts disabled when tabs are off");
@@ -208,9 +296,11 @@ void scenarios() {
     SendMessageW(hub.window, WM_DPICHANGED, MAKEWPARAM(dpi, dpi), reinterpret_cast<LPARAM>(&target));
     inspectVersion(hub.window);
     inspectNewTabOption();
+    inspectDesktopGroupsOption();
     MoveWindow(hub.window, 0, 0, MulDiv(900, dpi, 96), MulDiv(500, dpi, 96), FALSE);
     inspectVersion(hub.window);
     inspectNewTabOption();
+    inspectDesktopGroupsOption();
     check(visibleStyle(manager) && !visibleStyle(navigation::body), "resize preserves selected page");
     SendMessageW(hub.window, WM_MOUSEWHEEL, MAKEWPARAM(0, -WHEEL_DELTA), 0);
     check(!visibleStyle(navigation::settingsScroll.window()), "wheel over hub does not resurrect the hidden feature scrollbar");
@@ -219,6 +309,8 @@ void scenarios() {
     SendMessageW(hub.window, WM_COMMAND, MAKEWPARAM(40, BN_CLICKED), reinterpret_cast<LPARAM>(GetDlgItem(hub.window, 40)));
     check(visibleStyle(navigation::body) && !visibleStyle(manager), "sidebar returns to feature page");
     check(SendMessageW(navigation::notesCheck, BM_GETCHECK, 0, 0) == BST_CHECKED &&
+          SendMessageW(navigation::desktopGroupsCheck, BM_GETCHECK, 0, 0) == BST_CHECKED &&
+          SendMessageW(navigation::desktopGroupsGlassCheck, BM_GETCHECK, 0, 0) == BST_UNCHECKED &&
           SendMessageW(navigation::themeChoice, CB_GETCURSEL, 0, 0) == DWORD(ui::ThemeMode::Dark),
           "repeated switches keep all draft controls");
     if (navigation::preferNewTabCheck)
@@ -231,11 +323,26 @@ void scenarios() {
   SendMessageW(hub.window, WM_COMMAND, MAKEWPARAM(IDCANCEL, BN_CLICKED), 0);
   check(!IsWindow(hub.window) && !IsWindow(manager) && !IsWindow(features) && !IsWindow(version),
         "closing the hub destroys both pages and fixed controls");
-  check(!navigation::notesEnabled() && ui::configuredTheme() == ui::ThemeMode::System && !navigation::preferNewTabEnabled(),
-        "cancel does not commit feature, theme, or new-tab drafts");
+  check(!navigation::notesEnabled() && ui::configuredTheme() == ui::ThemeMode::System &&
+        !navigation::preferNewTabEnabled() && !desktop_groups::enabled() && navigation::configuredDesktopGroupsGlass(),
+        "cancel does not commit feature, theme or glass drafts");
+  navigation::applySettings(false, navigation::Action::Parent, navigation::Action::Parent,
+                            false, true, ui::ThemeMode::System, false, false, true,
+                            navigation::DesktopGroupsSettings{true, false, 8, 55, true, 72, 18, 9});
+  const auto savedShadow = desktop_groups::configuredAppearance();
+  check(desktop_groups::enabled() && !savedShadow.glass && savedShadow.shadow &&
+        savedShadow.shadowOpacity == 72 && savedShadow.shadowBlur == 18 && savedShadow.shadowOffset == 9,
+        "settings save persists the desktop groups and appearance choices");
   navigation::saveSettings(false, navigation::Action::Parent, navigation::Action::Parent,
                           false, true, ui::ThemeMode::System, false, true);
   Hub reopened;
+  check(desktop_groups::enabled() && SendMessageW(navigation::desktopGroupsCheck, BM_GETCHECK, 0, 0) == BST_CHECKED &&
+        SendMessageW(navigation::desktopGroupsGlassCheck, BM_GETCHECK, 0, 0) == BST_UNCHECKED &&
+        IsWindowEnabled(navigation::desktopGroupsManager), "existing save callers preserve the desktop groups and glass choices");
+  SendMessageW(navigation::desktopGroupsCheck, BM_SETCHECK, BST_UNCHECKED, 0);
+  SendMessageW(reopened.window, WM_COMMAND, MAKEWPARAM(navigation::desktopGroupsToggle, BN_CLICKED), 0);
+  check(desktop_groups::enabled() && !IsWindowEnabled(navigation::desktopGroupsManager),
+        "unchecking desktop groups stages a change and disables management");
   if (navigation::tabsSupported()) {
     check(!IsWindowEnabled(navigation::preferNewTabCheck) &&
           SendMessageW(navigation::preferNewTabCheck, BM_GETCHECK, 0, 0) == BST_CHECKED,
@@ -243,13 +350,20 @@ void scenarios() {
   }
   SendMessageW(reopened.window, WM_COMMAND, MAKEWPARAM(IDCANCEL, BN_CLICKED), 0);
   check(navigation::preferNewTabEnabled(), "cancel leaves previously saved new-tab choice untouched");
+  navigation::applySettings(false, navigation::Action::Parent, navigation::Action::Parent,
+                            false, true, ui::ThemeMode::System, false, true, true, navigation::DesktopGroupsSettings{false, true});
+  check(!desktop_groups::enabled() && navigation::configuredDesktopGroupsGlass(),
+        "settings save can turn off desktop groups without losing the appearance choice");
 }
 void languages() {
   lang::select(lang::Choice::English);
   {
     Hub hub;
     check(windowText(GetDlgItem(hub.window, navigation::languageExport)) == L"Export language template" &&
-          windowText(GetDlgItem(hub.window, IDOK)) == L"Save", "English settings labels load");
+          windowText(GetDlgItem(hub.window, IDOK)) == L"Save" &&
+          windowText(navigation::desktopGroupsCheck) == L"Desktop boxes" &&
+          windowText(navigation::desktopGroupsGlassCheck) == L"Frosted glass (Acrylic)" &&
+          windowText(navigation::desktopGroupsManager) == L"Manage desktop boxes", "English settings labels load");
   }
   wchar_t directory[MAX_PATH]{}, file[MAX_PATH]{};
   check(GetTempPathW(ARRAYSIZE(directory), directory) && GetTempFileNameW(directory, L"fnl", 0, file),
@@ -275,6 +389,29 @@ void languages() {
         "invalid XML leaves the active pack intact");
   lang::select(lang::Choice::Chinese);
   check(std::wstring_view(lang::text(L"导出语言模板")) == L"导出语言模板", "built-in Chinese can be restored");
+}
+void desktopFenceMenu() {
+  constexpr auto verb = L"Software\\Classes\\DesktopBackground\\shell\\FolderNote.DesktopGroups.Create";
+  constexpr auto sibling = L"Software\\Classes\\DesktopBackground\\shell\\Test.Fixture";
+  const std::wstring exe = L"C:\\Program Files\\FolderNote\\FolderNote.exe";
+  const wchar_t fixture[] = L"Fixture";
+  auto read = [](const wchar_t *subkey, const wchar_t *name) {
+    wchar_t value[MAX_PATH]{};
+    DWORD bytes = sizeof(value);
+    const auto status = RegGetValueW(HKEY_CURRENT_USER, subkey, name, RRF_RT_REG_SZ, nullptr, value, &bytes);
+    return status == ERROR_SUCCESS ? std::wstring(value) : std::wstring{};
+  };
+  check(desktop_groups::configureDesktopMenu({}), "removing a missing desktop fence verb succeeds");
+  check(RegSetKeyValueW(HKEY_CURRENT_USER, sibling, nullptr, REG_SZ, fixture, sizeof(fixture)) == ERROR_SUCCESS,
+        "register a separate desktop verb");
+  check(desktop_groups::configureDesktopMenu(exe) && read(verb, L"MUIVerb") == L"新建盒子" &&
+        read((std::wstring(verb) + L"\\command").c_str(), nullptr) == L"\"" + exe + L"\" --desktop-groups-create",
+        "desktop fence verb invokes only FolderNote with the create command");
+  lang::select(lang::Choice::English);
+  check(desktop_groups::configureDesktopMenu(exe) && read(verb, L"MUIVerb") == L"New box", "desktop verb follows the language");
+  lang::select(lang::Choice::Chinese);
+  check(desktop_groups::configureDesktopMenu({}) && read(verb, L"MUIVerb").empty() && read(sibling, nullptr) == fixture,
+        "desktop fence verb removal preserves sibling commands");
 }
 void contextInventory() {
   constexpr auto verb = L"Software\\Classes\\Directory\\shell\\ExampleFixture";
@@ -411,7 +548,7 @@ void contextCommands() {
 int main() {
   CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
   int result = 0;
-  try { Registry registry; scenarios(); languages(); contextInventory(); contextCommands(); std::cout << "PASS " << checks << " settings, language and context menu assertions\n"; }
+  try { Registry registry; scenarios(); languages(); desktopFenceMenu(); contextInventory(); contextCommands(); std::cout << "PASS " << checks << " settings, language and context menu assertions\n"; }
   catch (const std::exception &error) { std::cerr << "FAIL " << checks << ": " << error.what() << "\n"; result = 1; }
   CoUninitialize(); return result;
 }

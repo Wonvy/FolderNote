@@ -2,6 +2,7 @@
 #include "theme.h"
 #include <functional>
 #include <memory>
+#include <optional>
 #include <vector>
 
 namespace quick::popup {
@@ -11,6 +12,13 @@ struct IconAction {
   unsigned command; Symbol symbol; std::wstring title;
   bool enabled = true, checked = false;
   std::wstring text; // Nonempty for a text button instead of an icon.
+};
+struct Slider {
+  int minimum = 0, maximum = 100, value = 0;
+  std::function<void(int)> preview;
+  std::function<bool(int)> commit;
+  bool hue = false;
+  bool showUnit = true;
 };
 struct Branch;
 struct Item {
@@ -22,6 +30,8 @@ struct Item {
   std::wstring iconPath; // The real shell item; blank for menu action icons.
   std::vector<IconAction> actions;
   unsigned leadingActions = 0; // Left-aligned buttons; remaining actions stay on the right.
+  bool checked = false;
+  std::optional<Slider> slider;
 };
 struct Branch {
   std::vector<Item> items;
@@ -29,6 +39,7 @@ struct Branch {
   std::function<bool(Branch &)> poll;
   // Return true after updating this root in place to keep the same popup open.
   std::function<bool(unsigned)> invoke;
+  bool compact = false;
 };
 unsigned show(HINSTANCE instance, POINT point, std::shared_ptr<Branch> root, ui::ThemeMode theme, HWND anchor);
 }

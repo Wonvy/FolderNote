@@ -1,0 +1,647 @@
+#include "desktop_groups_model.h"
+#include "core.h"
+#include "language.h"
+#include "quick_folders.h"
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstdint>
+#include <cstring>
+#include <limits>
+#include <memory>
+#include <optional>
+#include <roapi.h>
+#include <set>
+#include <shlobj.h>
+#include <span>
+#include <string_view>
+#include <windows.data.json.h>
+#include <wrl/client.h>
+#include <wrl/wrappers/corewrappers.h>
+
+namespace desktop_groups {
+namespace {
+using namespace ABI::Windows::Data::Json;
+using ABI::Windows::Foundation::Collections::IMap;
+using ABI::Windows::Foundation::Collections::IVector;
+using Microsoft::WRL::ComPtr;
+using Microsoft::WRL::Wrappers::HString;
+using Microsoft::WRL::Wrappers::HStringReference;
+
+constexpr wchar_t settingsKey[] = L"Software\\FolderNote";
+constexpr wchar_t groupsValue[] = L"DesktopGroups";
+constexpr wchar_t readError[] = L"无法读取桌面盒子";
+constexpr wchar_t writeError[] = L"无法保存桌面盒子";
+constexpr DWORD legacyVersion = 3;
+constexpr LONG jsonVersion = 1;
+constexpr DWORD legacySizeLimit = 1024 * 1024, jsonSizeLimit = 4 * 1024 * 1024;
+constexpr size_t pathLimit = 32760;
+constexpr std::array viewNames{L"icons", L"list"};
+constexpr std::array sortNames{L"manual", L"name", L"type", L"modified"};
+constexpr std::array displayModeNames{L"scroll", L"pages"};
+static_assert(sizeof(DWORD) == 4 && sizeof(RECT) == 16 && sizeof(wchar_t) == 2);
+
+struct PathOrder {
+  bool operator()(std::wstring_view a, std::wstring_view b) const {
+    return CompareStringOrdinal(a.data(), static_cast<int>(a.size()), b.data(),
+                                static_cast<int>(b.size()), TRUE) == CSTR_LESS_THAN;
+  }
+};
+
+bool validBounds(const RECT &bounds) {
+  const auto width = std::int64_t(bounds.right) - bounds.left;
+  const auto height = std::int64_t(bounds.bottom) - bounds.top;
+  return width > 0 && height > 0 && width <= std::numeric_limits<int>::max() &&
+         height <= std::numeric_limits<int>::max();
+}
+
+using PathSet = std::set<std::wstring_view, PathOrder>;
+
+void validateGroups(const std::vector<Group> &groups, PathSet &paths, const wchar_t *message) {
+  const auto validName = [](const std::wstring &name) {
+    return !name.empty() && name.size() <= groupNameLimit && name.find(L'\0') == std::wstring::npos;
+  };
+  const auto validatePaths = [&](const std::vector<std::wstring> &entries) {
+    for (const auto &path : entries) {
+      if (path.empty() || quick::normalize(path) != path || !paths.insert(path).second)
+        fn::fail(lang::text(message), ERROR_INVALID_DATA);
+    }
+  };
+  for (const auto &group : groups) {
+    if (!validName(group.name) || std::find(iconSizes.begin(), iconSizes.end(), group.iconSize) == iconSizes.end() ||
+        (group.opacity && (*group.opacity < 0 || *group.opacity > 100)) ||
+        (group.tint && *group.tint > 0x00ffffff) ||
+        group.titleHeight < 28 || group.titleHeight > 80 ||
+        group.titleStyle < TitleStyle::Text || group.titleStyle > TitleStyle::IconAndText ||
+        group.titleIcon.find(L'\0') != std::wstring::npos ||
+        group.view < View::Icons || group.view > View::List ||
+        group.displayMode < DisplayMode::Scroll || group.displayMode > DisplayMode::Pages ||
+        group.itemSpacing < 0 || group.itemSpacing > maxItemSpacing ||
+        group.sort < Sort::Manual || group.sort > Sort::Modified || !validBounds(group.bounds))
+      fn::fail(lang::text(message), ERROR_INVALID_DATA);
+    validatePaths(group.paths);
+    for (const auto &tab : group.tabs) {
+      if (!validName(tab.name) || (tab.detachedTint && *tab.detachedTint && **tab.detachedTint > 0x00ffffff) ||
+          (!tab.folder.empty() && (quick::normalize(tab.folder) != tab.folder || !tab.paths.empty())))
+        fn::fail(lang::text(message), ERROR_INVALID_DATA);
+      validatePaths(tab.paths);
+    }
+  }
+}
+
+void validate(const Layout &layout, const wchar_t *message) {
+  PathSet paths;
+  validateGroups(layout.groups, paths, message);
+  for (const auto &item : layout.looseItems) {
+    if (item.path.empty() || quick::normalize(item.path) != item.path || !paths.insert(item.path).second)
+      fn::fail(lang::text(message), ERROR_INVALID_DATA);
+  }
+}
+
+struct Reader {
+  std::span<const BYTE> remaining;
+
+  void read(void *destination, size_t size) {
+    if (size > remaining.size()) fn::fail(lang::text(readError), ERROR_INVALID_DATA);
+    if (size) std::memcpy(destination, remaining.data(), size);
+    remaining = remaining.subspan(size);
+  }
+
+  DWORD number() {
+    DWORD value = 0;
+    read(&value, sizeof(value));
+    return value;
+  }
+
+  std::wstring string(size_t limit) {
+    const auto count = number();
+    if (count > limit || count > remaining.size() / sizeof(wchar_t))
+      fn::fail(lang::text(readError), ERROR_INVALID_DATA);
+    std::wstring value(count, L'\0');
+    read(value.data(), count * sizeof(wchar_t));
+    return value;
+  }
+
+  DWORD count(size_t minimumSize) {
+    const auto value = number();
+    if (value > remaining.size() / minimumSize) fn::fail(lang::text(readError), ERROR_INVALID_DATA);
+    return value;
+  }
+
+  std::vector<std::wstring> paths() {
+    const auto itemCount = count(sizeof(DWORD));
+    std::vector<std::wstring> result;
+    result.reserve(itemCount);
+    for (DWORD i = 0; i < itemCount; ++i) result.push_back(string(pathLimit));
+    return result;
+  }
+};
+
+std::optional<Layout> loadLegacy() {
+  DWORD size = 0;
+  auto result = RegGetValueW(HKEY_CURRENT_USER, settingsKey, groupsValue, RRF_RT_REG_BINARY, nullptr, nullptr, &size);
+  if (result == ERROR_FILE_NOT_FOUND || result == ERROR_PATH_NOT_FOUND) return {};
+  if (result != ERROR_SUCCESS) fn::fail(lang::text(readError), result);
+  if (size > legacySizeLimit || size < 2 * sizeof(DWORD)) fn::fail(lang::text(readError), ERROR_INVALID_DATA);
+
+  std::vector<BYTE> bytes(size);
+  result = RegGetValueW(HKEY_CURRENT_USER, settingsKey, groupsValue, RRF_RT_REG_BINARY, nullptr, bytes.data(), &size);
+  if (result != ERROR_SUCCESS) fn::fail(lang::text(readError), result);
+  Reader reader{std::span<const BYTE>(bytes.data(), size)};
+  const auto version = reader.number();
+  if (version == 0 || version > legacyVersion)
+    fn::fail(lang::text(readError), ERROR_REVISION_MISMATCH);
+  const bool hasCollapseState = version >= 2;
+  const bool hasTabs = version >= 3;
+  const auto minimumGroupSize = sizeof(RECT) + (2 + hasCollapseState + (hasTabs ? 3 : 0)) * sizeof(DWORD);
+  const auto count = reader.count(minimumGroupSize);
+
+  Layout layout;
+  auto &groups = layout.groups;
+  groups.reserve(count);
+  for (DWORD i = 0; i < count; ++i) {
+    Group group;
+    reader.read(&group.bounds, sizeof(group.bounds));
+    if (hasCollapseState) {
+      const auto collapsed = reader.number();
+      if (collapsed > 1) fn::fail(lang::text(readError), ERROR_INVALID_DATA);
+      group.collapsed = collapsed == 1;
+    }
+    group.name = reader.string(groupNameLimit);
+    group.paths = reader.paths();
+    if (hasTabs) {
+      const auto view = reader.number(), sort = reader.number();
+      if (view > DWORD(View::List) || sort > DWORD(Sort::Modified))
+        fn::fail(lang::text(readError), ERROR_INVALID_DATA);
+      group.view = View(view);
+      group.sort = Sort(sort);
+      const auto tabCount = reader.count(3 * sizeof(DWORD));
+      group.tabs.reserve(tabCount);
+      for (DWORD j = 0; j < tabCount; ++j) {
+        group.tabs.push_back({reader.string(groupNameLimit), reader.string(pathLimit), reader.paths()});
+      }
+    }
+    groups.push_back(std::move(group));
+  }
+  if (!reader.remaining.empty()) fn::fail(lang::text(readError), ERROR_INVALID_DATA);
+  validate(layout, readError);
+  return layout;
+}
+
+
+struct File {
+  HANDLE handle;
+  ~File() { if (handle != INVALID_HANDLE_VALUE) CloseHandle(handle); }
+};
+
+void checkJson(HRESULT result) {
+  if (FAILED(result)) fn::fail(lang::text(readError), static_cast<DWORD>(result));
+}
+
+struct Runtime {
+  HRESULT result = RoInitialize(RO_INIT_SINGLETHREADED);
+  Runtime() { if (result != RPC_E_CHANGED_MODE) checkJson(result); }
+  ~Runtime() { if (SUCCEEDED(result)) RoUninitialize(); }
+};
+
+std::wstring wide(const HString &value) {
+  unsigned length = 0;
+  const auto data = value.GetRawBuffer(&length);
+  return std::wstring(data, length);
+}
+
+std::wstring stringField(IJsonObject *object, const wchar_t *name) {
+  HString value;
+  checkJson(object->GetNamedString(HStringReference(name).Get(), value.GetAddressOf()));
+  return wide(value);
+}
+
+bool hasField(const ComPtr<IJsonObject> &object, const wchar_t *name) {
+  ComPtr<IMap<HSTRING, IJsonValue *>> fields;
+  checkJson(object.As(&fields));
+  boolean exists = false;
+  checkJson(fields->HasKey(HStringReference(name).Get(), &exists));
+  return exists != 0;
+}
+
+LONG numberField(IJsonObject *object, const wchar_t *name) {
+  double number = 0;
+  checkJson(object->GetNamedNumber(HStringReference(name).Get(), &number));
+  if (!std::isfinite(number) || number != std::trunc(number) ||
+      number < std::numeric_limits<LONG>::min() || number > std::numeric_limits<LONG>::max())
+    fn::fail(lang::text(readError), ERROR_INVALID_DATA);
+  return static_cast<LONG>(number);
+}
+
+template<typename Enum, size_t N>
+Enum enumField(IJsonObject *object, const wchar_t *name, const std::array<const wchar_t *, N> &values) {
+  const auto value = stringField(object, name);
+  const auto match = std::find(values.begin(), values.end(), value);
+  if (match == values.end()) fn::fail(lang::text(readError), ERROR_INVALID_DATA);
+  return static_cast<Enum>(match - values.begin());
+}
+
+struct JsonArrayReader {
+  ComPtr<IJsonArray> array;
+  unsigned size = 0;
+
+  JsonArrayReader(IJsonObject *object, const wchar_t *name) {
+    checkJson(object->GetNamedArray(HStringReference(name).Get(), &array));
+    ComPtr<IVector<IJsonValue *>> values;
+    checkJson(array.As(&values));
+    checkJson(values->get_Size(&size));
+  }
+
+  ComPtr<IJsonObject> objectAt(unsigned index) const {
+    ComPtr<IJsonObject> object;
+    checkJson(array->GetObjectAt(index, &object));
+    return object;
+  }
+};
+
+std::vector<std::wstring> pathsField(IJsonObject *object) {
+  JsonArrayReader paths(object, L"paths");
+  std::vector<std::wstring> result;
+  result.reserve(paths.size);
+  for (unsigned i = 0; i < paths.size; ++i) {
+    HString item;
+    checkJson(paths.array->GetStringAt(i, item.GetAddressOf()));
+    result.push_back(wide(item));
+  }
+  return result;
+}
+
+Layout parseJson(std::string_view utf8) {
+  if (utf8.starts_with("\xef\xbb\xbf")) utf8.remove_prefix(3);
+  const auto size = static_cast<int>(utf8.size());
+  const auto length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8.data(), size, nullptr, 0);
+  if (!length) fn::fail(lang::text(readError), ERROR_INVALID_DATA);
+  std::wstring content(length, L'\0');
+  if (!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8.data(), size, content.data(), length))
+    fn::fail(lang::text(readError));
+  if (content.find(L'\0') != content.npos) fn::fail(lang::text(readError), ERROR_INVALID_DATA);
+
+  const Runtime runtime;
+  ComPtr<IJsonObjectStatics> parser;
+  checkJson(RoGetActivationFactory(HStringReference(RuntimeClass_Windows_Data_Json_JsonObject).Get(),
+                                   IID_PPV_ARGS(&parser)));
+  ComPtr<IJsonObject> root;
+  checkJson(parser->Parse(HStringReference(content.c_str(), static_cast<unsigned>(content.size())).Get(), &root));
+  if (numberField(root.Get(), L"version") != jsonVersion)
+    fn::fail(lang::text(readError), ERROR_REVISION_MISMATCH);
+
+  JsonArrayReader entries(root.Get(), L"groups");
+  Layout layout;
+  auto &groups = layout.groups;
+  groups.reserve(entries.size);
+  for (unsigned i = 0; i < entries.size; ++i) {
+    const auto entry = entries.objectAt(i);
+    Group group;
+    group.name = stringField(entry.Get(), L"name");
+    ComPtr<IJsonObject> bounds;
+    checkJson(entry->GetNamedObject(HStringReference(L"bounds").Get(), &bounds));
+    group.bounds = {numberField(bounds.Get(), L"left"), numberField(bounds.Get(), L"top"),
+                    numberField(bounds.Get(), L"right"), numberField(bounds.Get(), L"bottom")};
+    boolean collapsed = false;
+    checkJson(entry->GetNamedBoolean(HStringReference(L"collapsed").Get(), &collapsed));
+    group.collapsed = collapsed != 0;
+    group.view = enumField<View>(entry.Get(), L"view", viewNames);
+    group.sort = enumField<Sort>(entry.Get(), L"sort", sortNames);
+    if (hasField(entry, L"displayMode")) group.displayMode = enumField<DisplayMode>(entry.Get(), L"displayMode", displayModeNames);
+    if (hasField(entry, L"itemSpacing")) group.itemSpacing = numberField(entry.Get(), L"itemSpacing");
+    if (hasField(entry, L"iconSize")) group.iconSize = numberField(entry.Get(), L"iconSize");
+    if (hasField(entry, L"opacity")) group.opacity = numberField(entry.Get(), L"opacity");
+    if (hasField(entry, L"tint")) group.tint = static_cast<COLORREF>(numberField(entry.Get(), L"tint"));
+    if (hasField(entry, L"titleHeight")) group.titleHeight = numberField(entry.Get(), L"titleHeight");
+    if (hasField(entry, L"titleStyle")) group.titleStyle = static_cast<TitleStyle>(numberField(entry.Get(), L"titleStyle"));
+    if (hasField(entry, L"titleIcon")) group.titleIcon = stringField(entry.Get(), L"titleIcon");
+    group.paths = pathsField(entry.Get());
+    JsonArrayReader tabs(entry.Get(), L"tabs");
+    group.tabs.reserve(tabs.size);
+    for (unsigned j = 0; j < tabs.size; ++j) {
+      const auto tab = tabs.objectAt(j);
+      Tab item{stringField(tab.Get(), L"name"), stringField(tab.Get(), L"folder"), pathsField(tab.Get())};
+      if (hasField(tab, L"detachedTint")) {
+        ComPtr<IJsonValue> tint;
+        checkJson(tab->GetNamedValue(HStringReference(L"detachedTint").Get(), &tint));
+        JsonValueType type{};
+        checkJson(tint->get_ValueType(&type));
+        if (type == JsonValueType_Null) item.detachedTint.emplace();
+        else item.detachedTint.emplace(static_cast<COLORREF>(numberField(tab.Get(), L"detachedTint")));
+      }
+      group.tabs.push_back(std::move(item));
+    }
+    groups.push_back(std::move(group));
+  }
+  if (hasField(root, L"looseItems")) {
+    JsonArrayReader loose(root.Get(), L"looseItems");
+    layout.looseItems.reserve(loose.size);
+    for (unsigned i = 0; i < loose.size; ++i) {
+      const auto item = loose.objectAt(i);
+      layout.looseItems.push_back({stringField(item.Get(), L"path"),
+                                   {numberField(item.Get(), L"x"), numberField(item.Get(), L"y")}});
+    }
+  }
+  validate(layout, readError);
+  return layout;
+}
+
+void quote(std::wstring &output, std::wstring_view value) {
+  constexpr wchar_t hex[] = L"0123456789abcdef";
+  output += L'"';
+  for (const auto ch : value) {
+    if (ch < 32) {
+      output += L"\\u00";
+      output += hex[(ch >> 4) & 15];
+      output += hex[ch & 15];
+    } else {
+      if (ch == L'\\' || ch == L'"') output += L'\\';
+      output += ch;
+    }
+  }
+  output += L'"';
+}
+
+void appendPaths(std::wstring &output, const std::vector<std::wstring> &paths) {
+  output += L'[';
+  for (size_t i = 0; i < paths.size(); ++i) {
+    if (i) output += L", ";
+    quote(output, paths[i]);
+  }
+  output += L']';
+}
+
+std::string formatJson(const Layout &layout) {
+  const auto &groups = layout.groups;
+  std::wstring content = L"{\n  \"version\": " + std::to_wstring(jsonVersion) + L",\n  \"groups\": [";
+  for (size_t i = 0; i < groups.size(); ++i) {
+    const auto &group = groups[i];
+    if (i) content += L',';
+    content += L"\n    {\n      \"name\": ";
+    quote(content, group.name);
+    content += L",\n      \"bounds\": {\"left\": " + std::to_wstring(group.bounds.left) +
+               L", \"top\": " + std::to_wstring(group.bounds.top) +
+               L", \"right\": " + std::to_wstring(group.bounds.right) +
+               L", \"bottom\": " + std::to_wstring(group.bounds.bottom) + L"},\n      \"collapsed\": ";
+    content += group.collapsed ? L"true" : L"false";
+    content += L",\n      \"view\": ";
+    quote(content, viewNames[static_cast<size_t>(group.view)]);
+    content += L",\n      \"sort\": ";
+    quote(content, sortNames[static_cast<size_t>(group.sort)]);
+    if (group.displayMode != DisplayMode::Scroll) {
+      content += L",\n      \"displayMode\": ";
+      quote(content, displayModeNames[static_cast<size_t>(group.displayMode)]);
+    }
+    content += L",\n      \"iconSize\": " + std::to_wstring(group.iconSize);
+    if (group.itemSpacing > 0) content += L",\n      \"itemSpacing\": " + std::to_wstring(group.itemSpacing);
+    if (group.opacity) content += L",\n      \"opacity\": " + std::to_wstring(*group.opacity);
+    if (group.tint) content += L",\n      \"tint\": " + std::to_wstring(*group.tint);
+    if (group.titleHeight != 36) content += L",\n      \"titleHeight\": " + std::to_wstring(group.titleHeight);
+    if (group.titleStyle != TitleStyle::Text)
+      content += L",\n      \"titleStyle\": " + std::to_wstring(static_cast<int>(group.titleStyle));
+    if (!group.titleIcon.empty()) {
+      content += L",\n      \"titleIcon\": ";
+      quote(content, group.titleIcon);
+    }
+    content += L",\n      \"paths\": ";
+    appendPaths(content, group.paths);
+    content += L",\n      \"tabs\": [";
+    for (size_t j = 0; j < group.tabs.size(); ++j) {
+      const auto &tab = group.tabs[j];
+      if (j) content += L',';
+      content += L"\n        {\"name\": ";
+      quote(content, tab.name);
+      content += L", \"folder\": ";
+      quote(content, tab.folder);
+      content += L", \"paths\": ";
+      appendPaths(content, tab.paths);
+      if (tab.detachedTint) {
+        content += L", \"detachedTint\": ";
+        content += *tab.detachedTint ? std::to_wstring(**tab.detachedTint) : L"null";
+      }
+      content += L'}';
+    }
+    if (!group.tabs.empty()) content += L"\n      ";
+    content += L"]\n    }";
+  }
+  if (!groups.empty()) content += L"\n  ";
+  content += L"],\n  \"looseItems\": [";
+  for (size_t i = 0; i < layout.looseItems.size(); ++i) {
+    const auto &item = layout.looseItems[i];
+    if (i) content += L',';
+    content += L"\n    {\"path\": ";
+    quote(content, item.path);
+    content += L", \"x\": " + std::to_wstring(item.position.x) + L", \"y\": " +
+               std::to_wstring(item.position.y) + L"}";
+  }
+  if (!layout.looseItems.empty()) content += L"\n  ";
+  content += L"]\n}\n";
+  if (content.size() > jsonSizeLimit) fn::fail(lang::text(writeError), ERROR_FILE_TOO_LARGE);
+  const auto length = static_cast<int>(content.size());
+  const auto size = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, content.data(), length, nullptr, 0, nullptr, nullptr);
+  if (!size) fn::fail(lang::text(writeError));
+  if (size > static_cast<int>(jsonSizeLimit)) fn::fail(lang::text(writeError), ERROR_FILE_TOO_LARGE);
+  std::string bytes(size, '\0');
+  if (!WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, content.data(), length, bytes.data(), size, nullptr, nullptr))
+    fn::fail(lang::text(writeError));
+  return bytes;
+}
+
+std::optional<Layout> loadJson(const fn::fs::path &file) {
+  const File input{CreateFileW(file.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE,
+                              nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr)};
+  if (input.handle == INVALID_HANDLE_VALUE) {
+    const auto error = GetLastError();
+    if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND) return {};
+    fn::fail(lang::text(readError), error);
+  }
+  BY_HANDLE_FILE_INFORMATION info{};
+  if (!GetFileInformationByHandle(input.handle, &info)) fn::fail(lang::text(readError));
+  if (info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT))
+    fn::fail(lang::text(readError), ERROR_INVALID_DATA);
+  if (info.nFileSizeHigh || info.nFileSizeLow > jsonSizeLimit) fn::fail(lang::text(readError), ERROR_FILE_TOO_LARGE);
+  std::string bytes(info.nFileSizeLow, '\0');
+  DWORD received = 0;
+  if (!ReadFile(input.handle, bytes.data(), info.nFileSizeLow, &received, nullptr))
+    fn::fail(lang::text(readError));
+  if (received != info.nFileSizeLow) fn::fail(lang::text(readError), ERROR_HANDLE_EOF);
+  return parseJson(bytes);
+}
+
+bool writeJson(const Layout &layout, const fn::fs::path &file, bool replace) {
+  validate(layout, writeError);
+  const auto bytes = formatJson(layout);
+  const auto attributes = GetFileAttributesW(file.c_str());
+  if (attributes != INVALID_FILE_ATTRIBUTES) {
+    if (!replace) return false;
+    if (attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_READONLY))
+      fn::fail(lang::text(writeError), ERROR_ACCESS_DENIED);
+  }
+  const auto directory = file.parent_path();
+  if (!directory.empty()) {
+    std::error_code error;
+    fn::fs::create_directories(directory, error);
+    if (error) fn::fail(lang::text(writeError), static_cast<DWORD>(error.value()));
+  }
+  GUID id{};
+  if (const auto status = CoCreateGuid(&id); FAILED(status))
+    fn::fail(lang::text(writeError), static_cast<DWORD>(status));
+  wchar_t suffix[40]{};
+  if (!StringFromGUID2(id, suffix, ARRAYSIZE(suffix))) fn::fail(lang::text(writeError), ERROR_INVALID_DATA);
+  auto temporary = file;
+  temporary += std::wstring(L".") + suffix + L".tmp";
+  bool created = false;
+  try {
+    {
+      const File output{CreateFileW(temporary.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+                                    FILE_ATTRIBUTE_NORMAL, nullptr)};
+      if (output.handle == INVALID_HANDLE_VALUE) fn::fail(lang::text(writeError));
+      created = true;
+      DWORD written = 0;
+      if (!WriteFile(output.handle, bytes.data(), static_cast<DWORD>(bytes.size()), &written, nullptr))
+        fn::fail(lang::text(writeError));
+      if (written != bytes.size()) fn::fail(lang::text(writeError), ERROR_WRITE_FAULT);
+      if (!FlushFileBuffers(output.handle)) fn::fail(lang::text(writeError));
+    }
+    const DWORD flags = MOVEFILE_WRITE_THROUGH | (replace ? MOVEFILE_REPLACE_EXISTING : 0);
+    if (MoveFileExW(temporary.c_str(), file.c_str(), flags)) return true;
+    const auto error = GetLastError();
+    if (!replace && (error == ERROR_FILE_EXISTS || error == ERROR_ALREADY_EXISTS)) {
+      DeleteFileW(temporary.c_str());
+      return false;
+    }
+    fn::fail(lang::text(writeError), error);
+  } catch (...) {
+    if (created) DeleteFileW(temporary.c_str());
+    throw;
+  }
+}
+}
+
+std::filesystem::path layoutPath() { return fn::localRoot() / L"DesktopGroups.json"; }
+
+Layout loadLayout(const fn::fs::path &file) {
+  if (auto layout = loadJson(file)) return std::move(*layout);
+  if (auto legacy = loadLegacy()) {
+    if (writeJson(*legacy, file, false)) return std::move(*legacy);
+    if (auto layout = loadJson(file)) return std::move(*layout);
+    fn::fail(lang::text(readError), ERROR_FILE_NOT_FOUND);
+  }
+  return {};
+}
+
+void saveLayout(const Layout &layout, const fn::fs::path &file) { writeJson(layout, file, true); }
+
+std::vector<Group> load(const fn::fs::path &file) { return loadLayout(file).groups; }
+
+void save(const std::vector<Group> &groups, const fn::fs::path &file) {
+  Layout layout{groups, {}};
+  if (auto previous = loadJson(file)) {
+    PathSet groupedPaths;
+    validateGroups(groups, groupedPaths, writeError);
+    std::erase_if(previous->looseItems, [&](const auto &item) { return groupedPaths.contains(item.path); });
+    layout.looseItems = std::move(previous->looseItems);
+  }
+  saveLayout(layout, file);
+}
+
+std::vector<std::wstring> desktopRoots() {
+  std::vector<std::wstring> roots;
+  for (const auto *id : {&FOLDERID_Desktop, &FOLDERID_PublicDesktop}) {
+    PWSTR raw = nullptr;
+    const auto result = SHGetKnownFolderPath(*id, KF_FLAG_DONT_VERIFY, nullptr, &raw);
+    std::unique_ptr<wchar_t, decltype(&CoTaskMemFree)> path(raw, CoTaskMemFree);
+    if (FAILED(result) || !path) continue;
+    auto root = quick::normalize(path.get());
+    if (!root.empty() && (roots.empty() || !samePath(roots.front(), root))) roots.push_back(std::move(root));
+  }
+  return roots;
+}
+
+bool samePath(const std::wstring &a, const std::wstring &b) {
+  return quick::same(a, b);
+}
+
+std::wstring desktopItem(const std::vector<std::wstring> &roots, const std::wstring &path) {
+  auto normalized = quick::normalize(path);
+  if (normalized.empty()) return {};
+  const fn::fs::path item(normalized);
+  const auto parent = item.parent_path().native();
+  if (!item.has_filename() ||
+      std::none_of(roots.begin(), roots.end(), [&](const auto &root) { return samePath(root, parent); }))
+    return {};
+  WIN32_FIND_DATAW data{};
+  const auto search = FindFirstFileW(normalized.c_str(), &data);
+  if (search == INVALID_HANDLE_VALUE) return {};
+  FindClose(search);
+  if (samePath(data.cFileName, L"desktop.ini")) return {};
+  return (item.parent_path() / data.cFileName).native();
+}
+
+bool addItem(std::vector<Group> &groups, size_t target, const std::wstring &path, size_t tab) {
+  if (target >= groups.size()) return false;
+  auto &group = groups[target];
+  if (tab > group.tabs.size() || (tab && !group.tabs[tab - 1].folder.empty())) return false;
+  auto normalized = quick::normalize(path);
+  if (normalized.empty()) return false;
+  auto &items = tab ? group.tabs[tab - 1].paths : group.paths;
+  if (std::any_of(items.begin(), items.end(), [&](const auto &item) { return samePath(item, normalized); }))
+    return false;
+
+  items.push_back(std::move(normalized));
+  const auto removeFromOtherTab = [&](std::vector<std::wstring> &entries) {
+    if (&entries != &items)
+      std::erase_if(entries, [&](const auto &item) { return samePath(item, items.back()); });
+  };
+  for (auto &candidate : groups) {
+    removeFromOtherTab(candidate.paths);
+    for (auto &otherTab : candidate.tabs) removeFromOtherTab(otherTab.paths);
+  }
+  return true;
+}
+
+bool mergeGroups(std::vector<Group> &groups, size_t source, size_t target) {
+  if (!source || !target || source == target || source >= groups.size() || target >= groups.size()) return false;
+  auto &from = groups[source];
+  auto &tabs = groups[target].tabs;
+  tabs.reserve(tabs.size() + 1 + from.tabs.size());
+  tabs.push_back({std::move(from.name), {}, std::move(from.paths)});
+  tabs.back().detachedTint.emplace(from.tint);
+  for (auto &tab : from.tabs) {
+    if (!tab.detachedTint) tab.detachedTint.emplace(from.tint);
+    tabs.push_back(std::move(tab));
+  }
+  groups.erase(groups.begin() + source);
+  return true;
+}
+
+bool detachTab(std::vector<Group> &groups, size_t group, size_t tabIndex, RECT bounds) {
+  if (!group || group >= groups.size() || !tabIndex || tabIndex > groups[group].tabs.size() ||
+      !validBounds(bounds)) return false;
+  auto &from = groups[group];
+  const auto position = from.tabs.begin() + (tabIndex - 1);
+  Group detached;
+  detached.name = position->name;
+  detached.bounds = bounds;
+  detached.view = from.view;
+  detached.sort = from.sort;
+  detached.iconSize = from.iconSize;
+  detached.opacity = from.opacity;
+  detached.tint = position->detachedTint.value_or(from.tint);
+  detached.titleHeight = from.titleHeight;
+  detached.titleStyle = from.titleStyle;
+  detached.titleIcon = from.titleIcon;
+  detached.displayMode = from.displayMode;
+  detached.itemSpacing = from.itemSpacing;
+  if (position->folder.empty()) detached.paths = position->paths;
+  else {
+    detached.tabs.push_back(*position);
+    detached.tabs.back().detachedTint.reset();
+  }
+  // Adding the new group can reallocate the vector.
+  groups.push_back(std::move(detached));
+  auto &tabs = groups[group].tabs;
+  tabs.erase(tabs.begin() + (tabIndex - 1));
+  return true;
+}
+}

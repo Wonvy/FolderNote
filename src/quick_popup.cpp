@@ -11,12 +11,46 @@
 #include <uxtheme.h>
 #include <algorithm>
 #include <array>
+#include <utility>
 
 namespace quick::popup {
 namespace {
 constexpr wchar_t panelClass[] = L"FolderNote.QuickFolders.Popup.v2";
 constexpr UINT checkFocus = WM_APP + 71, contextKey = WM_APP + 72, dismiss = WM_APP + 73, iconsReady = WM_APP + 74;
+constexpr UINT sliderOutsideMove = WM_APP + 75, sliderOutsideRelease = WM_APP + 76;
 constexpr UINT_PTR hoverTimer = 1, loadingTimer = 2, tipTimer = 3;
+wchar_t sliderUnit(const Slider &slider) { return slider.hue ? L'\u00b0' : L'%'; }
+
+COLORREF rainbowColor(int angle) {
+  constexpr std::array colors{RGB(255, 0, 0), RGB(255, 255, 0), RGB(0, 255, 0), RGB(0, 255, 255),
+                              RGB(0, 0, 255), RGB(255, 0, 255), RGB(255, 0, 0)};
+  const int sector = angle / 60, offset = angle % 60;
+  const auto from = colors[sector], to = colors[sector + 1];
+  const auto mix = [offset](int start, int end) { return (start * (60 - offset) + end * offset) / 60; };
+  return RGB(mix(GetRValue(from), GetRValue(to)), mix(GetGValue(from), GetGValue(to)),
+             mix(GetBValue(from), GetBValue(to)));
+}
+
+void paintHueTrack(HDC dc, const RECT &track) {
+  if (IsRectEmpty(&track)) return;
+  const int saved = SaveDC(dc);
+  if (!saved) return;
+  const int diameter = track.bottom - track.top;
+  const auto rounded = CreateRoundRectRgn(track.left, track.top, track.right, track.bottom, diameter, diameter);
+  if (rounded) {
+    ExtSelectClipRgn(dc, rounded, RGN_AND);
+    DeleteObject(rounded);
+  }
+  const auto brush = static_cast<HBRUSH>(GetStockObject(DC_BRUSH));
+  for (LONG x = track.left; x < track.right; ++x) {
+    const int angle = MulDiv(x - track.left, 359, std::max<LONG>(1, track.right - track.left - 1));
+    SetDCBrushColor(dc, rainbowColor(angle));
+    const RECT strip{x, track.top, x + 1, track.bottom};
+    FillRect(dc, &strip, brush);
+  }
+  RestoreDC(dc, saved);
+}
+
 wchar_t actionGlyph(Symbol symbol) {
   switch (symbol) {
   case Symbol::Star: return L'\xE718';
@@ -58,6 +92,9 @@ struct Session {
   size_t active = 0, pendingLevel = 0;
   int pendingRow = -1, downRow = -1, downAction = -1;
   size_t downLevel = 0;
+  struct SliderDrag { size_t level; int row, initial; };
+  std::optional<SliderDrag> sliderDrag;
+  bool releasingSliderCapture = false;
   POINT lastMouse{LONG_MIN, LONG_MIN};
   explicit Session(HINSTANCE value, ui::ThemeMode mode) : instance(value) { theme.reset(mode); }
   ~Session() { close(); DeleteObject(font); DeleteObject(smallFont); DeleteObject(symbols); if (folder) DestroyIcon(folder); }
@@ -124,6 +161,7 @@ struct Session {
   void finish(unsigned command = 0) {
     if (done) return;
     done = true; selected = command; armed = false;
+    cancelSlider();
     hideTip();
     if (root()) { KillTimer(root(), hoverTimer); KillTimer(root(), loadingTimer); }
     if (family(GetCapture())) ReleaseCapture();
@@ -135,6 +173,7 @@ struct Session {
   }
   void close() {
     armed = false;
+    cancelSlider();
     hideTip();
     if (tooltip) { DestroyWindow(tooltip); tooltip = nullptr; }
     iconCache.reset();
@@ -142,12 +181,18 @@ struct Session {
     while (!panels.empty()) { auto panel = std::move(panels.back()); panels.pop_back(); if (IsWindow(panel->window)) DestroyWindow(panel->window); }
   }
   void trim(size_t count) {
+    if (sliderDrag && sliderDrag->level >= count) cancelSlider();
     if (panels.size() > count) hideTip();
     while (panels.size() > count) { auto panel = std::move(panels.back()); panels.pop_back(); DestroyWindow(panel->window); }
     active = std::min(active, panels.size() - 1);
   }
-  int height(const Item &item) const { return px(item.row == Row::Separator ? 9 : item.row == Row::Toolbar ? 34 : 28); }
+  int height(const Branch &branch, const Item &item) const {
+    if (item.slider) return px(50);
+    if (branch.compact) return px(item.row == Row::Separator ? 7 : 26);
+    return px(item.row == Row::Separator ? 9 : item.row == Row::Toolbar ? 34 : 28);
+  }
   bool actionable(const Item &item) const {
+    if (item.slider) return item.slider->minimum < item.slider->maximum;
     if (!item.actions.empty()) return std::any_of(item.actions.begin(), item.actions.end(), [](const auto &action) { return action.enabled; });
     return item.row == Row::Action && (item.command || item.children);
   }
@@ -156,6 +201,69 @@ struct Session {
     int width = 0;
     for (int i = first; i < last; ++i) width += actionWidth(item.actions[i]) + px(4);
     return width;
+  }
+  RECT sliderTrack(RECT row) const {
+    const int center = row.bottom - px(14);
+    return {row.left + px(14), center - px(2), row.right - px(14), center + px(2)};
+  }
+  void previewSlider(Panel &panel, int row, int value) {
+    auto &slider = *panel.branch->items[row].slider;
+    value = std::clamp(value, slider.minimum, slider.maximum);
+    if (slider.value == value) return;
+    slider.value = value;
+    InvalidateRect(panel.list, nullptr, FALSE);
+    if (slider.preview) slider.preview(value);
+  }
+  void commitSlider(Panel &panel, int row, int initial) {
+    const auto &slider = *panel.branch->items[row].slider;
+    if (slider.value != initial && slider.commit && !slider.commit(slider.value))
+      previewSlider(panel, row, initial);
+  }
+  void releaseSliderCapture() {
+    if (GetCapture() != root()) return;
+    releasingSliderCapture = true;
+    ReleaseCapture();
+    releasingSliderCapture = false;
+  }
+  void cancelSlider() {
+    if (!sliderDrag) return;
+    const auto [level, row, initial] = *std::exchange(sliderDrag, std::nullopt);
+    try { previewSlider(*panels[level], row, initial); } catch (...) {}
+    releaseSliderCapture();
+  }
+  void moveSlider(POINT point, bool release = false) {
+    if (!sliderDrag) return;
+    const auto [level, row, initial] = *sliderDrag;
+    auto &panel = *panels[level];
+    RECT bounds{};
+    SendMessageW(panel.list, LB_GETITEMRECT, row, reinterpret_cast<LPARAM>(&bounds));
+    ScreenToClient(panel.list, &point);
+    const auto track = sliderTrack(bounds);
+    const auto &slider = *panel.branch->items[row].slider;
+    const auto width = std::max(1L, track.right - track.left);
+    previewSlider(panel, row, slider.minimum +
+        MulDiv(std::clamp(point.x - track.left, 0L, width), slider.maximum - slider.minimum, width));
+    if (!release) return;
+    releaseSliderCapture();
+    commitSlider(panel, row, initial);
+    sliderDrag.reset();
+  }
+  bool beginSlider(Panel &panel, int row, POINT point) {
+    if (row < 0 || size_t(row) >= panel.branch->items.size()) return false;
+    const auto &slider = panel.branch->items[row].slider;
+    if (!slider || slider->minimum >= slider->maximum) return false;
+    RECT bounds{};
+    SendMessageW(panel.list, LB_GETITEMRECT, row, reinterpret_cast<LPARAM>(&bounds));
+    POINT local = point;
+    ScreenToClient(panel.list, &local);
+    if (local.y < bounds.top + px(22)) return false;
+    active = panel.level;
+    KillTimer(root(), hoverTimer);
+    pendingRow = -1;
+    sliderDrag = SliderDrag{panel.level, row, slider->value};
+    SetCapture(root());
+    moveSlider(point);
+    return true;
   }
   RECT actionRect(const Item &item, RECT row, int action) const {
     int size = px(28);
@@ -174,10 +282,16 @@ struct Session {
     return {left, top, left + actionWidth(item.actions[action]), top + size};
   }
   void populate(Panel &panel) {
+    if (sliderDrag && sliderDrag->level == panel.level) cancelSlider();
     SendMessageW(panel.list, WM_SETREDRAW, FALSE, 0);
     SendMessageW(panel.list, LB_RESETCONTENT, 0, 0);
-    for (const auto &item : panel.branch->items) {
+    for (auto &item : panel.branch->items) {
       std::wstring accessible = item.title;
+      if (item.slider && item.slider->minimum < item.slider->maximum) {
+        auto &slider = *item.slider;
+        slider.value = std::clamp(slider.value, slider.minimum, slider.maximum);
+      }
+      if (item.checked) accessible += lang::text(L"（已选）");
       for (const auto &action : item.actions) {
         if (!accessible.empty()) accessible += lang::text(L"；");
         accessible += action.title;
@@ -185,7 +299,7 @@ struct Session {
         else if (action.checked) accessible += lang::text(L"（已选）");
       }
       int row = static_cast<int>(SendMessageW(panel.list, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(accessible.c_str())));
-      SendMessageW(panel.list, LB_SETITEMHEIGHT, row, height(item));
+      SendMessageW(panel.list, LB_SETITEMHEIGHT, row, height(*panel.branch, item));
     }
     panel.selected = -1; panel.selectedAction = -1;
     SendMessageW(panel.list, WM_SETREDRAW, TRUE, 0); InvalidateRect(panel.window, nullptr, TRUE); InvalidateRect(panel.list, nullptr, TRUE);
@@ -206,8 +320,8 @@ struct Session {
     MONITORINFO monitor{sizeof(monitor)};
     GetMonitorInfoW(MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST), &monitor);
     RECT work = monitor.rcWork;
-    int content = px(16); for (const auto &item : panel.branch->items) content += height(item);
-    int width = std::min(px(260), int(work.right - work.left));
+    int content = px(16); for (const auto &item : panel.branch->items) content += height(*panel.branch, item);
+    int width = std::min(px(panel.branch->compact ? 196 : 260), int(work.right - work.left));
     const auto availableHeight = keepTop ? work.bottom - point.y : work.bottom - work.top - px(16);
     int heightPixels = std::min(content, static_cast<int>(availableHeight));
     heightPixels = std::max(px(45), heightPixels);
@@ -260,7 +374,7 @@ struct Session {
     auto &panel = *panels[level];
     if (row < 0 || size_t(row) >= panel.branch->items.size()) return;
     auto &item = panel.branch->items[row];
-    if (!actionable(item)) return;
+    if (!actionable(item) || item.slider) return;
     if (!item.actions.empty()) {
       int index = action < 0 ? std::max(0, panel.selectedAction) : action;
       if (size_t(index) < item.actions.size() && item.actions[index].enabled &&
@@ -294,6 +408,7 @@ struct Session {
   }
   void mouse(POINT point) {
     if (done) return;
+    if (sliderDrag) { moveSlider(point); return; }
     if (point.x == lastMouse.x && point.y == lastMouse.y) return;
     lastMouse = point;
     auto [panel, row, action] = hit(point);
@@ -327,9 +442,23 @@ struct Session {
   }
   void key(WPARAM key) {
     if (done || panels.empty()) return;
+    if (sliderDrag && key != VK_ESCAPE) return;
     hideTip();
     KillTimer(root(), hoverTimer);
     auto &panel = *panels[active];
+    if (panel.selected >= 0 && (key == VK_LEFT || key == VK_RIGHT)) {
+      if (const auto &slider = panel.branch->items[panel.selected].slider) {
+        const int initial = slider->value;
+        try {
+          previewSlider(panel, panel.selected, initial + (key == VK_LEFT ? -1 : 1));
+          commitSlider(panel, panel.selected, initial);
+        } catch (...) {
+          previewSlider(panel, panel.selected, initial);
+          throw;
+        }
+        return;
+      }
+    }
     if (panel.selected >= 0 && !panel.branch->items[panel.selected].actions.empty() && (key == VK_LEFT || key == VK_RIGHT)) {
       const auto &actions = panel.branch->items[panel.selected].actions;
       int count = static_cast<int>(actions.size()), next = panel.selectedAction;
@@ -365,25 +494,77 @@ struct Session {
   void draw(const DRAWITEMSTRUCT &draw, Panel &panel) {
     if (draw.itemID >= panel.branch->items.size()) return;
     const auto &item = panel.branch->items[draw.itemID]; const auto &p = theme.colors;
+    const bool compact = panel.branch->compact;
     RECT rect = draw.rcItem; HDC dc = draw.hDC;
     FillRect(dc, &rect, theme.card);
+    if (const auto &slider = item.slider) {
+      const bool hot = panel.selected == int(draw.itemID);
+      if (hot) {
+        const auto fill = p.highContrast ? p.accent : p.hover;
+        ui::rounded(dc, rect, fill, fill, px(4));
+      }
+      const auto previous = SelectObject(dc, font);
+      const auto color = hot && p.highContrast ? p.onAccent : p.text;
+      RECT label{rect.left + px(10), rect.top + px(3), rect.right - px(52), rect.top + px(25)};
+      ui::text(dc, item.title, label, color);
+      label.left = label.right;
+      label.right = rect.right - px(10);
+      auto value = std::to_wstring(slider->value);
+      if (slider->showUnit) value += sliderUnit(*slider);
+      ui::text(dc, value, label, color, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+      SelectObject(dc, previous);
+      const auto track = sliderTrack(rect);
+      const int center = track.left + MulDiv(slider->value - slider->minimum, track.right - track.left,
+                                            std::max(1, slider->maximum - slider->minimum));
+      if (slider->hue) {
+        auto hueTrack = track;
+        InflateRect(&hueTrack, 0, px(1));
+        paintHueTrack(dc, hueTrack);
+        const int middle = (track.top + track.bottom) / 2;
+        const int radius = px(7);
+        const RECT thumb{center - radius, middle - radius, center + radius, middle + radius};
+        ui::rounded(dc, thumb, p.dark ? RGB(248, 248, 248) : RGB(253, 253, 253), p.border, radius);
+        auto swatch = thumb;
+        InflateRect(&swatch, -px(2), -px(2));
+        const auto hue = rainbowColor(std::clamp(slider->value, 0, 359));
+        ui::rounded(dc, swatch, hue, hue, px(5));
+      } else {
+        ui::rounded(dc, track, p.border, p.border, px(2));
+        if (center > track.left) {
+          const RECT fill{track.left, track.top, center, track.bottom};
+          ui::rounded(dc, fill, color, color, px(2));
+        }
+        const RECT thumb{center - px(5), track.top - px(3), center + px(5), track.bottom + px(3)};
+        ui::rounded(dc, thumb, p.accent, p.highContrast ? color : p.accent, px(5));
+      }
+      return;
+    }
     if (item.row == Row::Separator) {
       RECT line{rect.left + px(8), (rect.top + rect.bottom) / 2, rect.right - px(8), (rect.top + rect.bottom) / 2 + 1};
       auto brush = CreateSolidBrush(p.border); FillRect(dc, &line, brush); DeleteObject(brush); return;
     }
     bool selectedRow = panel.selected == int(draw.itemID) && actionable(item);
-    if (selectedRow && item.actions.empty()) ui::rounded(dc, rect, p.hover, p.hover, px(4));
+    if (selectedRow && item.actions.empty()) {
+      const auto fill = p.highContrast ? p.accent : p.hover;
+      ui::rounded(dc, rect, fill, fill, px(4));
+      if (!p.highContrast && !compact) {
+        RECT indicator{rect.left + px(3), rect.top + px(6), rect.left + px(5), rect.bottom - px(6)};
+        auto brush = CreateSolidBrush(p.accent);
+        FillRect(dc, &indicator, brush);
+        DeleteObject(brush);
+      }
+    }
     bool caption = item.row == Row::Heading || item.row == Row::Hint || item.row == Row::Toolbar;
     auto old = SelectObject(dc, caption ? smallFont : font);
     auto color = caption ? p.muted : selectedRow && p.highContrast ? p.onAccent : p.text;
     int leading = static_cast<int>(std::min<size_t>(item.leadingActions, item.actions.size()));
     RECT label = rect;
-    label.left += px(item.row == Row::Action ? 31 : 9) + actionsWidth(item, 0, leading);
+    label.left += px(item.row == Row::Action && !compact ? 31 : 9) + actionsWidth(item, 0, leading);
     label.right -= px(22) + actionsWidth(item, leading, int(item.actions.size()));
     if (item.symbol == Symbol::More) {
       SelectObject(dc, symbols); ui::text(dc, L"\xE712", rect, color, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
     } else ui::text(dc, item.title, label, color);
-    if (item.row == Row::Action && item.symbol != Symbol::More) {
+    if (item.row == Row::Action && !compact && item.symbol != Symbol::More) {
       int x = rect.left + px(7), y = rect.top + (rect.bottom - rect.top - px(16)) / 2;
       wchar_t glyph = item.iconPath.empty() ? actionGlyph(item.symbol) : L'\0';
       if (glyph) {
@@ -397,6 +578,12 @@ struct Session {
         SelectObject(dc, symbols); RECT arrow{rect.right - px(20), rect.top, rect.right - px(4), rect.bottom};
         ui::text(dc, L"\xE76C", arrow, p.muted, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
       }
+    }
+    if (item.checked) {
+      auto mark = rect;
+      mark.left = mark.right - px(26);
+      SelectObject(dc, symbols);
+      ui::text(dc, L"\xE73E", mark, color, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
     }
     for (size_t index = 0; index < item.actions.size(); ++index) {
       const auto &action = item.actions[index];
@@ -433,10 +620,17 @@ void CALLBACK foregroundChanged(HWINEVENTHOOK, DWORD, HWND, LONG, LONG, DWORD, D
 }
 LRESULT CALLBACK outsideMouse(int code, WPARAM message, LPARAM data) {
   if (code == HC_ACTION && watched && watched->armed && !watched->done) {
+    auto *mouse = reinterpret_cast<MSLLHOOKSTRUCT *>(data);
+    if (watched->sliderDrag && (message == WM_MOUSEMOVE || message == WM_LBUTTONUP)) {
+      // Capture can be limited to the popup's bounds without foreground access.
+      if (!watched->family(WindowFromPoint(mouse->pt)))
+        PostMessageW(watched->root(), message == WM_MOUSEMOVE ? sliderOutsideMove : sliderOutsideRelease,
+                     static_cast<WPARAM>(mouse->pt.x), static_cast<LPARAM>(mouse->pt.y));
+      return CallNextHookEx(nullptr, code, message, data);
+    }
     switch (message) {
-    case WM_LBUTTONDOWN: case WM_LBUTTONUP: case WM_RBUTTONDOWN:
+    case WM_LBUTTONDOWN: case WM_LBUTTONUP: case WM_RBUTTONDOWN: case WM_RBUTTONUP:
     case WM_MBUTTONDOWN: case WM_XBUTTONDOWN: case WM_MOUSEWHEEL: case WM_MOUSEHWHEEL: {
-      auto *mouse = reinterpret_cast<MSLLHOOKSTRUCT *>(data);
       if (!watched->family(WindowFromPoint(mouse->pt))) PostMessageW(watched->root(), dismiss, 0, 0);
       break;
     }
@@ -488,10 +682,9 @@ LRESULT CALLBACK listProc(HWND window, UINT message, WPARAM w, LPARAM l, UINT_PT
   if (message == WM_MOUSELEAVE) session.hideTip();
   if (message == WM_KEYDOWN) { session.key(w); return 0; }
   if (message == WM_SYSKEYDOWN) session.finish();
-  // No background mouse capture is needed. Native hit-testing delivers events
-  // to each visible list; route them through the same tested menu controller.
+  // Route the list's events through the popup controller.
   if (message == WM_MOUSEMOVE || message == WM_LBUTTONDOWN || message == WM_LBUTTONUP ||
-      message == WM_RBUTTONDOWN || message == WM_MBUTTONDOWN) {
+      message == WM_RBUTTONDOWN || message == WM_RBUTTONUP || message == WM_MBUTTONDOWN) {
     POINT point{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
     MapWindowPoints(window, session.root(), &point, 1);
     return SendMessageW(session.root(), message, w, MAKELPARAM(point.x, point.y));
@@ -505,7 +698,7 @@ LRESULT CALLBACK listProc(HWND window, UINT message, WPARAM w, LPARAM l, UINT_PT
     int total = 0, offset = 0;
     int top = static_cast<int>(SendMessageW(window, LB_GETTOPINDEX, 0, 0));
     for (size_t i = 0; i < panel.branch->items.size(); ++i) {
-      int height = session.height(panel.branch->items[i]); total += height;
+      int height = session.height(*panel.branch, panel.branch->items[i]); total += height;
       if (int(i) < top) offset += height;
     }
     if (total > client.bottom && client.bottom > 0) {
@@ -559,7 +752,9 @@ LRESULT CALLBACK panelProc(HWND window, UINT message, WPARAM w, LPARAM l) {
     case iconsReady:
       if (!session.done) for (auto &item : session.panels) InvalidateRect(item->list, nullptr, FALSE);
       return 0;
-    case WM_CAPTURECHANGED: if (session.armed && !session.family(reinterpret_cast<HWND>(l))) session.finish(); return 0;
+    case WM_CAPTURECHANGED:
+      if (session.armed && !session.releasingSliderCapture && !session.family(reinterpret_cast<HWND>(l))) session.finish();
+      return 0;
     case WM_CANCELMODE: case WM_CLOSE: session.finish(); return 0;
     case WM_KEYDOWN: session.key(w); return 0;
     case WM_SYSKEYDOWN: session.finish(); return 0;
@@ -570,16 +765,31 @@ LRESULT CALLBACK panelProc(HWND window, UINT message, WPARAM w, LPARAM l) {
       session.hideTip();
       POINT point{GET_X_LPARAM(l), GET_Y_LPARAM(l)}; ClientToScreen(window, &point);
       auto [hit, row, action] = session.hit(point);
-      if (!hit || message != WM_LBUTTONDOWN) { session.finish(); return 0; }
-      session.downLevel = hit->level; session.downRow = row; session.downAction = action; session.select(*hit, row, action); return 0;
+      if (!hit || message == WM_MBUTTONDOWN) { session.finish(); return 0; }
+      if (session.sliderDrag) return 0;
+      session.select(*hit, row, action);
+      if (message == WM_LBUTTONDOWN && session.beginSlider(*hit, row, point)) {
+        session.downRow = -1;
+        return 0;
+      }
+      session.downLevel = hit->level; session.downRow = row; session.downAction = action;
+      return 0;
     }
-    case WM_LBUTTONUP: {
+    case WM_LBUTTONUP: case WM_RBUTTONUP: {
       POINT point{GET_X_LPARAM(l), GET_Y_LPARAM(l)}; ClientToScreen(window, &point);
+      if (session.sliderDrag) {
+        if (message == WM_LBUTTONUP) session.moveSlider(point, true);
+        return 0;
+      }
       auto [hit, row, action] = session.hit(point);
       if (hit && hit->level == session.downLevel && row == session.downRow && action == session.downAction) session.activate(hit->level, row, action);
       session.downRow = -1; return 0;
     }
+    case sliderOutsideMove: case sliderOutsideRelease:
+      session.moveSlider({static_cast<LONG>(w), static_cast<LONG>(l)}, message == sliderOutsideRelease);
+      return 0;
     case WM_MOUSEWHEEL: {
+      if (session.sliderDrag) return 0;
       session.hideTip(); KillTimer(session.root(), hoverTimer); session.pendingRow = -1;
       auto [hit, row, action] = session.hit({GET_X_LPARAM(l), GET_Y_LPARAM(l)}); (void)row; (void)action;
       if (hit) {

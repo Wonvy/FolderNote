@@ -2,6 +2,7 @@
 #include "theme.h"
 #include <commctrl.h>
 #include <functional>
+#include <optional>
 
 namespace ui {
 // A native scrollbar control with a slim, theme-coloured thumb. Range and
@@ -10,6 +11,8 @@ class ScrollBar {
   HWND window_ = nullptr;
   Theme *theme_ = nullptr;
   std::function<void(int)> changed_;
+  std::optional<COLORREF> trackColor_;
+  std::function<void(HWND, HDC)> background_;
   UINT dpi_ = 96;
   int total_ = 0, page_ = 1, pos_ = 0, line_ = 1, wheel_ = 0;
   int grab_ = 0, repeat_ = 0;
@@ -28,6 +31,8 @@ public:
   int maximum() const { return total_ > page_ ? total_ - page_ : 0; }
   RECT thumb() const;
   void create(HWND parent, int id, Theme &, std::function<void(int)>, bool surface = false, bool horizontal = false);
+  void setTrackColor(COLORREF color);
+  void setBackground(std::function<void(HWND, HDC)> painter) { background_ = std::move(painter); }
   void configure(int total, int page, int position, UINT dpi, int line = 1);
   void move(int x, int y, int width, int height);
   void scrollTo(int position);

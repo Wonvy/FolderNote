@@ -7,17 +7,22 @@
 #include "app_version.h"
 #include "update.h"
 #include "context_manager.h"
+#include "desktop_groups.h"
+#include "desktop_groups_menu.h"
+#include "desktop_groups_render.h"
 #include "explorer_entries_page.h"
 #include "language.h"
 #include <commdlg.h>
 #include <dwmapi.h>
 #include <appmodel.h>
+#include <shellapi.h>
 #include <shlobj.h>
 #include <array>
 #include <chrono>
 #include <cstring>
 #include <vector>
 #include <memory>
+#include <optional>
 #include <future>
 #include <thread>
 #include <windowsx.h>
@@ -130,7 +135,17 @@ struct SettingKeys {
 };
 } // namespace
 
-static void applySettings(bool notes, Action action, Action preferred, bool quick, bool dialogs, ui::ThemeMode theme, bool tabs, bool preferNewTab, bool saveConfiguration) {
+struct DesktopGroupsSettings {
+  bool enabled, glass;
+  DWORD radius = 10, opacity = 55;
+  bool shadow = false;
+  DWORD shadowOpacity = 36, shadowBlur = 12, shadowOffset = 3;
+};
+static bool configuredDesktopGroupsGlass() {
+  return desktop_groups::configuredAppearance().glass;
+}
+static void applySettings(bool notes, Action action, Action preferred, bool quick, bool dialogs, ui::ThemeMode theme, bool tabs,
+                          bool preferNewTab, bool saveConfiguration, std::optional<DesktopGroupsSettings> desktopGroups = std::nullopt) {
   if (action != Action::Off && action != Action::Parent && action != Action::Back)
     throw fn::Error{lang::text(L"请选择有效的双击操作。")};
   if (preferred != Action::Parent && preferred != Action::Back)
@@ -138,7 +153,8 @@ static void applySettings(bool notes, Action action, Action preferred, bool quic
   if (DWORD(theme) > 2) throw fn::Error{lang::text(L"请选择有效的主题。")};
   SettingKeys keys;
   LSTATUS error = ERROR_SUCCESS;
-  std::array<SettingValue, 11> saved;
+  constexpr size_t configurationCount = 16;
+  std::array<SettingValue, configurationCount + 3> saved;
   if (saveConfiguration) {
     error = RegCreateKeyExW(HKEY_CURRENT_USER, configKey, 0, nullptr, 0,
                                KEY_QUERY_VALUE | KEY_SET_VALUE, nullptr, &keys.values[0], nullptr);
@@ -152,6 +168,16 @@ static void applySettings(bool notes, Action action, Action preferred, bool quic
     saved[5].read(keys.values[0], L"Theme");
     saved[6].read(keys.values[0], L"ExplorerTabsEnabled");
     saved[7].read(keys.values[0], L"ExplorerOpenInNewTab");
+    if (desktopGroups) {
+      saved[8].read(keys.values[0], L"DesktopGroupsEnabled");
+      saved[9].read(keys.values[0], L"DesktopGroupsGlass");
+      saved[10].read(keys.values[0], L"DesktopGroupsRadius");
+      saved[11].read(keys.values[0], L"DesktopGroupsOpacity");
+      saved[12].read(keys.values[0], L"DesktopGroupsShadow");
+      saved[13].read(keys.values[0], L"DesktopGroupsShadowOpacity");
+      saved[14].read(keys.values[0], L"DesktopGroupsShadowBlur");
+      saved[15].read(keys.values[0], L"DesktopGroupsShadowOffset");
+    }
   }
   // Only alter menus already installed by FolderNote. A modern-only or portable
   // installation must not gain incomplete legacy menu entries when saving.
@@ -163,10 +189,15 @@ static void applySettings(bool notes, Action action, Action preferred, bool quic
       continue;
     if (error)
       fn::fail(L"无法更新备注菜单开关", error);
-    saved[index + 8].read(keys.values[index + 1], L"LegacyDisable");
+    saved[index + configurationCount].read(keys.values[index + 1], L"LegacyDisable");
   }
-  const std::array<DWORD, 8> values{notes ? 1UL : 0UL, DWORD(action), DWORD(preferred), quick ? 1UL : 0UL, dialogs ? 1UL : 0UL,
-                                    DWORD(theme), tabs ? 1UL : 0UL, preferNewTab ? 1UL : 0UL};
+  const std::array<DWORD, configurationCount> values{notes ? 1UL : 0UL, DWORD(action), DWORD(preferred), quick ? 1UL : 0UL, dialogs ? 1UL : 0UL,
+      DWORD(theme), tabs ? 1UL : 0UL, preferNewTab ? 1UL : 0UL,
+      desktopGroups && desktopGroups->enabled ? 1UL : 0UL, desktopGroups && desktopGroups->glass ? 1UL : 0UL,
+      desktopGroups ? desktopGroups->radius : 0UL, desktopGroups ? desktopGroups->opacity : 0UL,
+      desktopGroups && desktopGroups->shadow ? 1UL : 0UL,
+      desktopGroups ? desktopGroups->shadowOpacity : 0UL, desktopGroups ? desktopGroups->shadowBlur : 0UL,
+      desktopGroups ? desktopGroups->shadowOffset : 0UL};
   for (size_t index = 0; index < saved.size(); ++index) {
     auto &value = saved[index];
     if (!value.key)
@@ -233,27 +264,57 @@ static HWND quickCheck;
 static HWND dialogCheck;
 static HWND tabsCheck;
 static HWND preferNewTabCheck;
+static HWND desktopGroupsCheck, desktopGroupsManager, desktopGroupsGlassCheck, desktopGroupsPreview;
 static HFONT font, headingFont;
 static HWND body, themeChoice, settingsWindow, managerPage, contextPage, entriesPage;
 static SettingsPage activePage = SettingsPage::Features;
 static int settingsSidebarWidth = 208;
 static bool draggingSettingsSidebar = false;
 static HWND updateTip;
-static constexpr std::array pageButtons{40, 41, 47, 49, 48};
+static constexpr std::array pageButtons{40, 41, 47, 49, 48, 50};
 static const wchar_t *pageTitle(size_t page) {
-  constexpr std::array labels{L"功能设置", L"置顶与历史", L"右键菜单管理", L"文件夹入口管理", L"设置"};
+  constexpr std::array labels{L"功能设置", L"置顶与历史", L"右键菜单管理", L"文件夹入口管理", L"设置", L"盒子样式"};
   return lang::text(labels[page]);
 }
 static UINT selectPageMessage() { return RegisterWindowMessageW(L"FolderNote.Settings.SelectPage.v1"); }
 static std::unique_ptr<ui::Theme> appearance;
 static constexpr int languageChoice = 43, languageExport = 44, languageImport = 45;
+static constexpr int desktopGroupsToggle = 22, desktopGroupsManage = 23, desktopGroupsGlassToggle = 24, desktopGroupsPreviewId = 25;
+static constexpr int boxGlass = 51, boxShadow = 52, boxRadius = 53, boxRadiusLabel = 55,
+                     boxPreview = 57, boxPreviewLabel = 58, boxStyleShortcut = 59;
+static constexpr int boxShadowOpacity = 60, boxShadowBlur = 61, boxShadowOffset = 62;
+static constexpr int boxShadowOpacityLabel = 63, boxShadowBlurLabel = 64, boxShadowOffsetLabel = 65;
+struct BoxSlider {
+  int control, label;
+  const wchar_t *name, *valueLabel;
+  DWORD desktop_groups::Appearance::*value;
+  int min, max;
+  bool desktop_groups::Appearance::*enabled;
+};
+static constexpr BoxSlider boxSliders[]{
+    {boxRadius, boxRadiusLabel, L"圆角", L"圆角  {0} px", &desktop_groups::Appearance::radius, 0, 20, nullptr},
+    {boxShadowOpacity, boxShadowOpacityLabel, L"投影不透明度", L"投影不透明度  {0}%",
+     &desktop_groups::Appearance::shadowOpacity, 0, 100, &desktop_groups::Appearance::shadow},
+    {boxShadowBlur, boxShadowBlurLabel, L"投影模糊", L"投影模糊  {0} px",
+     &desktop_groups::Appearance::shadowBlur, 1, 32, &desktop_groups::Appearance::shadow},
+    {boxShadowOffset, boxShadowOffsetLabel, L"垂直偏移", L"垂直偏移  {0} px",
+     &desktop_groups::Appearance::shadowOffset, 0, 20, &desktop_groups::Appearance::shadow},
+};
+static desktop_groups::Appearance boxStyle;
+static bool boxAppearancePreviewing = false;
 static bool reopenForLanguage = false;
 struct SettingsDraft {
-  std::array<LRESULT, 6> toggles;
+  std::array<LRESULT, 8> toggles;
   LRESULT action;
   ui::ThemeMode theme;
+  desktop_groups::Appearance boxStyle;
 };
 static std::optional<SettingsDraft> languageDraft;
+
+static void updateDesktopGroupsManager() {
+  EnableWindow(desktopGroupsManager, desktop_groups::enabled() &&
+      SendMessageW(desktopGroupsCheck, BM_GETCHECK, 0, 0) == BST_CHECKED);
+}
 
 static void refreshLanguageMenus() {
   for (size_t i = 0; i < std::size(fn::verbs); ++i) {
@@ -264,6 +325,9 @@ static void refreshLanguageMenus() {
     RegSetValueExW(key, nullptr, 0, REG_SZ, reinterpret_cast<const BYTE *>(title),
                    static_cast<DWORD>((wcslen(title) + 1) * sizeof(wchar_t)));
     RegCloseKey(key);
+  }
+  if (desktop_groups::enabled()) {
+    try { desktop_groups::configureDesktopMenu(quick::executable()); } catch (const fn::Error &) {}
   }
   SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
 }
@@ -368,7 +432,137 @@ struct Placement { HWND window; int x, y, width, height; };
 static std::vector<Placement> placements;
 static UINT dpi;
 static int scale(int n) { return MulDiv(n, dpi, 96); }
-static int contentHeight() { return scale(tabsSupported() ? 634 : 440); }
+static constexpr int desktopGroupsHeight = 232;
+static constexpr int desktopGroupsPreviewTop = 537, desktopGroupsPreviewHeight = 120;
+static int contentHeight() { return scale((tabsSupported() ? 634 : 440) + desktopGroupsHeight); }
+
+static COLORREF blend(COLORREF a, COLORREF b, int weight) {
+  const auto channel = [weight](int from, int to) { return (from * (100 - weight) + to * weight) / 100; };
+  return RGB(channel(GetRValue(a), GetRValue(b)), channel(GetGValue(a), GetGValue(b)), channel(GetBValue(a), GetBValue(b)));
+}
+
+static void updateBoxStylePreview(HWND owner) {
+  for (const auto &slider : boxSliders) {
+    const auto label = lang::format(slider.valueLabel, {std::to_wstring(boxStyle.*slider.value)});
+    SetDlgItemTextW(owner, slider.label, label.c_str());
+    const bool enabled = !slider.enabled || boxStyle.*slider.enabled;
+    EnableWindow(GetDlgItem(owner, slider.control), enabled);
+    EnableWindow(GetDlgItem(owner, slider.label), enabled);
+  }
+  InvalidateRect(GetDlgItem(owner, boxPreview), nullptr, FALSE);
+  InvalidateRect(desktopGroupsPreview, nullptr, FALSE);
+}
+
+static void previewBoxStyle(HWND owner, const desktop_groups::Appearance &previous) {
+  if (boxStyle == previous) return;
+  updateBoxStylePreview(owner);
+  if (IsWindowVisible(owner)) {
+    desktop_groups::previewAppearance(boxStyle);
+    boxAppearancePreviewing = true;
+  }
+}
+
+static void restoreBoxStylePreview() {
+  if (!boxAppearancePreviewing) return;
+  desktop_groups::restoreAppearance();
+  boxAppearancePreviewing = false;
+}
+
+static void paintDesktopGroupsPreview(const DRAWITEMSTRUCT &item) {
+  const auto dc = item.hDC;
+  const auto rect = item.rcItem;
+  const auto &colors = appearance->colors;
+  const bool stylePage = item.CtlID == boxPreview;
+  const bool glass = !colors.highContrast && (stylePage ? boxStyle.glass :
+      SendMessageW(desktopGroupsGlassCheck, BM_GETCHECK, 0, 0) == BST_CHECKED);
+  RECT panel{rect.left + scale(24), rect.top + scale(16),
+             std::min(rect.right - scale(24), rect.left + scale(264)), rect.bottom - scale(16)};
+  if (panel.right <= panel.left + scale(80)) return;
+
+  const auto brush = reinterpret_cast<HBRUSH>(GetStockObject(DC_BRUSH));
+  auto fill = [&](RECT area, COLORREF color) {
+    SetDCBrushColor(dc, color);
+    FillRect(dc, &area, brush);
+  };
+  auto wallpaper = [&](int tint, bool blurred = false) {
+    constexpr int steps = 60;
+    const int width = rect.right - rect.left;
+    for (int i = 0; i < steps; ++i) {
+      const auto color = i < steps / 2
+          ? blend(RGB(57, 120, 182), RGB(79, 77, 154), i * 200 / steps)
+          : blend(RGB(79, 77, 154), RGB(163, 99, 149), (i - steps / 2) * 200 / steps);
+      fill({rect.left + width * i / steps, rect.top, rect.left + width * (i + 1) / steps, rect.bottom},
+           blend(color, colors.field, tint));
+    }
+    if (!blurred) {
+      const auto color = blend(RGB(72, 66, 138), colors.field, tint);
+      const int height = rect.bottom - rect.top;
+      fill({rect.left + width / 3, rect.top + height / 4, rect.left + width * 2 / 3, rect.top + height / 2}, color);
+    }
+  };
+  if (colors.highContrast) fill(rect, colors.background);
+  else wallpaper(0);
+  if (!stylePage && SendMessageW(desktopGroupsCheck, BM_GETCHECK, 0, 0) != BST_CHECKED) return;
+
+  const int diameter = scale(boxStyle.radius * 2);
+  if (boxStyle.shadow && boxStyle.shadowOpacity > 0 && !colors.highContrast) {
+    // Use a reduced sample so the available preview area fits the full slider range.
+    const int spread = std::max(1, scale((boxStyle.shadowBlur + 1) / 2));
+    const int offset = scale((boxStyle.shadowOffset + 1) / 2);
+    for (int ring = spread; ring >= 0; --ring) {
+      auto shadow = panel;
+      OffsetRect(&shadow, 0, offset);
+      InflateRect(&shadow, ring, ring);
+      if (const auto edge = CreateRoundRectRgn(shadow.left, shadow.top, shadow.right, shadow.bottom,
+                                              diameter + ring * 2, diameter + ring * 2)) {
+        const int falloff = spread - ring;
+        const auto opacity = static_cast<int>(boxStyle.shadowOpacity) * falloff * falloff / (spread * spread);
+        SetDCBrushColor(dc, blend(RGB(82, 84, 153), RGB(0, 0, 0), opacity));
+        if (ring) FrameRgn(dc, edge, brush, 1, 1);
+        else FillRgn(dc, edge, brush);
+        DeleteObject(edge);
+      }
+    }
+  }
+  const auto shape = diameter ? CreateRoundRectRgn(panel.left, panel.top, panel.right, panel.bottom, diameter, diameter)
+                              : CreateRectRgnIndirect(&panel);
+  if (shape) {
+    if (const int saved = SaveDC(dc)) {
+      ExtSelectClipRgn(dc, shape, RGN_AND);
+      if (glass && boxStyle.opacity < 100) wallpaper(boxStyle.opacity, true);
+      else fill(panel, colors.field);
+      RestoreDC(dc, saved);
+    }
+    SetDCBrushColor(dc, desktop_groups::boxOutlineColor(colors.field, colors));
+    FrameRgn(dc, shape, brush, 1, 1);
+    DeleteObject(shape);
+  }
+  const int pad = scale(12), headerHeight = std::min(scale(36), static_cast<int>(panel.bottom - panel.top) / 2);
+  const auto previousFont = SelectObject(dc, font);
+  RECT title{panel.left + pad, panel.top, panel.right - scale(37), panel.top + headerHeight};
+  ui::text(dc, lang::text(L"文档"), title, colors.text);
+  SelectObject(dc, previousFont);
+  const int centerX = panel.right - scale(19), centerY = panel.top + headerHeight / 2, size = scale(5);
+  const POINT arrow[]{{centerX - size, centerY + size / 2}, {centerX, centerY - size / 2},
+                      {centerX + size, centerY + size / 2}};
+  if (const auto pen = CreatePen(PS_SOLID, std::max(1, scale(1)), colors.muted)) {
+    const auto previous = SelectObject(dc, pen);
+    Polyline(dc, arrow, ARRAYSIZE(arrow));
+    SelectObject(dc, previous);
+    DeleteObject(pen);
+  }
+  SHSTOCKICONINFO stock{sizeof(stock)};
+  if (FAILED(SHGetStockIconInfo(SIID_FOLDER, SHGSI_ICON | SHGSI_LARGEICON, &stock)) || !stock.hIcon) return;
+  const int y = panel.top + headerHeight + scale(9);
+  const int iconSize = std::min(scale(27), static_cast<int>(panel.bottom) - y - scale(6));
+  for (int i = 0; i < 3; ++i) {
+    const int x = panel.left + scale(16 + i * 49);
+    if (iconSize <= 0 || x + iconSize >= panel.right) break;
+    DrawIconEx(dc, x, y, stock.hIcon, iconSize, iconSize, 0, nullptr, DI_NORMAL);
+  }
+  DestroyIcon(stock.hIcon);
+}
+
 static void copyDiagnostics(HWND owner) {
   const auto text = diagnostics();
   auto memory = GlobalAlloc(GMEM_MOVEABLE, (text.size() + 1) * sizeof(wchar_t));
@@ -404,7 +598,7 @@ static void layoutBody() {
   for (const auto &item : placements) {
     const int left = scale(item.x);
     const bool mainSwitch = item.window == notesCheck || item.window == navigationCheck ||
-        item.window == quickCheck || item.window == tabsCheck;
+        item.window == quickCheck || item.window == tabsCheck || item.window == desktopGroupsCheck;
     const int right = client.right - scale(mainSwitch ? 40 : 86);
     int width = item.width < 0 ? right - left : std::min(scale(item.width), right - left);
     if (item.window == choice) {
@@ -469,6 +663,27 @@ static void layoutSettings() {
   preference(languageImport, 404, 132, 174, 32);
   preference(32, 0, 196, 210, 22);
   preference(17, 0, 224, 210, 130);
+  const int boxLeft = scale(sidebar + 24);
+  const int boxWidth = std::max(0, width - scale(sidebar + 48));
+  const int boxGap = scale(24);
+  const int boxColumn = std::max(0, (boxWidth - boxGap) / 2);
+  auto boxControl = [&](int id, int x, int y, int w, int h) {
+    auto control = GetDlgItem(settingsWindow, id);
+    MoveWindow(control, boxLeft + x, scale(y), w, h, TRUE);
+    ShowWindow(control, activePage == SettingsPage::BoxAppearance ? SW_SHOWNA : SW_HIDE);
+  };
+  boxControl(boxGlass, 0, 81, std::min(boxColumn, scale(224)), scale(26));
+  boxControl(boxShadow, boxColumn + boxGap, 81, std::min(boxColumn, scale(224)), scale(26));
+  for (size_t index = 0; index < std::size(boxSliders); ++index) {
+    const auto &slider = boxSliders[index];
+    const int x = index == 0 ? 0 : boxColumn + boxGap;
+    const int y = index == 0 ? 116 : 116 + 45 * static_cast<int>(index - 1);
+    boxControl(slider.label, x, y, boxColumn, scale(19));
+    boxControl(slider.control, x, y + 19, boxColumn, scale(23));
+  }
+  boxControl(boxPreviewLabel, 0, 257, boxWidth, scale(20));
+  const int previewHeight = std::clamp(height - scale(354), scale(92), scale(132));
+  boxControl(boxPreview, 0, 278, boxWidth, previewHeight);
   int bodyHeight = std::max(scale(40), height - scale(166));
   bool overflow = bodyHeight < contentHeight();
   const int contentLeft = scale(sidebar + 5);
@@ -489,7 +704,7 @@ static void layoutSettings() {
 }
 static void showPage(SettingsPage page) {
   activePage = page;
-  const std::array pages{body, managerPage, contextPage, entriesPage, HWND{}};
+  const std::array pages{body, managerPage, contextPage, entriesPage, HWND{}, HWND{}};
   const auto target = pages[size_t(page)];
   for (auto panel : pages)
     if (panel && panel != target) ShowWindow(panel, SW_HIDE);
@@ -524,12 +739,20 @@ static LRESULT CALLBACK contentProc(HWND h, UINT message, WPARAM w, LPARAM l) {
   LRESULT result = 0;
   if (appearance && appearance->handle(h, message, w, l, result)) return result;
   switch (message) {
+  case WM_DRAWITEM: {
+    const auto &item = *reinterpret_cast<const DRAWITEMSTRUCT *>(l);
+    if (item.CtlID == desktopGroupsPreviewId) {
+      paintDesktopGroupsPreview(item);
+      return TRUE;
+    }
+    break;
+  }
   case WM_PAINT: {
     PAINTSTRUCT paint{}; HDC dc = BeginPaint(h, &paint); RECT client{}; GetClientRect(h, &client);
     FillRect(dc, &client, appearance->background);
     SetDCBrushColor(dc, appearance->colors.border);
-    for (int separator : {94, 228, 445}) {
-      if (separator == 445 && !tabsSupported()) continue;
+    for (int separator : {94, 228, 445, 445 + desktopGroupsHeight}) {
+      if (separator == 445 + desktopGroupsHeight && !tabsSupported()) continue;
       const int y = scale(separator) - scrollPosition;
       RECT line{scale(20), y, client.right - scale(20), y + 1};
       FillRect(dc, &line, reinterpret_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
@@ -569,6 +792,10 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
   }
   if (m == WM_DRAWITEM && appearance) {
     auto *item = reinterpret_cast<DRAWITEMSTRUCT *>(l);
+    if (item->CtlID == boxPreview) {
+      paintDesktopGroupsPreview(*item);
+      return TRUE;
+    }
     if (item->CtlType == ODT_BUTTON && item->CtlID == updateButton) {
       const auto &p = appearance->colors;
       const bool selected = (item->itemState & ODS_SELECTED) != 0;
@@ -652,6 +879,26 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
           parent, reinterpret_cast<HMENU>(INT_PTR(id)), GetModuleHandleW(nullptr), nullptr);
       SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE); return control;
     };
+    INITCOMMONCONTROLSEX commonControls{sizeof(commonControls), ICC_BAR_CLASSES};
+    InitCommonControlsEx(&commonControls);
+    boxStyle = desktop_groups::configuredAppearance();
+    if (languageDraft) boxStyle = languageDraft->boxStyle;
+    constexpr DWORD appearanceCheck = BS_AUTOCHECKBOX | WS_TABSTOP;
+    const auto glassLabel = std::wstring(lang::text(L"毛玻璃效果")) + L" (Acrylic)";
+    auto glassBox = add(h, L"BUTTON", glassLabel.c_str(), appearanceCheck, boxGlass);
+    auto shadowBox = add(h, L"BUTTON", lang::text(L"投影"), appearanceCheck, boxShadow);
+    ui::toggleSwitch(glassBox);
+    ui::toggleSwitch(shadowBox);
+    SendMessageW(glassBox, BM_SETCHECK, boxStyle.glass ? BST_CHECKED : BST_UNCHECKED, 0);
+    SendMessageW(shadowBox, BM_SETCHECK, boxStyle.shadow ? BST_CHECKED : BST_UNCHECKED, 0);
+    for (const auto &spec : boxSliders) {
+      add(h, L"STATIC", L"", 0, spec.label);
+      const auto slider = add(h, TRACKBAR_CLASSW, lang::text(spec.name), TBS_NOTICKS | WS_TABSTOP, spec.control);
+      SendMessageW(slider, TBM_SETRANGE, TRUE, MAKELPARAM(spec.min, spec.max));
+      SendMessageW(slider, TBM_SETPOS, TRUE, boxStyle.*spec.value);
+    }
+    ui::muted(add(h, L"STATIC", lang::text(L"预览"), 0, boxPreviewLabel));
+    add(h, L"STATIC", lang::text(L"盒子样式预览"), SS_OWNERDRAW, boxPreview);
     HWND logo = add(h, L"STATIC", L"FolderNote", 0, 35);
     SendMessageW(logo, WM_SETFONT, reinterpret_cast<WPARAM>(headingFont), TRUE);
     auto subtitle = add(h, L"STATIC", lang::text(L"系统工具"), 0, 36);
@@ -736,24 +983,35 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     field(L"STATIC", lang::text(L"桌面和资源管理器中均可使用，悬停展开子目录。\n启用后运行后台组件，快速访问常用和最近打开的文件夹。"), 0, 86, 309, -40, 38, 0, true);
     field(L"STATIC", lang::text(L"选中项目后按中键，点击“复制”或“移动”，\n再选择目标文件夹；在空白处按中键也可使用。"), 0, 86, 352, -40, 38, 0, true);
     field(L"BUTTON", lang::text(L"置顶与历史 →"), WS_TABSTOP, 86, 402, 220, 28, 16);
+    desktopGroupsCheck = field(L"BUTTON", lang::text(L"桌面盒子"), checkStyle, 40, 462, -40, 26, desktopGroupsToggle);
+    SendMessageW(desktopGroupsCheck, BM_SETCHECK, desktop_groups::enabled() ? BST_CHECKED : BST_UNCHECKED, 0);
+    field(L"STATIC", lang::text(L"启用后，FolderNote 显示桌面盒子和待整理桌面。\n关闭并保存后，恢复 Windows 原有的桌面图标。"), 0, 86, 494, -40, 38, 0, true);
+    desktopGroupsGlassCheck = field(L"BUTTON", glassLabel.c_str(), checkStyle, 86, 538, 185, 26, desktopGroupsGlassToggle);
+    SendMessageW(desktopGroupsGlassCheck, BM_SETCHECK, configuredDesktopGroupsGlass() ? BST_CHECKED : BST_UNCHECKED, 0);
+    desktopGroupsManager = field(L"BUTTON", lang::text(L"管理桌面盒子"), WS_TABSTOP | BS_NOTIFY,
+        86, 574, 185, 28, desktopGroupsManage);
+    desktopGroupsPreview = field(L"STATIC", lang::text(L"桌面盒子效果预览"), SS_OWNERDRAW,
+        285, desktopGroupsPreviewTop, 380, desktopGroupsPreviewHeight, desktopGroupsPreviewId);
+    field(L"BUTTON", lang::text(L"盒子样式 →"), WS_TABSTOP, 86, 612, 185, 28, boxStyleShortcut);
+    updateBoxStylePreview(h);
     tabsCheck = preferNewTabCheck = nullptr;
     if (tabsSupported()) {
-      tabsCheck = field(L"BUTTON", lang::text(L"资源管理器多标签（Windows 10）"), checkStyle, 40, 462, -40, 26, 18);
+      tabsCheck = field(L"BUTTON", lang::text(L"资源管理器多标签（Windows 10）"), checkStyle, 40, 462 + desktopGroupsHeight, -40, 26, 18);
       SendMessageW(tabsCheck, BM_SETCHECK, tabsEnabled() ? BST_CHECKED : BST_UNCHECKED, 0);
-      field(L"STATIC", lang::text(L"悬停标签：滚轮切换，中键关闭；右键可新建和设置。\n保存后显示或隐藏标签栏；升级后请重新打开文件夹窗口。"), 0, 86, 494, -40, 40, 0, true);
-      preferNewTabCheck = field(L"BUTTON", lang::text(L"始终在新标签中打开文件夹"), checkStyle, 86, 548, -40, 26, 21);
+      field(L"STATIC", lang::text(L"悬停标签：滚轮切换，中键关闭；右键可新建和设置。\n保存后显示或隐藏标签栏；升级后请重新打开文件夹窗口。"), 0, 86, 494 + desktopGroupsHeight, -40, 40, 0, true);
+      preferNewTabCheck = field(L"BUTTON", lang::text(L"始终在新标签中打开文件夹"), checkStyle, 86, 548 + desktopGroupsHeight, -40, 26, 21);
       SendMessageW(preferNewTabCheck, BM_SETCHECK, preferNewTabEnabled() ? BST_CHECKED : BST_UNCHECKED, 0);
       EnableWindow(preferNewTabCheck, tabsEnabled());
-      field(L"STATIC", lang::text(L"首个窗口正常打开；桌面或其他软件另开文件夹时\n优先使用新标签；标签右键仍可开新窗口。"), 0, 114, 580, -40, 40, 0, true);
+      field(L"STATIC", lang::text(L"首个窗口正常打开；桌面或其他软件另开文件夹时\n优先使用新标签；标签右键仍可开新窗口。"), 0, 114, 580 + desktopGroupsHeight, -40, 40, 0, true);
     }
-    for (auto toggle : {notesCheck, navigationCheck, quickCheck, tabsCheck})
+    for (auto toggle : {notesCheck, navigationCheck, quickCheck, tabsCheck, desktopGroupsCheck})
       if (toggle) ui::toggleSwitch(toggle);
     ui::muted(add(h, L"STATIC", lang::text(L"功能设置保存后应用 · 置顶与历史修改立即保存"), 0, 33));
     add(h, L"BUTTON", lang::text(L"复制诊断信息"), WS_TABSTOP, 13);
     add(h, L"BUTTON", lang::text(L"保存"), WS_TABSTOP | BS_DEFPUSHBUTTON, IDOK);
     add(h, L"BUTTON", lang::text(L"取消"), WS_TABSTOP, IDCANCEL);
     if (languageDraft) {
-      std::array checks{notesCheck, navigationCheck, quickCheck, dialogCheck, tabsCheck, preferNewTabCheck};
+      std::array checks{notesCheck, navigationCheck, quickCheck, dialogCheck, tabsCheck, preferNewTabCheck, desktopGroupsCheck, desktopGroupsGlassCheck};
       for (size_t i = 0; i < checks.size(); ++i)
         if (checks[i]) SendMessageW(checks[i], BM_SETCHECK, languageDraft->toggles[i], 0);
       SendMessageW(choice, CB_SETCURSEL, languageDraft->action, 0);
@@ -764,6 +1022,7 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
       if (preferNewTabCheck) EnableWindow(preferNewTabCheck, languageDraft->toggles[4] == BST_CHECKED);
       languageDraft.reset();
     }
+    updateDesktopGroupsManager();
     appearance->apply(h); quick::setManagerTheme(managerPage, appearance->mode); showPage(activePage); return 0;
   }
   case WM_COMMAND:
@@ -783,8 +1042,8 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
           lang::importFile(path);
         }
         refreshLanguageMenus();
-        SettingsDraft draft{{}, SendMessageW(choice, CB_GETCURSEL, 0, 0), appearance->mode};
-        std::array checks{notesCheck, navigationCheck, quickCheck, dialogCheck, tabsCheck, preferNewTabCheck};
+        SettingsDraft draft{{}, SendMessageW(choice, CB_GETCURSEL, 0, 0), appearance->mode, boxStyle};
+        std::array checks{notesCheck, navigationCheck, quickCheck, dialogCheck, tabsCheck, preferNewTabCheck, desktopGroupsCheck, desktopGroupsGlassCheck};
         for (size_t i = 0; i < checks.size(); ++i)
           if (checks[i]) draft.toggles[i] = SendMessageW(checks[i], BM_GETCHECK, 0, 0);
         languageDraft = draft;
@@ -803,12 +1062,21 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         if (selection != 0 && selection != 1) throw fn::Error{lang::text(L"请选择有效的双击操作。")};
         const auto preferred = selection == 1 ? Action::Back : Action::Parent;
         const auto action = SendMessageW(navigationCheck, BM_GETCHECK, 0, 0) == BST_CHECKED ? preferred : Action::Off;
-        saveSettings(SendMessageW(notesCheck, BM_GETCHECK, 0, 0) == BST_CHECKED, action, preferred,
+        applySettings(SendMessageW(notesCheck, BM_GETCHECK, 0, 0) == BST_CHECKED, action, preferred,
             SendMessageW(quickCheck, BM_GETCHECK, 0, 0) == BST_CHECKED,
             SendMessageW(dialogCheck, BM_GETCHECK, 0, 0) == BST_CHECKED, appearance->mode,
             tabsCheck ? SendMessageW(tabsCheck, BM_GETCHECK, 0, 0) == BST_CHECKED : tabsEnabled(),
-            preferNewTabCheck ? SendMessageW(preferNewTabCheck, BM_GETCHECK, 0, 0) == BST_CHECKED : preferNewTabEnabled());
+            preferNewTabCheck ? SendMessageW(preferNewTabCheck, BM_GETCHECK, 0, 0) == BST_CHECKED : preferNewTabEnabled(),
+            true, DesktopGroupsSettings{
+              SendMessageW(desktopGroupsCheck, BM_GETCHECK, 0, 0) == BST_CHECKED,
+              boxStyle.glass, boxStyle.radius, boxStyle.opacity, boxStyle.shadow,
+              boxStyle.shadowOpacity, boxStyle.shadowBlur, boxStyle.shadowOffset});
+        restoreBoxStylePreview();
+        updateDesktopGroupsManager();
+        const bool desktopGroupsSynced = desktop_groups::sync();
         ui::notifyThemeChanged(); reload(); auto tabsStatus = syncTabs(); quick::syncHelper(quick::executable());
+        if (!desktopGroupsSynced)
+          throw fn::Error{lang::text(L"设置已保存，但无法应用桌面盒子设置。请再次点击保存。")};
         if (tabsSupported() && tabsEnabled() && tabsStatus.windows && tabsStatus.visible == 0) {
           MessageBoxW(h, lang::text(L"设置已保存，已打开的文件夹窗口尚未显示标签栏。\n请关闭后重新打开文件夹窗口。标签栏由这里的开关控制，无需在资源管理器菜单中勾选。\n仍未显示时，可复制诊断信息查看加载状态。"), lang::text(L"FolderNote 多标签"), MB_OK | MB_ICONINFORMATION);
         } else DestroyWindow(h);
@@ -822,6 +1090,32 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
       EnableWindow(dialogCheck, SendMessageW(quickCheck, BM_GETCHECK, 0, 0) == BST_CHECKED);
     } else if (LOWORD(w) == 18 && HIWORD(w) == BN_CLICKED && preferNewTabCheck) {
       EnableWindow(preferNewTabCheck, SendMessageW(tabsCheck, BM_GETCHECK, 0, 0) == BST_CHECKED);
+    } else if (LOWORD(w) == desktopGroupsToggle && HIWORD(w) == BN_CLICKED) {
+      updateDesktopGroupsManager();
+      InvalidateRect(desktopGroupsPreview, nullptr, FALSE);
+    } else if (LOWORD(w) == desktopGroupsGlassToggle && HIWORD(w) == BN_CLICKED) {
+      const auto previous = boxStyle;
+      boxStyle.glass = SendMessageW(desktopGroupsGlassCheck, BM_GETCHECK, 0, 0) == BST_CHECKED;
+      SendDlgItemMessageW(h, boxGlass, BM_SETCHECK, boxStyle.glass ? BST_CHECKED : BST_UNCHECKED, 0);
+      previewBoxStyle(h, previous);
+      RECT client{}; GetClientRect(body, &client);
+      const int previewBottom = scale(desktopGroupsPreviewTop + desktopGroupsPreviewHeight + 8);
+      if (previewBottom - scrollPosition > client.bottom) {
+        scrollPosition = previewBottom - client.bottom;
+        layoutBody();
+      }
+    } else if (LOWORD(w) == desktopGroupsManage && HIWORD(w) == BN_CLICKED) {
+      if (IsWindowEnabled(desktopGroupsManager) && !desktop_groups::showManager())
+        MessageBoxW(h, lang::text(L"无法打开桌面盒子管理。"), L"FolderNote", MB_OK | MB_ICONERROR);
+    } else if ((LOWORD(w) == boxGlass || LOWORD(w) == boxShadow) && HIWORD(w) == BN_CLICKED) {
+      const auto previous = boxStyle;
+      boxStyle.glass = SendDlgItemMessageW(h, boxGlass, BM_GETCHECK, 0, 0) == BST_CHECKED;
+      boxStyle.shadow = SendDlgItemMessageW(h, boxShadow, BM_GETCHECK, 0, 0) == BST_CHECKED;
+      SendMessageW(desktopGroupsGlassCheck, BM_SETCHECK, boxStyle.glass ? BST_CHECKED : BST_UNCHECKED, 0);
+      previewBoxStyle(h, previous);
+    } else if (LOWORD(w) == boxStyleShortcut && HIWORD(w) == BN_CLICKED) {
+      showPage(SettingsPage::BoxAppearance);
+      SetFocus(GetDlgItem(h, pageButtons[size_t(SettingsPage::BoxAppearance)]));
     } else if (LOWORD(w) == 16 && HIWORD(w) == BN_CLICKED) {
       showPage(SettingsPage::QuickFolders); SetFocus(GetDlgItem(h, 41));
     } else if (auto button = std::find(pageButtons.begin(), pageButtons.end(), LOWORD(w));
@@ -838,6 +1132,17 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
   case WM_CLOSE: if (installingUpdate) return 0; break;
   case WM_MEASUREITEM: reinterpret_cast<MEASUREITEMSTRUCT *>(l)->itemHeight = scale(26); return TRUE;
   case WM_VSCROLL: if (reinterpret_cast<HWND>(l) == settingsScroll.window()) settingsScroll.command(w); return 0;
+  case WM_HSCROLL:
+    if (l) {
+      const int id = GetDlgCtrlID(reinterpret_cast<HWND>(l));
+      if (std::any_of(std::begin(boxSliders), std::end(boxSliders), [id](const auto &slider) { return slider.control == id; })) {
+        const auto previous = boxStyle;
+        for (const auto &slider : boxSliders)
+          boxStyle.*slider.value = static_cast<DWORD>(SendDlgItemMessageW(h, slider.control, TBM_GETPOS, 0, 0));
+        previewBoxStyle(h, previous);
+      }
+    }
+    return 0;
   case WM_MOUSEWHEEL: if (activePage == SettingsPage::Features) settingsScroll.wheel(GET_WHEEL_DELTA_WPARAM(w)); return 0;
   case WM_SIZE: if (body) layoutSettings(); return 0;
   case WM_GETMINMAXINFO: {
@@ -863,7 +1168,12 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     SendMessageW(entriesPage, WM_DPICHANGED_AFTERPARENT, 0, 0);
     layoutSettings(); return 0;
   }
-  case WM_DESTROY: KillTimer(h, updateTimer); updateWork = {}; PostQuitMessage(0); return 0;
+  case WM_DESTROY:
+    if (!reopenForLanguage) restoreBoxStylePreview();
+    KillTimer(h, updateTimer);
+    updateWork = {};
+    PostQuitMessage(0);
+    return 0;
   case WM_NCDESTROY: RemovePropW(h, app::settingsWindowTag); DeleteObject(font); DeleteObject(headingFont); body = managerPage = contextPage = entriesPage = settingsWindow = nullptr; placements.clear(); break;
   }
   return DefWindowProcW(h, m, w, l);
@@ -890,7 +1200,12 @@ int settings(HINSTANCE instance, SettingsPage page) {
     HWND window = CreateWindowExW(WS_EX_CONTROLPARENT, cls.lpszClassName, lang::text(L"FolderNote 系统工具设置"),
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_MAXIMIZEBOX | WS_CLIPCHILDREN,
         work.left, work.top, scale(980), scale(660), nullptr, nullptr, instance, nullptr);
-    if (!window) { appearance.reset(); languageDraft.reset(); return 1; }
+    if (!window) {
+      restoreBoxStylePreview();
+      appearance.reset();
+      languageDraft.reset();
+      return 1;
+    }
     ui::centerLogical(window, work, 980, 660); ShowWindow(window, SW_SHOW); SetFocus(GetDlgItem(window, pageButtons[size_t(activePage)]));
     MSG message{};
     while (GetMessageW(&message, nullptr, 0, 0) > 0) {
@@ -904,7 +1219,8 @@ int settings(HINSTANCE instance, SettingsPage page) {
         else {
           HWND focused = GetFocus(); wchar_t clsName[32]{}; GetClassNameW(focused, clsName, ARRAYSIZE(clsName));
           if (!_wcsicmp(clsName, L"BUTTON")) SendMessageW(focused, BM_CLICK, 0, 0);
-          else if (activePage == SettingsPage::Features) SendMessageW(window, WM_COMMAND, MAKEWPARAM(IDOK, BN_CLICKED), 0);
+          else if (activePage == SettingsPage::Features || activePage == SettingsPage::BoxAppearance)
+            SendMessageW(window, WM_COMMAND, MAKEWPARAM(IDOK, BN_CLICKED), 0);
         }
         continue;
       }
