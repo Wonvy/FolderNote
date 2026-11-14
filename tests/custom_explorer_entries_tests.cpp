@@ -1,6 +1,7 @@
 // Exercise the production registration code with a disposable HKCU override.
 #include "../src/custom_explorer_entries.h"
 #include "../src/core.h"
+#include "shell_paths.h"
 #include <fstream>
 #include <iostream>
 #include <shlobj.h>
@@ -121,7 +122,7 @@ void desktopTest(const fn::fs::path &target, const fn::fs::path &otherTarget) {
           SUCCEEDED(link.As(&persist)) && SUCCEEDED(persist->Load(path.c_str(), STGM_READ)), "create a readable shortcut");
     wchar_t actual[MAX_PATH]{};
     check(SUCCEEDED(link->GetPath(actual, _countof(actual), nullptr, SLGP_RAWPATH)) &&
-          std::wstring(actual) == entry.target, "shortcut points to the chosen folder");
+          sameShellTestPath(actual, entry.target), "shortcut points to the chosen folder");
   }
   check(entries[0].shortcut != entries[1].shortcut, "keep both shortcuts");
   removeCustom(entries.front());

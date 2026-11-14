@@ -1,4 +1,5 @@
 #include "../src/core.h"
+#include "shell_paths.h"
 #include <algorithm>
 #include <fstream>
 #include <iostream>
@@ -106,7 +107,8 @@ void exercise(const Fixture &fixture) {
 
   const auto first = entry(visible);
   check(first.canChange && !first.hidden && !first.changed, "personal folder shortcut is actionable");
-  check(first.target == target.native() && first.iconLocation == L"C:\\Fixture\\folder.ico,-17",
+  check(sameShellTestPath(first.target, target.native()) &&
+        first.iconLocation == L"C:\\Fixture\\folder.ico,-17",
         "read the stored target and icon location from the folder link");
   setHidden(first, true);
   check(entry(visible).hidden && entry(visible).changed &&
