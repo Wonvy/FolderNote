@@ -709,7 +709,7 @@ struct Surface::State {
       control.box.Padding({8, 0, 8, 0});
       control.label.Text(titles[index]);
       control.label.TextAlignment(ux::TextAlignment::Center);
-      if (index == 0 && titleStyle != TitleStyle::Text) {
+      if (index == 0 && showsTitleIcon(titleStyle)) {
         controls::StackPanel stack;
         stack.Orientation(controls::Orientation::Horizontal);
         stack.HorizontalAlignment(ux::HorizontalAlignment::Center);
@@ -720,9 +720,9 @@ struct Surface::State {
         firstTabIcon.Width(17);
         firstTabIcon.Height(17);
         stack.Children().Append(firstTabIcon);
-        if (titleStyle == TitleStyle::IconAndText) stack.Children().Append(control.label);
+        if (showsTitleText(titleStyle)) stack.Children().Append(control.label);
         control.box.Child(stack);
-      } else {
+      } else if (index || showsTitleText(titleStyle)) {
         control.box.Child(control.label);
       }
       control.box.PointerEntered([this, index](auto const &, auto const &) {
@@ -849,11 +849,11 @@ struct Surface::State {
       const double tabWidth = std::min(116.0, space / tabs.size());
       for (std::size_t i = 0; i < tabs.size(); ++i)
         place(tabs[i], headerPadding + i * tabWidth, tabWidth, headerHeight - headerPadding);
-      if (titleStyle == TitleStyle::IconAndText)
+      if (showsTitleIcon(titleStyle) && showsTitleText(titleStyle))
         tabs.front().label.MaxWidth(std::max(0.0, tabWidth - 40));
     }
     const double titleSpace = std::max(0.0, width - (actionsVisible ? 3 : 1) * buttonWidth - 24);
-    const auto titleWidth = std::max(0.0, titleSpace - (titleStyle == TitleStyle::Text ? 0 : 25));
+    const auto titleWidth = std::max(0.0, titleSpace - (showsTitleIcon(titleStyle) ? 25 : 0));
     if (title.Width() != titleWidth) {
       title.Width(titleWidth);
       singleTitleWidth.reset();
@@ -874,8 +874,8 @@ struct Surface::State {
   double tabInsertionLimit() const { return buttons[actionsVisible ? 0 : 2].left; }
 
   double singleTitleRight() const {
-    auto right = controls::Canvas::GetLeft(titleContent) + (titleStyle == TitleStyle::Text ? 0 : 25);
-    if (titleStyle != TitleStyle::Icon) {
+    auto right = controls::Canvas::GetLeft(titleContent) + (showsTitleIcon(titleStyle) ? 25 : 0);
+    if (showsTitleText(titleStyle)) {
       if (!singleTitleWidth) {
         controls::TextBlock label;
         label.Text(title.Text());
@@ -1795,8 +1795,8 @@ void Surface::header(const std::vector<std::wstring> &titles, std::size_t active
     state->titleContent.Visibility(titles.size() > 1 || state->finishTitleRename ?
         ux::Visibility::Collapsed : ux::Visibility::Visible);
     if (state->finishTitleRename && !state->tabs.empty()) state->tabs.front().box.Visibility(ux::Visibility::Collapsed);
-    state->title.Visibility(style == TitleStyle::Icon ? ux::Visibility::Collapsed : ux::Visibility::Visible);
-    state->titleIcon.Visibility(style == TitleStyle::Text ? ux::Visibility::Collapsed : ux::Visibility::Visible);
+    state->title.Visibility(showsTitleText(style) ? ux::Visibility::Visible : ux::Visibility::Collapsed);
+    state->titleIcon.Visibility(showsTitleIcon(style) ? ux::Visibility::Visible : ux::Visibility::Collapsed);
     state->titleIcon.Source(state->titleImage);
     if (state->firstTabIcon) state->firstTabIcon.Source(state->titleImage);
     state->title.Foreground(solidBrush(text));

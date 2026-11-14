@@ -75,10 +75,10 @@ constexpr WPARAM previewRadiusMask = 0x1f;
 constexpr WPARAM previewOpacityMask = 0x7f;
 constexpr WPARAM previewGlass = 1u << 12, previewShadow = 1u << 13, previewEnabled = 1u << 14;
 enum Command { NewGroup = 1, RenameGroup, DeleteGroup, OpenItem, RemoveItem, ToggleGroup,
-               AddTab, MapFolder, RemoveTab, IconView, ListViewMode, ManualSort, NameSort, TypeSort, ModifiedSort,
+               MapFolder, RemoveTab, IconView, ListViewMode, ManualSort, NameSort, TypeSort, ModifiedSort,
                BoxColor, ResetBoxColor, MoveTabLeft, MoveTabRight, BoxIcon, ClearBoxIcon,
-               TitleText, TitleIcon, TitleIconAndText, ScrollDisplay, PageDisplay,
-               ToggleBoxGlass, InheritBoxGlass, ToggleAutoCollapse };
+               TitleText, TitleIcon, ScrollDisplay, PageDisplay,
+               ToggleBoxGlass, ToggleAutoCollapse };
 constexpr LRESULT resizeTitle = 0x100;
 using quick::popup::Branch;
 using quick::popup::Symbol;
@@ -376,18 +376,13 @@ bool showBoxDialog(HINSTANCE instance, HWND owner, const wchar_t *title, std::ws
   return result == IDOK;
 }
 
-bool askName(HINSTANCE instance, HWND owner, const wchar_t *title, std::wstring &name) {
-  const auto label = !wcscmp(title, L"添加标签") ? L"标签名称" : L"盒子名称";
-  return showBoxDialog(instance, owner, title, &name, lang::text(label));
-}
-
 std::wstring pickBoxIcon(HWND owner) {
   wchar_t path[32768]{};
   OPENFILENAMEW dialog{sizeof(dialog)};
   dialog.hwndOwner = owner;
   dialog.lpstrFile = path;
   dialog.nMaxFile = ARRAYSIZE(path);
-  dialog.lpstrTitle = lang::text(L"选择盒子图标");
+  dialog.lpstrTitle = lang::text(L"更换图标");
   dialog.lpstrFilter = L"Icon (*.ico)\0*.ico\0All files (*.*)\0*.*\0\0";
   dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
   return GetOpenFileNameW(&dialog) ? std::wstring(path) : std::wstring{};
@@ -718,7 +713,7 @@ public:
   void createBox(POINT point, HWND owner);
   void renameBox(Panel &panel, std::wstring name);
   void drag(Panel &panel, int index);
-  bool drop(Panel &panel, HDROP files, POINT point);
+  bool drop(Panel &panel, IDataObject *data, POINT point);
   bool assign(Panel &panel, const std::vector<std::wstring> &paths, POINT point);
   void finishDrag(HWND source, bool apply, std::optional<POINT> release = std::nullopt);
   void updateDragFeedback();
@@ -729,10 +724,9 @@ public:
 class DropTarget final : public IDropTarget {
   Panel &panel;
   ULONG references = 1;
-  bool files = false;
-  static FORMATETC format() { return {CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL}; }
+  bool items = false;
   DWORD effect(DWORD allowed) const {
-    if (!files || panel.mapped() || panel.desktop.editing || panel.desktop.quitting) return DROPEFFECT_NONE;
+    if (!items || panel.mapped() || panel.desktop.editing || panel.desktop.quitting) return DROPEFFECT_NONE;
     if (allowed & DROPEFFECT_LINK) return DROPEFFECT_LINK;
     return allowed & DROPEFFECT_COPY;
   }
@@ -752,8 +746,12 @@ public:
     return remaining;
   }
   HRESULT STDMETHODCALLTYPE DragEnter(IDataObject *data, DWORD, POINTL, DWORD *effects) override {
-    auto spec = format();
-    files = data->QueryGetData(&spec) == S_OK;
+    FORMATETC paths{CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+    try {
+      items = data->QueryGetData(&paths) == S_OK || !desktopShellDropItems(data).empty();
+    } catch (...) {
+      items = false;
+    }
     *effects = effect(*effects);
     return S_OK;
   }
@@ -761,20 +759,17 @@ public:
     *effects = effect(*effects);
     return S_OK;
   }
-  HRESULT STDMETHODCALLTYPE DragLeave() override { files = false; return S_OK; }
+  HRESULT STDMETHODCALLTYPE DragLeave() override { items = false; return S_OK; }
   HRESULT STDMETHODCALLTYPE Drop(IDataObject *data, DWORD, POINTL point, DWORD *effects) override {
     const auto allowed = effect(*effects);
     *effects = DROPEFFECT_NONE;
-    files = false;
-    auto spec = format();
-    STGMEDIUM medium{};
-    if (allowed && SUCCEEDED(data->GetData(&spec, &medium))) {
+    items = false;
+    if (allowed) {
       try {
-        if (panel.desktop.drop(panel, static_cast<HDROP>(medium.hGlobal), {point.x, point.y})) *effects = allowed;
+        if (panel.desktop.drop(panel, data, {point.x, point.y})) *effects = allowed;
       } catch (...) {
         PostMessageW(panel.window, rejectedMessage, 0, 0);
       }
-      ReleaseStgMedium(&medium);
     }
     return S_OK;
   }
@@ -859,7 +854,7 @@ int Panel::headerHeight() const {
 
 HICON Panel::headerIcon() {
   const auto &group = desktop.groups[index];
-  if (group.titleStyle == TitleStyle::Text) return nullptr;
+  if (!showsTitleIcon(group.titleStyle)) return nullptr;
   if (cachedTitleIcon != group.titleIcon || !titleIcon) {
     const auto previous = titleIcon;
     titleIcon = nullptr;
@@ -1260,10 +1255,21 @@ void Panel::paintTabs(const DRAWITEMSTRUCT &item) {
     }
     const auto previous = SelectObject(dc, font);
     InflateRect(&box, -px(8), 0);
-    const auto &title = i ? group.tabs[i - 1].name : group.name;
-    ui::text(dc, title, box, (selected || pressed) && colors.highContrast ? colors.onAccent :
-             selected || hot || pressed ? colors.text : colors.muted,
-             DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+    const bool showText = i || showsTitleText(group.titleStyle);
+    if (!i) {
+      const auto size = px(16);
+      if (const auto icon = headerIcon(); icon && box.right - box.left >= size) {
+        const auto x = showText ? box.left : (box.left + box.right - size) / 2;
+        DrawIconEx(dc, x, (box.top + box.bottom - size) / 2, icon, size, size, 0, nullptr, DI_NORMAL);
+        box.left += size + px(6);
+      }
+    }
+    if (showText) {
+      const auto &title = i ? group.tabs[i - 1].name : group.name;
+      ui::text(dc, title, box, (selected || pressed) && colors.highContrast ? colors.onAccent :
+               selected || hot || pressed ? colors.text : colors.muted,
+               DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+    }
     SelectObject(dc, previous);
   }
   paintTabInsertion(dc);
@@ -1744,7 +1750,7 @@ void Panel::paint(HDC dc, bool backgroundOnly) {
       DrawIconEx(dc, header.left, (header.bottom - px(18)) / 2, icon, px(18), px(18), 0, nullptr, DI_NORMAL);
       header.left += px(24);
     }
-    if (group.titleStyle != TitleStyle::Icon) ui::text(dc, group.name, header, colors.text);
+    if (showsTitleText(group.titleStyle)) ui::text(dc, group.name, header, colors.text);
     paintTabInsertion(dc);
   }
   SetBkMode(dc, oldMode);
@@ -2648,8 +2654,6 @@ void Panel::contextMenu(POINT point, bool title) {
     }
     if (hasSurface() && !desktop.theme.colors.highContrast) {
       menuItem(*menu, ToggleBoxGlass, L"毛玻璃效果", Symbol::Visibility, backgroundGlass());
-      if (group.glass.has_value())
-        menuItem(*menu, InheritBoxGlass, L"跟随全局毛玻璃设置", Symbol::Settings);
       quick::popup::Item item;
       item.title = lang::text(L"背景不透明度");
       item.slider = quick::popup::Slider{0, 100, backgroundOpacity(),
@@ -2669,12 +2673,25 @@ void Panel::contextMenu(POINT point, bool title) {
       menu->items.push_back(std::move(item));
       separator(*menu);
     }
-    menuItem(*menu, BoxIcon, L"选择盒子图标", Symbol::Folder);
+    menuItem(*menu, BoxIcon, L"更换图标", Symbol::Folder);
     if (!group.titleIcon.empty()) menuItem(*menu, ClearBoxIcon, L"清除自定义图标", Symbol::Folder);
-    menuItem(*menu, TitleIconAndText, L"图标和文字", Symbol::Window, group.titleStyle == TitleStyle::IconAndText);
-    menuItem(*menu, TitleIcon, L"仅图标", Symbol::Window, group.titleStyle == TitleStyle::Icon);
-    menuItem(*menu, TitleText, L"仅文字", Symbol::Window, group.titleStyle == TitleStyle::Text);
+    menuItem(*menu, TitleIcon, L"显示图标", Symbol::Window, showsTitleIcon(group.titleStyle));
+    menuItem(*menu, TitleText, L"显示文字", Symbol::Window, showsTitleText(group.titleStyle));
     separator(*menu);
+    menuItem(*menu, ToggleAutoCollapse, L"自动折叠隐藏", Symbol::Visibility, group.autoCollapse);
+    separator(*menu);
+    menuItem(*menu, MapFolder, L"映射文件夹", Symbol::Folder);
+    const auto targetTab = selectedTab.value_or(activeTab);
+    if (targetTab) menuItem(*menu, RemoveTab, L"移除标签", Symbol::Unpin);
+    if (selectedTab && *selectedTab > 0) menuItem(*menu, MoveTabLeft, L"向左移动", Symbol::Move);
+    if (selectedTab && *selectedTab < group.tabs.size())
+      menuItem(*menu, MoveTabRight, L"向右移动", Symbol::Move);
+    separator(*menu);
+    menuItem(*menu, RenameGroup, L"重命名盒子", Symbol::Settings);
+    menuItem(*menu, DeleteGroup, L"删除盒子", Symbol::Trash);
+  } else {
+    menuItem(*menu, IconView, L"图标", Symbol::Folder, group.view == View::Icons);
+    menuItem(*menu, ListViewMode, L"列表", Symbol::Window, group.view == View::List);
     quick::popup::Item spacing;
     spacing.title = lang::text(L"项目间距");
     spacing.slider = quick::popup::Slider{0, maxItemSpacing, group.itemSpacing,
@@ -2684,23 +2701,6 @@ void Panel::contextMenu(POINT point, bool title) {
       },
       [this](int value) { return saveSpacing(value); }, false, false};
     menu->items.push_back(std::move(spacing));
-    menuItem(*menu, ToggleGroup, collapsed() ? L"展开盒子" : L"折叠盒子", Symbol::Window);
-    menuItem(*menu, ToggleAutoCollapse, L"自动折叠隐藏", Symbol::Visibility, group.autoCollapse);
-    separator(*menu);
-    menuItem(*menu, AddTab, L"添加标签", Symbol::AddFolder);
-    menuItem(*menu, MapFolder, L"映射文件夹", Symbol::Folder);
-    const auto targetTab = selectedTab.value_or(activeTab);
-    if (targetTab) menuItem(*menu, RemoveTab, L"移除标签", Symbol::Unpin);
-    if (selectedTab && *selectedTab > 0) menuItem(*menu, MoveTabLeft, L"向左移动", Symbol::Move);
-    if (selectedTab && *selectedTab < group.tabs.size())
-      menuItem(*menu, MoveTabRight, L"向右移动", Symbol::Move);
-    separator(*menu);
-    menuItem(*menu, NewGroup, L"新建盒子", Symbol::AddFolder);
-    menuItem(*menu, RenameGroup, L"重命名盒子", Symbol::Settings);
-    menuItem(*menu, DeleteGroup, L"删除盒子", Symbol::Trash);
-  } else {
-    menuItem(*menu, IconView, L"图标", Symbol::Folder, group.view == View::Icons);
-    menuItem(*menu, ListViewMode, L"列表", Symbol::Window, group.view == View::List);
     separator(*menu);
     menuItem(*menu, ScrollDisplay, L"滚动显示", Symbol::Window, group.displayMode == DisplayMode::Scroll);
     menuItem(*menu, PageDisplay, L"分页显示", Symbol::Documents, group.displayMode == DisplayMode::Pages);
@@ -2734,10 +2734,6 @@ void Panel::contextMenu(POINT point, bool title) {
     throw;
   }
   clearPreview();
-  if (command == NewGroup) {
-    desktop.createBox(point, window);
-    return;
-  }
   if (command) {
     const auto tab = selectedTab.value_or(activeTab);
     const auto tabCommand = command == RemoveTab || command == MoveTabLeft || command == MoveTabRight;
@@ -3872,11 +3868,6 @@ void Desktop::renameBox(Panel &panel, std::wstring name) {
 
 void Desktop::action(Panel *panel, Command command, size_t tabIndex) {
   if (editing || dragging || quitting || (panel && panel->tabDrag)) return;
-  if (command == NewGroup) {
-    POINT point{};
-    if (GetCursorPos(&point)) createBox(point, panel ? panel->window : window);
-    return;
-  }
   struct EditScope {
     bool &active;
     explicit EditScope(bool &flag) : active(flag) { active = true; }
@@ -3887,17 +3878,17 @@ void Desktop::action(Panel *panel, Command command, size_t tabIndex) {
   const auto index = panel->index;
   const int selected = panel->selection();
   switch (command) {
-  case BoxIcon: case ClearBoxIcon: case TitleText: case TitleIcon: case TitleIconAndText: {
+  case BoxIcon: case ClearBoxIcon: case TitleText: case TitleIcon: {
     auto next = groups[index];
     if (command == BoxIcon) {
       next.titleIcon = pickBoxIcon(owner);
       if (next.titleIcon.empty() || quitting) return;
-      if (next.titleStyle == TitleStyle::Text) next.titleStyle = TitleStyle::IconAndText;
+      next.titleStyle = titleStyleFor(true, showsTitleText(next.titleStyle));
     } else if (command == ClearBoxIcon) {
       next.titleIcon.clear();
     } else {
-      next.titleStyle = command == TitleText ? TitleStyle::Text :
-                        command == TitleIcon ? TitleStyle::Icon : TitleStyle::IconAndText;
+      const auto icon = showsTitleIcon(next.titleStyle), text = showsTitleText(next.titleStyle);
+      next.titleStyle = command == TitleIcon ? titleStyleFor(!icon, text) : titleStyleFor(icon, !text);
     }
     auto changed = groups;
     changed[index] = std::move(next);
@@ -3932,17 +3923,14 @@ void Desktop::action(Panel *panel, Command command, size_t tabIndex) {
     movePanelTab(*panel, tabIndex, *panel, slot, false);
     return;
   }
-  case AddTab:
   case MapFolder: {
     Tab tab;
-    if (command == MapFolder) {
-      tab.folder = pickFolder(owner);
-      if (tab.folder.empty() || quitting) return;
-      const fn::fs::path folder(tab.folder);
-      tab.name = folder.filename().wstring();
-      if (tab.name.empty()) tab.name = tab.folder;
-      tab.name.resize(std::min(tab.name.size(), groupNameLimit));
-    } else if (!askName(instance, owner, L"添加标签", tab.name) || quitting) return;
+    tab.folder = pickFolder(owner);
+    if (tab.folder.empty() || quitting) return;
+    const fn::fs::path folder(tab.folder);
+    tab.name = folder.filename().wstring();
+    if (tab.name.empty()) tab.name = tab.folder;
+    tab.name.resize(std::min(tab.name.size(), groupNameLimit));
     auto changed = groups;
     changed[index].tabs.push_back(std::move(tab));
     changed[index].collapsed = false;
@@ -3989,12 +3977,9 @@ void Desktop::action(Panel *panel, Command command, size_t tabIndex) {
     }
     return;
   }
-  case ToggleBoxGlass:
-  case InheritBoxGlass: {
+  case ToggleBoxGlass: {
     auto changed = groups;
-    auto &glass = changed[index].glass;
-    if (command == InheritBoxGlass) glass.reset();
-    else glass = !panel->backgroundGlass();
+    changed[index].glass = !panel->backgroundGlass();
     if (commit(std::move(changed), owner, false)) panel->applyBackground();
     return;
   }
@@ -4020,7 +4005,7 @@ void Desktop::action(Panel *panel, Command command, size_t tabIndex) {
   }
   case RenameGroup: {
     auto name = groups[index].name;
-    if (!askName(instance, owner, L"重命名盒子", name) || quitting) return;
+    if (!showBoxDialog(instance, owner, L"重命名盒子", &name, lang::text(L"盒子名称")) || quitting) return;
     renameBox(*panel, std::move(name));
     return;
   }
@@ -4198,7 +4183,8 @@ void Desktop::updateDragFeedback() {
   POINT point{};
   if (!GetCursorPos(&point)) return;
   auto *target = panelAt(point);
-  const auto folder = dropFolder(target, point);
+  const bool virtualItems = std::any_of(dragItems.begin(), dragItems.end(), isDesktopShellItem);
+  const auto folder = target && !target->mapped() && virtualItems ? std::wstring{} : dropFolder(target, point);
   const bool intoFolder = !folder.empty();
   const bool groupDrop = target && !target->mapped() && !intoFolder;
   const auto highlighted = groupDrop ? target->window : nullptr;
@@ -4265,7 +4251,9 @@ void Desktop::finishDrag(HWND source, bool apply, std::optional<POINT> release) 
   dragWindow = nullptr;
   if (!apply || quitting || (!release && !GetCursorPos(&point))) return;
   auto *target = panelAt(point);
-  if (const auto folder = dropFolder(target, point); !folder.empty()) {
+  const bool virtualItems = std::any_of(paths.begin(), paths.end(), isDesktopShellItem);
+  const auto folder = target && !target->mapped() && virtualItems ? std::wstring{} : dropFolder(target, point);
+  if (!folder.empty()) {
     moveInto(paths, folder, source);
   } else if (target) {
     assign(*target, paths, point);
@@ -4504,13 +4492,21 @@ void Panel::autoscroll(POINT point) {
   desktop.lastDragScroll = now;
 }
 
-bool Desktop::drop(Panel &panel, HDROP files, POINT point) {
-  const auto count = DragQueryFileW(files, 0xffffffff, nullptr, 0);
-  std::vector<std::wstring> paths;
-  for (UINT i = 0; i < count; ++i) {
-    std::wstring path(static_cast<size_t>(DragQueryFileW(files, i, nullptr, 0)) + 1, L'\0');
-    path.resize(DragQueryFileW(files, i, path.data(), static_cast<UINT>(path.size())));
-    paths.push_back(std::move(path));
+bool Desktop::drop(Panel &panel, IDataObject *data, POINT point) {
+  auto paths = desktopShellDropItems(data);
+  FORMATETC format{CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+  struct Medium {
+    STGMEDIUM data{};
+    ~Medium() { if (data.tymed != TYMED_NULL) ReleaseStgMedium(&data); }
+  } medium;
+  if (SUCCEEDED(data->GetData(&format, &medium.data)) && medium.data.tymed == TYMED_HGLOBAL) {
+    const auto files = static_cast<HDROP>(medium.data.hGlobal);
+    const auto count = DragQueryFileW(files, 0xffffffff, nullptr, 0);
+    for (UINT i = 0; i < count; ++i) {
+      std::wstring path(static_cast<size_t>(DragQueryFileW(files, i, nullptr, 0)) + 1, L'\0');
+      path.resize(DragQueryFileW(files, i, path.data(), static_cast<UINT>(path.size())));
+      if (!path.empty()) paths.push_back(std::move(path));
+    }
   }
   return assign(panel, paths, point);
 }

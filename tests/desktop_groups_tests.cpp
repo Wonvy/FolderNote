@@ -201,6 +201,24 @@ void exercise(const fn::fs::path &root) {
         loaded[0].tabs[1].paths.empty(), "persist ordered manual and mapped tabs");
   check(fn::fs::exists(document) && fn::fs::exists(folder), "grouping leaves files in place");
 
+  check(titleStyleFor(false, true) == TitleStyle::Text && !showsTitleIcon(TitleStyle::Text) &&
+        showsTitleText(TitleStyle::Text), "support title text only");
+  check(titleStyleFor(true, false) == TitleStyle::Icon && showsTitleIcon(TitleStyle::Icon) &&
+        !showsTitleText(TitleStyle::Icon), "support a title icon only");
+  check(titleStyleFor(true, true) == TitleStyle::IconAndText && showsTitleIcon(TitleStyle::IconAndText) &&
+        showsTitleText(TitleStyle::IconAndText), "support showing both title elements");
+  check(titleStyleFor(false, false) == TitleStyle::Hidden && !showsTitleIcon(TitleStyle::Hidden) &&
+        !showsTitleText(TitleStyle::Hidden), "support hiding both title elements");
+  auto hiddenTitle = groups[0];
+  hiddenTitle.titleStyle = TitleStyle::Hidden;
+  const auto hiddenTitleLayout = root / L"hidden-title.json";
+  save({hiddenTitle}, hiddenTitleLayout);
+  const auto hiddenTitleJson = readFile(hiddenTitleLayout);
+  const auto hiddenTitleGroups = load(hiddenTitleLayout);
+  check(hiddenTitleJson.find("\"titleStyle\": 3") != hiddenTitleJson.npos && hiddenTitleGroups.size() == 1 &&
+        hiddenTitleGroups[0].titleStyle == TitleStyle::Hidden && hiddenTitleGroups[0].name == hiddenTitle.name &&
+        hiddenTitleGroups[0].titleIcon == hiddenTitle.titleIcon, "persist hidden titles and their original data");
+
   const std::string iconSizeLine = "      \"iconSize\": 64,\n";
   const auto iconSizeOffset = json.find(iconSizeLine);
   check(iconSizeOffset != json.npos, "locate icon size in JSON");

@@ -11,6 +11,7 @@
 namespace desktop_groups {
 namespace {
 using Microsoft::WRL::ComPtr;
+constexpr auto recycleBin = L"::{645FF040-5081-101B-9F08-00AA002F954E}";
 
 ComPtr<IShellView> desktopView() {
   ComPtr<IShellWindows> windows;
@@ -30,16 +31,21 @@ ComPtr<IShellView> desktopView() {
   return view;
 }
 
-std::wstring desktopPath(IShellFolder *desktop, PCUITEMID_CHILD entry) {
-  ComPtr<IShellItem> item;
-  if (FAILED(SHCreateItemWithParent(nullptr, desktop, entry, IID_PPV_ARGS(&item)))) return {};
+std::wstring parsingPath(IShellItem *item) {
   PWSTR raw = nullptr;
   const auto result = item->GetDisplayName(SIGDN_DESKTOPABSOLUTEPARSING, &raw);
   const std::unique_ptr<wchar_t, decltype(&CoTaskMemFree)> path(raw, CoTaskMemFree);
   if (FAILED(result) || !path) return {};
-  auto normalized = quick::normalize(path.get());
-  if (!normalized.empty()) return normalized;
   return path.get();
+}
+
+std::wstring desktopPath(IShellFolder *desktop, PCUITEMID_CHILD entry) {
+  ComPtr<IShellItem> item;
+  if (FAILED(SHCreateItemWithParent(nullptr, desktop, entry, IID_PPV_ARGS(&item)))) return {};
+  auto path = parsingPath(item.Get());
+  auto normalized = quick::normalize(path);
+  if (!normalized.empty()) return normalized;
+  return path;
 }
 
 template <typename Visit>
@@ -132,5 +138,18 @@ std::optional<std::vector<std::wstring>> desktopIconPaths() {
   });
   if (!complete) return std::nullopt;
   return paths;
+}
+
+std::vector<std::wstring> desktopShellDropItems(IDataObject *data) {
+  ComPtr<IShellItemArray> items;
+  DWORD count = 0;
+  if (!data || FAILED(SHCreateShellItemArrayFromDataObject(data, IID_PPV_ARGS(&items))) ||
+      !items || FAILED(items->GetCount(&count))) return {};
+  for (DWORD i = 0; i < count; ++i) {
+    ComPtr<IShellItem> item;
+    if (SUCCEEDED(items->GetItemAt(i, &item)) && item && samePath(parsingPath(item.Get()), recycleBin))
+      return {recycleBin};
+  }
+  return {};
 }
 }

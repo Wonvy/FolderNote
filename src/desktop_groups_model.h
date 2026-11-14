@@ -24,8 +24,21 @@ struct Tab {
 
 enum class View { Icons, List };
 enum class Sort { Manual, Name, Type, Modified };
-enum class TitleStyle { Text, Icon, IconAndText };
+enum class TitleStyle { Text = 0, Icon = 1, IconAndText = 2, Hidden = 3 };
 enum class DisplayMode { Scroll, Pages };
+
+constexpr bool showsTitleIcon(TitleStyle style) {
+  return style == TitleStyle::Icon || style == TitleStyle::IconAndText;
+}
+
+constexpr bool showsTitleText(TitleStyle style) {
+  return style == TitleStyle::Text || style == TitleStyle::IconAndText;
+}
+
+constexpr TitleStyle titleStyleFor(bool icon, bool text) {
+  if (icon) return text ? TitleStyle::IconAndText : TitleStyle::Icon;
+  return text ? TitleStyle::Text : TitleStyle::Hidden;
+}
 
 struct Group {
   std::wstring name;

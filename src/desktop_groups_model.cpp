@@ -76,7 +76,7 @@ void validateGroups(const std::vector<Group> &groups, PathSet &paths, const wcha
         (group.opacity && (*group.opacity < 0 || *group.opacity > 100)) ||
         (group.tint && *group.tint > 0x00ffffff) || !validDetachedTint(group.primaryDetachedTint) ||
         group.titleHeight < 28 || group.titleHeight > 80 ||
-        group.titleStyle < TitleStyle::Text || group.titleStyle > TitleStyle::IconAndText ||
+        group.titleStyle < TitleStyle::Text || group.titleStyle > TitleStyle::Hidden ||
         group.titleIcon.find(L'\0') != std::wstring::npos ||
         group.view < View::Icons || group.view > View::List ||
         group.displayMode < DisplayMode::Scroll || group.displayMode > DisplayMode::Pages ||
