@@ -329,13 +329,14 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
     CoUninitialize();
     return result;
   }
-  if (argc == 2 && (std::wstring_view(argv[1]) == L"--desktop-groups" ||
-                    std::wstring_view(argv[1]) == L"--desktop-groups-manage" ||
-                    std::wstring_view(argv[1]) == L"--desktop-groups-create")) {
+  const bool desktopDelegated = argc == 3 && std::wstring_view(argv[2]) == L"--from-desktop-shell";
+  if ((argc == 2 || desktopDelegated) && (std::wstring_view(argv[1]) == L"--desktop-groups" ||
+                                         std::wstring_view(argv[1]) == L"--desktop-groups-manage" ||
+                                         std::wstring_view(argv[1]) == L"--desktop-groups-create")) {
     const bool manage = std::wstring_view(argv[1]) == L"--desktop-groups-manage";
     const bool create = std::wstring_view(argv[1]) == L"--desktop-groups-create";
     LocalFree(argv);
-    const auto result = desktop_groups::run(inst, manage, create);
+    const auto result = desktop_groups::run(inst, manage, create, desktopDelegated);
     CoUninitialize();
     return result;
   }

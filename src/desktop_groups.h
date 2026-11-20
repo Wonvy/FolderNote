@@ -20,5 +20,5 @@ bool enabled();
 bool sync(const std::wstring &installedExecutable = {});
 bool stop();
 bool showManager();
-int run(HINSTANCE instance, bool manage, bool create = false);
+int run(HINSTANCE instance, bool manage, bool create = false, bool delegated = false);
 }

@@ -5,6 +5,7 @@
 #include "desktop_groups_model.h"
 #include "desktop_groups_menu.h"
 #include "desktop_groups_item_menu.h"
+#include "desktop_groups_process.h"
 #include "desktop_groups_render.h"
 #include "desktop_groups_storage.h"
 #ifdef FOLDERNOTE_WINUI
@@ -148,24 +149,32 @@ bool startup(const std::wstring &exe) {
   return status == ERROR_SUCCESS;
 }
 
-bool launch(const std::wstring &exe, bool manage) {
-  auto command = L"\"" + exe + L"\" --desktop-groups";
-  if (manage) command += L"-manage";
-  STARTUPINFOW startupInfo{sizeof(startupInfo)};
+bool receiverReady(HWND window, const DesktopLaunchContext &context) {
+  return window && GetPropW(window, readyProperty) &&
+         desktopReceiverStatus(window, context) == DesktopReceiverStatus::Compatible;
+}
+
+bool launch(const std::wstring &exe, const wchar_t *arguments, const DesktopLaunchContext &context, bool waitReady) {
+  if (context.mode == DesktopLaunchMode::Unavailable) return false;
   PROCESS_INFORMATION process{};
-  if (!CreateProcessW(exe.c_str(), command.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &startupInfo, &process))
-    return false;
-  if (manage) AllowSetForegroundWindow(process.dwProcessId);
-  CloseHandle(process.hThread);
-  bool ready = manage;
-  for (int i = 0; !manage && i < 100; ++i) {
-    if (const auto window = receiver(); window && GetPropW(window, readyProperty)) {
-      ready = true;
-      break;
-    }
-    if (WaitForSingleObject(process.hProcess, 50) != WAIT_TIMEOUT) break;
+  if (context.mode == DesktopLaunchMode::Explorer) {
+    const auto delegated = std::wstring(arguments) + L" --from-desktop-shell";
+    if (!executeFromDesktop(exe, delegated.c_str(), context)) return false;
+  } else {
+    auto command = L"\"" + exe + L"\" " + arguments;
+    STARTUPINFOW startupInfo{sizeof(startupInfo)};
+    if (!CreateProcessW(exe.c_str(), command.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &startupInfo, &process))
+      return false;
+    if (!waitReady) AllowSetForegroundWindow(process.dwProcessId);
+    CloseHandle(process.hThread);
   }
-  CloseHandle(process.hProcess);
+  bool ready = !waitReady;
+  for (int i = 0; waitReady && i < 100; ++i) {
+    if ((ready = receiverReady(receiver(), context))) break;
+    if (!process.hProcess) Sleep(50);
+    else if (WaitForSingleObject(process.hProcess, 50) != WAIT_TIMEOUT) break;
+  }
+  if (process.hProcess) CloseHandle(process.hProcess);
   return ready;
 }
 
@@ -176,8 +185,7 @@ bool notifyManager(HWND window, UINT message = manageMessage, POINT point = {}) 
   return PostMessageW(window, message, static_cast<WPARAM>(static_cast<INT_PTR>(point.x)), point.y) != FALSE;
 }
 
-bool stopProcess() {
-  auto window = receiver();
+bool stopProcess(HWND window = receiver()) {
   if (!window) return true;
   DWORD pid = 0;
   GetWindowThreadProcessId(window, &pid);
@@ -706,10 +714,18 @@ std::vector<std::wstring> desktopDropPaths(IDataObject *data) {
   if (SUCCEEDED(data->GetData(&format, &medium.data)) && medium.data.tymed == TYMED_HGLOBAL) {
     const auto files = static_cast<HDROP>(medium.data.hGlobal);
     const auto count = DragQueryFileW(files, 0xffffffff, nullptr, 0);
+    bool readFile = false;
     for (UINT i = 0; i < count; ++i) {
       std::wstring path(static_cast<size_t>(DragQueryFileW(files, i, nullptr, 0)) + 1, L'\0');
       path.resize(DragQueryFileW(files, i, path.data(), static_cast<UINT>(path.size())));
-      if (!path.empty()) paths.push_back(std::move(path));
+      if (path.empty()) continue;
+      if (!readFile) {
+        // Prefer the explicit file paths when the source provides them. A
+        // Shell list may use a second spelling of the same files.
+        std::erase_if(paths, [](const auto &item) { return !isDesktopShellItem(item); });
+        readFile = true;
+      }
+      paths.push_back(std::move(path));
     }
   }
   return paths;
@@ -764,7 +780,12 @@ public:
       if (data && !panel.mapped()) {
         FORMATETC format{CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
         files = data->QueryGetData(&format) == S_OK;
-        if (!files) hasShellItems = !desktopShellDropItems(data).empty();
+        if (!files || !(*effects & DROPEFFECT_MOVE)) {
+          for (const auto &path : desktopShellDropItems(data)) {
+            if (isDesktopShellItem(path)) hasShellItems = true;
+            else files = true;
+          }
+        }
       }
     } catch (...) {
       DragLeave();
@@ -788,6 +809,8 @@ public:
     if (allowed) {
       try {
         auto paths = allowed == DROPEFFECT_MOVE ? desktopDropPaths(data) : desktopShellDropItems(data);
+        if (allowed != DROPEFFECT_MOVE)
+          std::erase_if(paths, [](const auto &path) { return !isDesktopShellItem(path); });
         if (panel.desktop.assign(panel, paths, {point.x, point.y}, true)) {
           if (allowed == DROPEFFECT_MOVE) {
             // The target moved the files. The drag source must not delete anything.
@@ -4511,13 +4534,17 @@ bool stop() {
 bool sync(const std::wstring &installedExecutable) {
   if (!enabled()) return stop();
   try {
+    const auto context = desktopLaunchContext();
+    if (context.mode == DesktopLaunchMode::Unavailable) return false;
     const auto exe = installedExecutable.empty() ? quick::executable() : installedExecutable;
     if (!startup(exe) || !configureDesktopMenu(exe)) return false;
     const auto running = receiver();
-    if ((!installedExecutable.empty() || (running && GetPropW(running, legacyManagedIconsProperty))) &&
-        !stopProcess()) return false;
+    if (running && (!installedExecutable.empty() || GetPropW(running, legacyManagedIconsProperty) ||
+                    (context.mode == DesktopLaunchMode::Explorer &&
+                     desktopReceiverStatus(running, context) == DesktopReceiverStatus::Elevated)) &&
+        !stopProcess(running)) return false;
     const auto window = receiver();
-    return window ? GetPropW(window, readyProperty) != nullptr : launch(exe, false);
+    return window ? receiverReady(window, context) : launch(exe, L"--desktop-groups", context, true);
   } catch (...) {
     return false;
   }
@@ -4525,18 +4552,40 @@ bool sync(const std::wstring &installedExecutable) {
 
 bool showManager() {
   if (!enabled()) return false;
-  if (auto window = receiver()) return notifyManager(window);
   try {
-    return launch(quick::executable(), true);
+    const auto context = desktopLaunchContext();
+    if (auto window = receiver()) {
+      const auto status = desktopReceiverStatus(window, context);
+      if (status == DesktopReceiverStatus::Compatible) return notifyManager(window);
+      if (status != DesktopReceiverStatus::Elevated || context.mode != DesktopLaunchMode::Explorer ||
+          !stopProcess(window)) return false;
+    }
+    return launch(quick::executable(), L"--desktop-groups-manage", context, false);
   } catch (...) {
     return false;
   }
 }
 
-int run(HINSTANCE instance, bool manage, bool create) {
+int run(HINSTANCE instance, bool manage, bool create, bool delegated) {
   POINT creationPoint{};
   if (create) GetCursorPos(&creationPoint);
   if (!enabled()) return 0;
+  // A box must run at the desktop's integrity level to receive its OLE drags.
+  const auto context = desktopLaunchContext();
+  if (context.mode != DesktopLaunchMode::Direct) {
+    try {
+      if (context.mode == DesktopLaunchMode::Explorer && !delegated) {
+        const auto window = receiver();
+        if (desktopReceiverStatus(window, context) != DesktopReceiverStatus::Elevated || stopProcess(window)) {
+          const auto arguments = create ? L"--desktop-groups-create" :
+                                manage ? L"--desktop-groups-manage" : L"--desktop-groups";
+          if (launch(fn::modulePath().native(), arguments, context, !manage && !create)) return 0;
+        }
+      }
+    } catch (...) {}
+    if (manage || create) report(nullptr, lang::text(L"无法打开桌面盒子。"));
+    return 1;
+  }
   const auto mutex = CreateMutexW(nullptr, FALSE, mutexName);
   if (!mutex) return 1;
   DWORD status = WaitForSingleObject(mutex, 0);

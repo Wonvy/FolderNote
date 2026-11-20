@@ -1,4 +1,5 @@
 #include "../src/core.h"
+#include "../src/desktop_groups_icon_source.h"
 #include "../src/desktop_groups_model.h"
 #include "../src/desktop_groups_render.h"
 #include "../src/desktop_groups_storage.h"
@@ -7,8 +8,10 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <shlobj.h>
 #include <stdexcept>
 #include <string_view>
+#include <wrl/implements.h>
 
 namespace {
 constexpr wchar_t settings[] = L"Software\\FolderNote";
@@ -59,6 +62,67 @@ struct TemporaryFiles {
     fn::fs::remove_all(root, error);
   }
 };
+
+class ShellIdListDrop final : public Microsoft::WRL::RuntimeClass<
+    Microsoft::WRL::RuntimeClassFlags<Microsoft::WRL::ClassicCom>, IDataObject> {
+  Microsoft::WRL::ComPtr<IDataObject> source;
+  FORMATETC idList{static_cast<CLIPFORMAT>(RegisterClipboardFormatW(CFSTR_SHELLIDLIST)),
+                   nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+
+public:
+  explicit ShellIdListDrop(IDataObject *data) : source(data) {}
+
+  HRESULT STDMETHODCALLTYPE GetData(FORMATETC *format, STGMEDIUM *content) override {
+    return format && format->cfFormat == idList.cfFormat ? source->GetData(format, content) : DV_E_FORMATETC;
+  }
+  HRESULT STDMETHODCALLTYPE QueryGetData(FORMATETC *format) override {
+    return format && format->cfFormat == idList.cfFormat ? source->QueryGetData(format) : DV_E_FORMATETC;
+  }
+  HRESULT STDMETHODCALLTYPE EnumFormatEtc(DWORD direction, IEnumFORMATETC **formats) override {
+    return direction == DATADIR_GET ? SHCreateStdEnumFmtEtc(1, &idList, formats) : E_NOTIMPL;
+  }
+  HRESULT STDMETHODCALLTYPE GetDataHere(FORMATETC *, STGMEDIUM *) override { return E_NOTIMPL; }
+  HRESULT STDMETHODCALLTYPE GetCanonicalFormatEtc(FORMATETC *, FORMATETC *) override { return E_NOTIMPL; }
+  HRESULT STDMETHODCALLTYPE SetData(FORMATETC *, STGMEDIUM *, BOOL) override { return E_NOTIMPL; }
+  HRESULT STDMETHODCALLTYPE DAdvise(FORMATETC *, DWORD, IAdviseSink *, DWORD *) override { return OLE_E_ADVISENOTSUPPORTED; }
+  HRESULT STDMETHODCALLTYPE DUnadvise(DWORD) override { return OLE_E_ADVISENOTSUPPORTED; }
+  HRESULT STDMETHODCALLTYPE EnumDAdvise(IEnumSTATDATA **) override { return OLE_E_ADVISENOTSUPPORTED; }
+};
+
+void exerciseShellIdListDrop(const fn::fs::path &root) {
+  struct OleSession {
+    HRESULT status = OleInitialize(nullptr);
+    ~OleSession() { if (SUCCEEDED(status)) OleUninitialize(); }
+  } ole;
+  check(SUCCEEDED(ole.status), "initialize OLE for the Shell drop fixture");
+  const auto folder = root / L"Project folder";
+  const auto file = root / L"Notes.txt";
+  check(fn::fs::create_directories(folder), "create the Shell folder fixture");
+  check(static_cast<bool>(std::ofstream(file) << "contents"), "create the Shell file fixture");
+
+  struct FreePidl {
+    using pointer = PIDLIST_ABSOLUTE;
+    void operator()(pointer id) const { CoTaskMemFree(id); }
+  };
+  const auto parse = [](const fn::fs::path &path) {
+    PIDLIST_ABSOLUTE id = nullptr;
+    check(SUCCEEDED(SHParseDisplayName(path.c_str(), nullptr, &id, 0, nullptr)) && id,
+          "parse the fixture using the Windows Shell");
+    return std::unique_ptr<ITEMIDLIST, FreePidl>(id);
+  };
+  const auto parentId = parse(root), folderId = parse(folder), fileId = parse(file);
+  PCUITEMID_CHILD children[]{ILFindLastID(folderId.get()), ILFindLastID(fileId.get())};
+  Microsoft::WRL::ComPtr<IDataObject> nativeDrop;
+  check(SUCCEEDED(SHCreateDataObject(parentId.get(), ARRAYSIZE(children), children, nullptr, IID_PPV_ARGS(&nativeDrop))) &&
+        nativeDrop, "create a real Shell drop containing a folder and a file");
+  auto drop = Microsoft::WRL::Make<ShellIdListDrop>(nativeDrop.Get());
+  FORMATETC pathsFormat{CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+  check(drop && drop->QueryGetData(&pathsFormat) == DV_E_FORMATETC, "the fixture offers no CF_HDROP fallback");
+
+  const auto paths = desktop_groups::desktopShellDropItems(drop.Get());
+  check(paths.size() == 2 && fn::fs::equivalent(paths[0], folder) && fn::fs::equivalent(paths[1], file),
+        "recover a folder and a file using only the Shell ID list");
+}
 
 void exerciseBoxStorage(const fn::fs::path &root) {
   using namespace desktop_groups;
@@ -578,6 +642,7 @@ void exercise(const fn::fs::path &root) {
 int main() {
   try {
     const TemporaryFiles files;
+    exerciseShellIdListDrop(files.root / L"shell-drop-test");
     TemporaryRegistry registry;
     registry.redirect(files.root.filename().native());
     exercise(files.root);
