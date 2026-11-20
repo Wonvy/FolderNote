@@ -316,6 +316,11 @@ For custom file dialogs, use Open in new window.</message>
 The background helper provides access to recent and frequent folders.</message>
   <message id="ffe7aea054516fba">Desktop background</message>
   <message id="4af4b94e70819d5a">Check for updates</message>
+  <message id="2544185c50aeffe3">Automatic updates</message>
+  <message id="22ddeafc0dd8d6af">Checks for updates when you open Settings, up to once a day. The standard edition installs updates that require no administrator approval.</message>
+  <message id="987873672bd18371">Update {0} is available.</message>
+  <message id="6eee3c22a994917a">FolderNote {0} was installed. Reopen Settings to use the new version.</message>
+  <message id="a7602d4f4509513d">Could not save the automatic update preference.</message>
   <message id="c8d13a4472fcfff4">Downloading update…</message>
   <message id="9b4cde1fe1d23571">Saving note and refreshing the list…</message>
   <message id="8c24cbffec04e730">Processing selected folders…</message>
@@ -478,7 +483,6 @@ Right-click a tab to open it in a separate window.</message>
   <message id="e632eafd4dc2e301">Drag desktop items here</message>
   <message id="6f62ce080cb9c8e6">Open</message>
   <message id="c75f260857a59051">OK</message>
-  <message id="dbb5db275d925f8d">Only files and folders on your personal or public desktop can be added.</message>
   <message id="759e85c6409a8a3c">Couldn't open this desktop item.</message>
   <message id="610389c0da789b9c">Frosted glass</message>
   <message id="c358acf437c0778f">Map folder</message>
@@ -496,13 +500,10 @@ Right-click a tab to open it in a separate window.</message>
   <message id="431821d68631c347">Date modified</message>
   <message id="f28898a6f178a0cc">Ungrouped desktop</message>
   <message id="88fc340cd50cbc4f">Mapped folder is empty</message>
-  <message id="f6dd3fc3b4606ba1">Could not take over desktop icons.</message>
   <message id="5a54db1c66fb8c06">No ungrouped items</message>
   <message id="9c2226f38f438591">Desktop boxes</message>
-  <message id="d2520a793a876b02">Windows displays its own desktop icons by default.
-Enable Icon organization mode to use FolderNote’s desktop icons.</message>
-  <message id="fbb119fea9d68458">Icon organization mode</message>
-  <message id="2383d1e1619f8988">After saving, FolderNote displays desktop icons. Grouped items appear only in their boxes.</message>
+  <message id="44657272c7372adb">Windows manages the desktop icons.
+Files and folders dropped into a box move to FolderNote Boxes.</message>
   <message id="7a74291d9de2a826">Auto-collapse</message>
   <message id="b777d06073d0780e">Manage desktop boxes</message>
   <message id="9f1acc804f9f1b41">Desktop box appearance preview</message>
@@ -529,7 +530,11 @@ Enable Icon organization mode to use FolderNote’s desktop icons.</message>
   <message id="62f699522bd5c7e2">Expand box</message>
   <message id="3848e93c2e31b652">Box name</message>
   <message id="6ebed01ef5d681f2">Remove from box</message>
-  <message id="571fd5dfaa0a47b9">Delete the box “{0}”? Its files will be kept.</message>
+  <message id="dd6fe1f51ae74422">Delete the box “{0}”? Stored items will move back to your desktop.</message>
+  <message id="9f93b47a6d6f70ac">Add files and folders from the desktop or FolderNote Boxes.</message>
+  <message id="f745eb1700ff436c">Some desktop items could not be moved.</message>
+  <message id="377e8b77678d4a30">Could not move the files back to the desktop.</message>
+  <message id="294a052644c66ecc">Could not restore the items to their original locations. Check the desktop and the FolderNote Boxes folder.</message>
   <message id="36cca66fec102119">Couldn't open desktop boxes.</message>
   <message id="9d65f9dc54e4819f">Couldn't load desktop boxes</message>
   <message id="a6849744c5fee177">Couldn't save desktop boxes</message>

@@ -34,34 +34,60 @@ NavigateResult navigate(HWND target, const std::wstring &path, const detail::Men
     return NavigateResult::ActivationFailed;
   if (!current()) return NavigateResult::TargetChanged;
   if (GetForegroundWindow() != target) return NavigateResult::ActivationFailed;
-  if ((GetAsyncKeyState(VK_CONTROL) | GetAsyncKeyState(VK_SHIFT) | GetAsyncKeyState(VK_MENU)) & 0x8000)
-    return NavigateResult::ModifierPressed;
-  // The native address edit also exists in breadcrumb mode. Ask its dialog to
-  // focus it directly: global Alt+D can be intercepted by another application's
-  // hotkey, taking focus away before any path can be entered.
+  auto modifierPressed = [] {
+    return (GetAsyncKeyState(VK_CONTROL) | GetAsyncKeyState(VK_SHIFT) | GetAsyncKeyState(VK_MENU)) & 0x8000;
+  };
+  if (modifierPressed()) return NavigateResult::ModifierPressed;
   const HWND address = addressControl(target);
-  if (!address) return NavigateResult::AddressUnavailable;
-  if (!SendMessageTimeoutW(target, WM_NEXTDLGCTL, reinterpret_cast<WPARAM>(address), TRUE,
-      SMTO_ABORTIFHUNG | SMTO_BLOCK, 1000, &result))
-    return NavigateResult::InputBlocked;
   HWND edit = nullptr;
-  for (int i = 0; i < 50; ++i) {
-    if (!current() || GetForegroundWindow() != target) return NavigateResult::TargetChanged;
-    GUITHREADINFO info{sizeof(info)};
-    if (GetGUIThreadInfo(thread, &info) && addressEdit(info.hwndFocus, target)) {
-      edit = info.hwndFocus; break;
+  auto waitForAddress = [&]() {
+    for (int i = 0; i < 50; ++i) {
+      if (!current() || GetForegroundWindow() != target) return NavigateResult::TargetChanged;
+      GUITHREADINFO info{sizeof(info)};
+      if (GetGUIThreadInfo(thread, &info) && addressEdit(info.hwndFocus, target) &&
+          IsWindowVisible(info.hwndFocus)) {
+        edit = info.hwndFocus;
+        return NavigateResult::Success;
+      }
+      Sleep(10);
     }
-    Sleep(10);
+    return NavigateResult::AddressUnavailable;
+  };
+  if (address && IsWindowVisible(address)) {
+    if (!SendMessageTimeoutW(target, WM_NEXTDLGCTL, reinterpret_cast<WPARAM>(address), TRUE,
+        SMTO_ABORTIFHUNG | SMTO_BLOCK, 1000, &result)) return NavigateResult::InputBlocked;
+    if (waitForAddress() == NavigateResult::TargetChanged) return NavigateResult::TargetChanged;
   }
-  if (!edit) return NavigateResult::AddressUnavailable;
-  GUITHREADINFO info{sizeof(info)};
-  if (!current() || GetForegroundWindow() != target || !GetGUIThreadInfo(thread, &info) ||
-      info.hwndFocus != edit || !addressEdit(edit, target)) return NavigateResult::TargetChanged;
+  if (!edit) {
+    // Breadcrumb mode can create the edit on demand. Queue the address-bar
+    // accelerator on the dialog so its message loop can translate it locally.
+    if (!current() || GetForegroundWindow() != target) return NavigateResult::TargetChanged;
+    if (modifierPressed()) return NavigateResult::ModifierPressed;
+    const LPARAM key = 1 | (MapVirtualKeyW(VK_F4, MAPVK_VK_TO_VSC) << 16);
+    if (!PostMessageW(target, WM_KEYDOWN, VK_F4, key) ||
+        !PostMessageW(target, WM_KEYUP, VK_F4, key | 0xc0000000)) return NavigateResult::InputBlocked;
+    const auto focused = waitForAddress();
+    if (focused != NavigateResult::Success) return focused;
+  }
+  auto editHasFocus = [&] {
+    for (int i = 0; i < 50; ++i) {
+      GUITHREADINFO info{sizeof(info)};
+      if (!current() || GetForegroundWindow() != target || !GetGUIThreadInfo(thread, &info) ||
+          !addressEdit(edit, target) || !IsWindowVisible(edit)) return false;
+      if (info.hwndFocus == edit) return true;
+      // While handling a cross-process WM_SETTEXT, the address bar can briefly
+      // give focus to its combo box. Wait only for this same edit to regain it.
+      wchar_t cls[32]{};
+      if (!info.hwndFocus || info.hwndFocus != GetParent(edit) ||
+          !GetClassNameW(info.hwndFocus, cls, ARRAYSIZE(cls)) || wcscmp(cls, L"ComboBox")) return false;
+      Sleep(10);
+    }
+    return false;
+  };
+  if (!editHasFocus()) return NavigateResult::TargetChanged;
   if (!SendMessageTimeoutW(edit, WM_SETTEXT, 0, reinterpret_cast<LPARAM>(path.c_str()),
       SMTO_ABORTIFHUNG | SMTO_BLOCK, 1000, &result) || !result) return NavigateResult::AddressWriteFailed;
-  info = {sizeof(info)};
-  if (!current() || GetForegroundWindow() != target || !GetGUIThreadInfo(thread, &info) ||
-      info.hwndFocus != edit || !addressEdit(edit, target)) return NavigateResult::TargetChanged;
+  if (!editHasFocus()) return NavigateResult::TargetChanged;
   // Enter goes only to the verified address edit, never a filename control,
   // the dialog's default button, or a different foreground application.
   if (!SendMessageTimeoutW(edit, WM_KEYDOWN, VK_RETURN, 1,

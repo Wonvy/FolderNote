@@ -12,6 +12,7 @@
 #include "desktop_groups_render.h"
 #include "explorer_entries_page.h"
 #include "language.h"
+#include "navigation_registration.h"
 #include <commdlg.h>
 #include <dwmapi.h>
 #include <appmodel.h>
@@ -140,7 +141,6 @@ struct DesktopGroupsSettings {
   DWORD radius = 10, opacity = 55;
   bool shadow = false;
   DWORD shadowOpacity = 36, shadowBlur = 12, shadowOffset = 3;
-  bool managedIcons = false;
 };
 static bool configuredDesktopGroupsGlass() {
   return desktop_groups::configuredAppearance().glass;
@@ -154,7 +154,7 @@ static void applySettings(bool notes, Action action, Action preferred, bool quic
   if (DWORD(theme) > 2) throw fn::Error{lang::text(L"请选择有效的主题。")};
   SettingKeys keys;
   LSTATUS error = ERROR_SUCCESS;
-  constexpr size_t configurationCount = 17;
+  constexpr size_t configurationCount = 16;
   std::array<SettingValue, configurationCount + 3> saved;
   if (saveConfiguration) {
     error = RegCreateKeyExW(HKEY_CURRENT_USER, configKey, 0, nullptr, 0,
@@ -178,7 +178,6 @@ static void applySettings(bool notes, Action action, Action preferred, bool quic
       saved[13].read(keys.values[0], L"DesktopGroupsShadowOpacity");
       saved[14].read(keys.values[0], L"DesktopGroupsShadowBlur");
       saved[15].read(keys.values[0], L"DesktopGroupsShadowOffset");
-      saved[16].read(keys.values[0], L"DesktopGroupsManagedIcons");
     }
   }
   // Only alter menus already installed by FolderNote. A modern-only or portable
@@ -199,7 +198,7 @@ static void applySettings(bool notes, Action action, Action preferred, bool quic
       desktopGroups ? desktopGroups->radius : 0UL, desktopGroups ? desktopGroups->opacity : 0UL,
       desktopGroups && desktopGroups->shadow ? 1UL : 0UL,
       desktopGroups ? desktopGroups->shadowOpacity : 0UL, desktopGroups ? desktopGroups->shadowBlur : 0UL,
-      desktopGroups ? desktopGroups->shadowOffset : 0UL, desktopGroups && desktopGroups->managedIcons ? 1UL : 0UL};
+      desktopGroups ? desktopGroups->shadowOffset : 0UL};
   for (size_t index = 0; index < saved.size(); ++index) {
     auto &value = saved[index];
     if (!value.key)
@@ -266,7 +265,7 @@ static HWND quickCheck;
 static HWND dialogCheck;
 static HWND tabsCheck;
 static HWND preferNewTabCheck;
-static HWND desktopGroupsCheck, desktopGroupsManager, desktopGroupsGlassCheck, desktopGroupsPreview, managedIconsCheck;
+static HWND desktopGroupsCheck, desktopGroupsManager, desktopGroupsGlassCheck, desktopGroupsPreview;
 static HFONT font, headingFont;
 static HWND body, themeChoice, settingsWindow, managerPage, contextPage, entriesPage;
 static SettingsPage activePage = SettingsPage::Features;
@@ -282,7 +281,6 @@ static UINT selectPageMessage() { return RegisterWindowMessageW(L"FolderNote.Set
 static std::unique_ptr<ui::Theme> appearance;
 static constexpr int languageChoice = 43, languageExport = 44, languageImport = 45;
 static constexpr int desktopGroupsToggle = 22, desktopGroupsManage = 23, desktopGroupsGlassToggle = 24, desktopGroupsPreviewId = 25;
-static constexpr int managedIconsToggle = 26;
 static constexpr int boxGlass = 51, boxShadow = 52, boxRadius = 53, boxRadiusLabel = 55,
                      boxPreview = 57, boxPreviewLabel = 58, boxStyleShortcut = 59;
 static constexpr int boxShadowOpacity = 60, boxShadowBlur = 61, boxShadowOffset = 62;
@@ -307,7 +305,7 @@ static desktop_groups::Appearance boxStyle;
 static bool boxAppearancePreviewing = false;
 static bool reopenForLanguage = false;
 struct SettingsDraft {
-  std::array<LRESULT, 9> toggles;
+  std::array<LRESULT, 8> toggles;
   LRESULT action;
   ui::ThemeMode theme;
   desktop_groups::Appearance boxStyle;
@@ -317,7 +315,6 @@ static std::optional<SettingsDraft> languageDraft;
 static void updateDesktopGroupsManager() {
   const bool boxesChecked = SendMessageW(desktopGroupsCheck, BM_GETCHECK, 0, 0) == BST_CHECKED;
   EnableWindow(desktopGroupsManager, desktop_groups::enabled() && boxesChecked);
-  EnableWindow(managedIconsCheck, boxesChecked);
 }
 
 static void refreshLanguageMenus() {
@@ -353,20 +350,48 @@ static std::wstring languagePath(HWND owner, bool importing) {
   path.resize(wcslen(path.c_str()));
   return path;
 }
-static constexpr int updateButton = 42;
+static constexpr int updateButton = 42, automaticUpdateCheck = 70, automaticUpdateDescription = 71, updateStatusLabel = 72;
 static constexpr UINT_PTR updateTimer = 42;
+static constexpr auto automaticUpdateValue = L"AutomaticUpdate";
+static constexpr auto lastAutomaticCheckValue = L"LastAutomaticUpdateCheck";
+static constexpr auto uninstallKey = L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\FolderNote";
+
+enum class UpdateOperation { Check, Install, Automatic };
 struct UpdateResult {
   std::optional<updater::Release> release;
   std::wstring error;
+  bool installed = false;
 };
 static std::future<UpdateResult> updateWork;
-static bool installingUpdate = false;
+static UpdateOperation updateOperation = UpdateOperation::Check;
+static std::optional<updater::Release> availableUpdate;
+static std::wstring updateStatus, updatedVersion;
+
+static bool automaticUpdatesEnabled() {
+  DWORD enabled = 0, bytes = sizeof(enabled);
+  return RegGetValueW(HKEY_CURRENT_USER, configKey, automaticUpdateValue, RRF_RT_REG_DWORD,
+                     nullptr, &enabled, &bytes) == ERROR_SUCCESS && enabled == 1;
+}
+
+static ULONGLONG updateClock() {
+  FILETIME now{};
+  GetSystemTimeAsFileTime(&now);
+  return (static_cast<ULONGLONG>(now.dwHighDateTime) << 32) | now.dwLowDateTime;
+}
+
+static bool automaticCheckDue(ULONGLONG now) {
+  constexpr ULONGLONG day = 24ULL * 60 * 60 * 10000000;
+  ULONGLONG previous = 0;
+  DWORD bytes = sizeof(previous);
+  return RegGetValueW(HKEY_CURRENT_USER, configKey, lastAutomaticCheckValue, RRF_RT_REG_QWORD,
+                      nullptr, &previous, &bytes) != ERROR_SUCCESS ||
+      previous > now || now - previous >= day;
+}
 
 static bool modernInstallation() {
   UINT32 packageLength = 0;
   if (GetCurrentPackageFullName(&packageLength, nullptr) == ERROR_INSUFFICIENT_BUFFER) return true;
-  constexpr auto uninstall = L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\FolderNote";
-  if (RegGetValueW(HKEY_CURRENT_USER, uninstall, L"InstallLocation", RRF_RT_REG_SZ, nullptr, nullptr, nullptr) != ERROR_SUCCESS)
+  if (RegGetValueW(HKEY_CURRENT_USER, uninstallKey, L"InstallLocation", RRF_RT_REG_SZ, nullptr, nullptr, nullptr) != ERROR_SUCCESS)
     return false;
   // The Win11 installer removes the classic verbs because its MSIX owns them.
   HKEY key = nullptr;
@@ -374,58 +399,127 @@ static bool modernInstallation() {
   if (key) RegCloseKey(key);
   return result == ERROR_FILE_NOT_FOUND || result == ERROR_PATH_NOT_FOUND;
 }
-static void startUpdateWork(HWND owner, std::optional<updater::Release> release = {}) {
-  const bool install = release.has_value();
+
+static bool canInstallAutomatically() {
+  if (!automaticUpdatesEnabled() || modernInstallation()) return false;
+  wchar_t version[32]{}, command[32768]{};
+  DWORD versionBytes = sizeof(version), commandBytes = sizeof(command);
+  if (RegGetValueW(HKEY_CURRENT_USER, uninstallKey, L"DisplayVersion", RRF_RT_REG_SZ,
+                   nullptr, version, &versionBytes) != ERROR_SUCCESS ||
+      std::wstring_view(version) != app::version ||
+      RegGetValueW(HKEY_CURRENT_USER, uninstallKey, L"UninstallString", RRF_RT_REG_SZ,
+                   nullptr, command, &commandBytes) != ERROR_SUCCESS) return false;
+  const auto expected = L"\"" + (fn::modulePath().parent_path() / L"Uninstall.exe").native() + L"\"";
+  return _wcsicmp(command, expected.c_str()) == 0 && !navreg::requiresMachineRegistration();
+}
+
+static bool installingManually() { return updateWork.valid() && updateOperation == UpdateOperation::Install; }
+static bool workingAutomatically() { return updateWork.valid() && updateOperation == UpdateOperation::Automatic; }
+
+static void updateControls(HWND owner) {
+  const HWND button = GetDlgItem(owner, updateButton);
+  const auto label = updateWork.valid()
+      ? lang::text(installingManually() ? L"正在下载并安装…" : L"正在检查更新…")
+      : updateStatus.empty() ? lang::text(L"检查更新") : updateStatus.c_str();
+  SetWindowTextW(button, label);
+  SetDlgItemTextW(owner, updateStatusLabel, updateStatus.c_str());
+  if (updateTip) {
+    TOOLINFOW tool{sizeof(tool)};
+    tool.uFlags = TTF_IDISHWND;
+    tool.hwnd = owner;
+    tool.uId = reinterpret_cast<UINT_PTR>(button);
+    tool.lpszText = const_cast<wchar_t *>(label);
+    SendMessageW(updateTip, TTM_UPDATETIPTEXTW, 0, reinterpret_cast<LPARAM>(&tool));
+  }
+  const bool manualInstall = installingManually();
+  EnableWindow(button, !updateWork.valid());
+  EnableWindow(GetDlgItem(owner, automaticUpdateCheck), *app::updateRepository &&
+               (!updateWork.valid() || workingAutomatically()));
+  for (const int id : {IDOK, IDCANCEL, languageChoice, languageImport})
+    EnableWindow(GetDlgItem(owner, id), !manualInstall);
+  InvalidateRect(button, nullptr, TRUE);
+}
+
+static void startUpdateWork(HWND owner, UpdateOperation operation, std::optional<updater::Release> release = {}) {
+  if (updateWork.valid()) return;
   try {
-    const bool modern = !install && modernInstallation();
-    std::packaged_task<UpdateResult()> task([release = std::move(release), modern] {
+    const bool modern = operation != UpdateOperation::Install && modernInstallation();
+    const auto version = updatedVersion.empty() ? std::wstring(app::version) : updatedVersion;
+    std::packaged_task<UpdateResult()> task([operation, release = std::move(release), modern, version]() mutable {
+      UpdateResult result;
       try {
-        if (release) updater::install(*release);
-        else return UpdateResult{updater::check(app::updateRepository, app::version, modern), {}};
-        return UpdateResult{};
-      } catch (const fn::Error &error) { return UpdateResult{{}, error.message}; }
-      catch (...) { return UpdateResult{{}, lang::text(L"更新失败，请稍后重试。")}; }
+        if (operation == UpdateOperation::Install) {
+          updater::install(*release);
+        } else {
+          result.release = updater::check(app::updateRepository, version, modern);
+          if (operation == UpdateOperation::Automatic && result.release && !modern && canInstallAutomatically())
+            result.installed = updater::install(*result.release, canInstallAutomatically);
+        }
+      } catch (const fn::Error &error) { result.error = error.message; }
+      catch (...) { result.error = lang::text(L"更新失败，请稍后重试。"); }
+      return result;
     });
     auto future = task.get_future();
     if (!SetTimer(owner, updateTimer, 100, nullptr)) fn::fail(L"无法启动更新检查");
     std::thread(std::move(task)).detach();
     updateWork = std::move(future);
-    installingUpdate = install;
-    HWND button = GetDlgItem(owner, updateButton);
-    SetWindowTextW(button, install ? lang::text(L"正在下载并安装…") : lang::text(L"正在检查更新…"));
-    EnableWindow(button, FALSE);
-    if (install) {
-      EnableWindow(GetDlgItem(owner, IDOK), FALSE);
-      EnableWindow(GetDlgItem(owner, IDCANCEL), FALSE);
-      EnableWindow(GetDlgItem(owner, languageChoice), FALSE);
-      EnableWindow(GetDlgItem(owner, languageImport), FALSE);
-    }
+    updateOperation = operation;
+    updateControls(owner);
   } catch (...) {
     KillTimer(owner, updateTimer);
-    MessageBoxW(owner, lang::text(L"无法启动更新，请重试。"), lang::text(L"FolderNote 更新"), MB_OK | MB_ICONERROR);
+    if (operation != UpdateOperation::Automatic)
+      MessageBoxW(owner, lang::text(L"无法启动更新，请重试。"), lang::text(L"FolderNote 更新"), MB_OK | MB_ICONERROR);
   }
 }
+
+static void checkAutomatically(HWND owner) {
+  if (!*app::updateRepository || updateWork.valid() || !automaticUpdatesEnabled()) return;
+  const auto now = updateClock();
+  if (!automaticCheckDue(now)) return;
+  // Claim the check before starting network activity so a subsequent Settings launch
+  // does not start again while this one is still checking or installing.
+  if (RegSetKeyValueW(HKEY_CURRENT_USER, configKey, lastAutomaticCheckValue, REG_QWORD, &now, sizeof(now)) == ERROR_SUCCESS)
+    startUpdateWork(owner, UpdateOperation::Automatic);
+}
+
+static void offerUpdate(HWND owner, const updater::Release &release) {
+  auto prompt = lang::format(L"发现 FolderNote {0}。现在从 GitHub 下载并启动安装吗？", {release.version});
+  if (MessageBoxW(owner, prompt.c_str(), lang::text(L"FolderNote 更新"), MB_YESNO | MB_ICONQUESTION) == IDYES)
+    startUpdateWork(owner, UpdateOperation::Install, release);
+}
+
 static void finishUpdateWork(HWND owner) {
   using namespace std::chrono_literals;
   if (!updateWork.valid() || updateWork.wait_for(0ms) != std::future_status::ready) return;
   KillTimer(owner, updateTimer);
+  const auto operation = updateOperation;
   auto result = updateWork.get();
-  const bool installerStarted = installingUpdate && result.error.empty();
-  installingUpdate = false;
-  HWND button = GetDlgItem(owner, updateButton);
-  SetWindowTextW(button, lang::text(L"检查更新"));
-  EnableWindow(button, TRUE);
-  EnableWindow(GetDlgItem(owner, IDOK), TRUE);
-  EnableWindow(GetDlgItem(owner, IDCANCEL), TRUE);
-  EnableWindow(GetDlgItem(owner, languageChoice), TRUE);
-  EnableWindow(GetDlgItem(owner, languageImport), TRUE);
-  if (installerStarted) { DestroyWindow(owner); return; }
+  if (operation == UpdateOperation::Automatic) {
+    availableUpdate.reset();
+    if (result.installed) {
+      updatedVersion = result.release->version;
+      updateStatus = lang::format(L"已安装 FolderNote {0}。重新打开设置即可使用新版。", {updatedVersion});
+    } else if (result.release) {
+      availableUpdate = std::move(result.release);
+      updateStatus = lang::format(L"发现可用更新 {0}。", {availableUpdate->version});
+      if (!result.error.empty()) updateStatus += L"\n" + result.error;
+    } else {
+      updateStatus = std::move(result.error);
+    }
+    updateControls(owner);
+    return;
+  }
+  if (operation == UpdateOperation::Check && result.error.empty()) {
+    availableUpdate = result.release;
+    if (availableUpdate) updateStatus = lang::format(L"发现可用更新 {0}。", {availableUpdate->version});
+    else if (updatedVersion.empty()) updateStatus.clear();
+  }
+  updateControls(owner);
+  if (operation == UpdateOperation::Install && result.error.empty()) { DestroyWindow(owner); return; }
   if (!result.error.empty()) {
     MessageBoxW(owner, result.error.c_str(), lang::text(L"FolderNote 更新"), MB_OK | MB_ICONERROR);
   } else if (result.release) {
-    auto prompt = lang::format(L"发现 FolderNote {0}。现在从 GitHub 下载并启动安装吗？", {result.release->version});
-    if (MessageBoxW(owner, prompt.c_str(), lang::text(L"FolderNote 更新"), MB_YESNO | MB_ICONQUESTION) == IDYES)
-      startUpdateWork(owner, std::move(result.release));
+    offerUpdate(owner, *result.release);
   } else {
     MessageBoxW(owner, lang::text(L"当前已是最新版本。"), lang::text(L"FolderNote 更新"), MB_OK | MB_ICONINFORMATION);
   }
@@ -436,7 +530,7 @@ struct Placement { HWND window; int x, y, width, height; };
 static std::vector<Placement> placements;
 static UINT dpi;
 static int scale(int n) { return MulDiv(n, dpi, 96); }
-static constexpr int desktopGroupsHeight = 296;
+static constexpr int desktopGroupsHeight = 230;
 static constexpr int desktopGroupsPreviewTop = 537, desktopGroupsPreviewHeight = 120;
 static int contentHeight() { return scale((tabsSupported() ? 634 : 440) + desktopGroupsHeight); }
 
@@ -667,6 +761,12 @@ static void layoutSettings() {
   preference(languageImport, 404, 132, 174, 32);
   preference(32, 0, 196, 210, 22);
   preference(17, 0, 224, 210, 130);
+  const int preferencesWidth = std::max(0, MulDiv(width, 96, dpi) - sidebar - 48);
+  preference(automaticUpdateCheck, 0, 278, std::min(210, preferencesWidth), 26);
+  preference(automaticUpdateDescription, 0, 309, preferencesWidth, 42);
+  constexpr int statusTop = 356;
+  const int statusHeight = std::clamp(MulDiv(height, 96, dpi) - 72 - statusTop, 0, 62);
+  preference(updateStatusLabel, 0, statusTop, preferencesWidth, statusHeight);
   const int boxLeft = scale(sidebar + 24);
   const int boxWidth = std::max(0, width - scale(sidebar + 48));
   const int boxGap = scale(24);
@@ -808,7 +908,8 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
       ui::rounded(item->hDC, item->rcItem, selected ? p.pressed : p.field, p.border, scale(5));
       auto symbols = ui::makeSymbolFont(dpi, 16);
       auto old = SelectObject(item->hDC, symbols);
-      ui::text(item->hDC, L"\xE72C", item->rcItem, disabled ? p.muted : p.text,
+      const auto color = disabled ? p.muted : availableUpdate ? p.accent : p.text;
+      ui::text(item->hDC, availableUpdate ? L"\xE896" : L"\xE72C", item->rcItem, color,
                DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
       SelectObject(item->hDC, old); DeleteObject(symbols);
       return TRUE;
@@ -928,6 +1029,13 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
       SendMessageW(updateTip, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&tool));
     }
     ui::muted(add(h, L"STATIC", lang::text(L"外观主题"), 0, 32));
+    const auto automaticUpdate = add(h, L"BUTTON", lang::text(L"自动更新"), BS_AUTOCHECKBOX | WS_TABSTOP,
+                                     automaticUpdateCheck);
+    SendMessageW(automaticUpdate, BM_SETCHECK, automaticUpdatesEnabled() ? BST_CHECKED : BST_UNCHECKED, 0);
+    ui::muted(add(h, L"STATIC", lang::text(L"开启后，打开设置时每天最多检查一次。通用版会自动安装无需管理员授权的更新。"),
+                  SS_NOPREFIX, automaticUpdateDescription));
+    ui::muted(add(h, L"STATIC", L"", SS_NOPREFIX, updateStatusLabel));
+    updateControls(h);
     constexpr DWORD comboStyle = CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS | WS_TABSTOP;
     ui::muted(add(h, L"STATIC", lang::text(L"界面语言"), 0, 46));
     HWND language = add(h, L"COMBOBOX", L"", comboStyle, languageChoice);
@@ -989,7 +1097,7 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     field(L"BUTTON", lang::text(L"置顶与历史 →"), WS_TABSTOP, 86, 402, 220, 28, 16);
     desktopGroupsCheck = field(L"BUTTON", lang::text(L"桌面盒子"), checkStyle, 40, 462, -40, 26, desktopGroupsToggle);
     SendMessageW(desktopGroupsCheck, BM_SETCHECK, desktop_groups::enabled() ? BST_CHECKED : BST_UNCHECKED, 0);
-    field(L"STATIC", lang::text(L"默认保留 Windows 原生图标。\n可开启图标整理模式，由 FolderNote 显示图标。"), 0, 86, 494, -40, 38, 0, true);
+    field(L"STATIC", lang::text(L"由 Windows 管理桌面图标。\n拖入盒子的桌面文件和文件夹会移到 FolderNote Boxes。"), 0, 86, 494, -40, 38, 0, true);
     desktopGroupsGlassCheck = field(L"BUTTON", glassLabel.c_str(), checkStyle, 86, 538, 185, 26, desktopGroupsGlassToggle);
     SendMessageW(desktopGroupsGlassCheck, BM_SETCHECK, configuredDesktopGroupsGlass() ? BST_CHECKED : BST_UNCHECKED, 0);
     desktopGroupsManager = field(L"BUTTON", lang::text(L"管理桌面盒子"), WS_TABSTOP | BS_NOTIFY,
@@ -997,10 +1105,6 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     desktopGroupsPreview = field(L"STATIC", lang::text(L"桌面盒子效果预览"), SS_OWNERDRAW,
         285, desktopGroupsPreviewTop, 380, desktopGroupsPreviewHeight, desktopGroupsPreviewId);
     field(L"BUTTON", lang::text(L"盒子样式 →"), WS_TABSTOP, 86, 612, 185, 28, boxStyleShortcut);
-    managedIconsCheck = field(L"BUTTON", lang::text(L"图标整理模式"), checkStyle, 86, 658, -40, 26, managedIconsToggle);
-    SendMessageW(managedIconsCheck, BM_SETCHECK, desktop_groups::managedIconsEnabled() ? BST_CHECKED : BST_UNCHECKED, 0);
-    field(L"STATIC", lang::text(L"保存后，由 FolderNote 显示桌面图标，已分组项目只在盒子中显示。"),
-          0, 112, 687, -40, 40, 0, true);
     updateBoxStylePreview(h);
     tabsCheck = preferNewTabCheck = nullptr;
     if (tabsSupported()) {
@@ -1020,7 +1124,7 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     add(h, L"BUTTON", lang::text(L"取消"), WS_TABSTOP, IDCANCEL);
     if (languageDraft) {
       std::array checks{notesCheck, navigationCheck, quickCheck, dialogCheck, tabsCheck, preferNewTabCheck,
-                        desktopGroupsCheck, desktopGroupsGlassCheck, managedIconsCheck};
+                        desktopGroupsCheck, desktopGroupsGlassCheck};
       for (size_t i = 0; i < checks.size(); ++i)
         if (checks[i]) SendMessageW(checks[i], BM_SETCHECK, languageDraft->toggles[i], 0);
       SendMessageW(choice, CB_SETCURSEL, languageDraft->action, 0);
@@ -1035,7 +1139,7 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     appearance->apply(h); quick::setManagerTheme(managerPage, appearance->mode); showPage(activePage); return 0;
   }
   case WM_COMMAND:
-    if (installingUpdate && (LOWORD(w) == IDOK || LOWORD(w) == IDCANCEL)) return 0;
+    if (installingManually() && (LOWORD(w) == IDOK || LOWORD(w) == IDCANCEL)) return 0;
     if ((LOWORD(w) == languageChoice && HIWORD(w) == CBN_SELCHANGE) ||
         ((LOWORD(w) == languageExport || LOWORD(w) == languageImport) && HIWORD(w) == BN_CLICKED)) {
       const int id = LOWORD(w);
@@ -1053,7 +1157,7 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         refreshLanguageMenus();
         SettingsDraft draft{{}, SendMessageW(choice, CB_GETCURSEL, 0, 0), appearance->mode, boxStyle};
         std::array checks{notesCheck, navigationCheck, quickCheck, dialogCheck, tabsCheck, preferNewTabCheck,
-                          desktopGroupsCheck, desktopGroupsGlassCheck, managedIconsCheck};
+                          desktopGroupsCheck, desktopGroupsGlassCheck};
         for (size_t i = 0; i < checks.size(); ++i)
           if (checks[i]) draft.toggles[i] = SendMessageW(checks[i], BM_GETCHECK, 0, 0);
         languageDraft = draft;
@@ -1080,8 +1184,7 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             true, DesktopGroupsSettings{
               SendMessageW(desktopGroupsCheck, BM_GETCHECK, 0, 0) == BST_CHECKED,
               boxStyle.glass, boxStyle.radius, boxStyle.opacity, boxStyle.shadow,
-              boxStyle.shadowOpacity, boxStyle.shadowBlur, boxStyle.shadowOffset,
-              SendMessageW(managedIconsCheck, BM_GETCHECK, 0, 0) == BST_CHECKED});
+              boxStyle.shadowOpacity, boxStyle.shadowBlur, boxStyle.shadowOffset});
         restoreBoxStylePreview();
         updateDesktopGroupsManager();
         const bool desktopGroupsSynced = desktop_groups::sync();
@@ -1134,13 +1237,22 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
       showPage(SettingsPage(button - pageButtons.begin()));
     } else if (LOWORD(w) == 13 && HIWORD(w) == BN_CLICKED) {
       try { copyDiagnostics(h); } catch (const fn::Error &e) { MessageBoxW(h, e.message.c_str(), L"FolderNote", MB_OK | MB_ICONERROR); }
+    } else if (LOWORD(w) == automaticUpdateCheck && HIWORD(w) == BN_CLICKED && *app::updateRepository &&
+               (!updateWork.valid() || workingAutomatically())) {
+      const DWORD enabled = SendDlgItemMessageW(h, automaticUpdateCheck, BM_GETCHECK, 0, 0) == BST_CHECKED;
+      if (RegSetKeyValueW(HKEY_CURRENT_USER, configKey, automaticUpdateValue, REG_DWORD, &enabled, sizeof(enabled)) != ERROR_SUCCESS) {
+        SendDlgItemMessageW(h, automaticUpdateCheck, BM_SETCHECK, automaticUpdatesEnabled() ? BST_CHECKED : BST_UNCHECKED, 0);
+        MessageBoxW(h, lang::text(L"无法保存自动更新设置。"), lang::text(L"FolderNote 更新"), MB_OK | MB_ICONERROR);
+      } else if (enabled && IsWindowVisible(h)) {
+        checkAutomatically(h);
+      }
     } else if (LOWORD(w) == updateButton && HIWORD(w) == BN_CLICKED && !updateWork.valid()) {
-      if (*app::updateRepository) startUpdateWork(h);
+      if (*app::updateRepository) startUpdateWork(h, UpdateOperation::Check);
       else MessageBoxW(h, lang::text(L"此构建尚未配置 GitHub 更新源。请使用 GitHub Releases 发布的安装包。"), lang::text(L"FolderNote 更新"), MB_OK | MB_ICONINFORMATION);
     } else if (LOWORD(w) == IDCANCEL) DestroyWindow(h);
     return 0;
   case WM_TIMER: if (w == updateTimer) { finishUpdateWork(h); return 0; } break;
-  case WM_CLOSE: if (installingUpdate) return 0; break;
+  case WM_CLOSE: if (installingManually()) return 0; break;
   case WM_MEASUREITEM: reinterpret_cast<MEASUREITEMSTRUCT *>(l)->itemHeight = scale(26); return TRUE;
   case WM_VSCROLL: if (reinterpret_cast<HWND>(l) == settingsScroll.window()) settingsScroll.command(w); return 0;
   case WM_HSCROLL:
@@ -1182,7 +1294,8 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
   case WM_DESTROY:
     if (!reopenForLanguage) restoreBoxStylePreview();
     KillTimer(h, updateTimer);
-    updateWork = {};
+    if (!workingAutomatically()) updateWork = {};
+    updateTip = nullptr;
     PostQuitMessage(0);
     return 0;
   case WM_NCDESTROY: RemovePropW(h, app::settingsWindowTag); DeleteObject(font); DeleteObject(headingFont); body = managerPage = contextPage = entriesPage = settingsWindow = nullptr; placements.clear(); break;
@@ -1218,6 +1331,8 @@ int settings(HINSTANCE instance, SettingsPage page) {
       return 1;
     }
     ui::centerLogical(window, work, 980, 660); ShowWindow(window, SW_SHOW); SetFocus(GetDlgItem(window, pageButtons[size_t(activePage)]));
+    if (workingAutomatically()) SetTimer(window, updateTimer, 100, nullptr);
+    else checkAutomatically(window);
     MSG message{};
     while (GetMessageW(&message, nullptr, 0, 0) > 0) {
       if (message.message == WM_KEYDOWN && (message.wParam == VK_ESCAPE || message.wParam == VK_RETURN)) {
@@ -1239,6 +1354,10 @@ int settings(HINSTANCE instance, SettingsPage page) {
     }
     appearance.reset();
   } while (reopenForLanguage);
+  if (workingAutomatically()) {
+    updateWork.wait();
+    updateWork = {};
+  }
   return 0;
 }
 } // namespace navigation

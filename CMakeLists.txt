@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(FolderNote VERSION 1.9.5 LANGUAGES CXX RC)
+project(FolderNote VERSION 1.9.6 LANGUAGES CXX RC)
 set(FOLDERNOTE_UPDATE_REPOSITORY "" CACHE STRING "Public GitHub repository for updates (owner/repo)")
 option(FOLDERNOTE_WINUI "Build the WinUI 3 desktop-group interface" ON)
 if(FOLDERNOTE_UPDATE_REPOSITORY AND NOT FOLDERNOTE_UPDATE_REPOSITORY MATCHES "^[A-Za-z0-9-]+/[A-Za-z0-9_.-]+$")
@@ -42,7 +42,7 @@ target_link_libraries(tabs_router PUBLIC navigation_config shell32 advapi32)
 add_library(quick_ui STATIC src/quick_runtime.cpp src/quick_menu.cpp src/quick_dialog.cpp src/quick_manage.cpp src/quick_popup.cpp src/quick_transfer.cpp)
 target_link_libraries(quick_ui PUBLIC quick_data quick_legacy theme quick_icons tabs_router uiautomationcore oleaut32 comctl32 uxtheme)
 add_library(desktop_groups STATIC src/desktop_groups.cpp src/desktop_groups_model.cpp
-  src/desktop_groups_desktop_icons.cpp src/desktop_groups_icon_source.cpp
+  src/desktop_groups_storage.cpp src/desktop_groups_icon_source.cpp
   src/desktop_groups_menu.cpp src/desktop_groups_item_menu.cpp
   src/desktop_groups_visibility.cpp src/desktop_groups_render.cpp src/desktop_groups_color_picker.cpp)
 target_link_libraries(desktop_groups PUBLIC quick_ui comctl32 comdlg32 shell32 ole32 uuid dwmapi shlwapi runtimeobject d2d1 dwrite msimg32)
@@ -53,7 +53,7 @@ else()
   add_custom_command(TARGET FolderNote POST_BUILD COMMAND "${CMAKE_COMMAND}" -E rm -f
     "$<TARGET_FILE_DIR:FolderNote>/Microsoft.WindowsAppRuntime.Bootstrap.dll" VERBATIM)
 endif()
-target_link_libraries(navigation PUBLIC core navigation_config quick_ui dwmapi context_menu explorer_entries desktop_groups PRIVATE winhttp bcrypt runtimeobject comdlg32)
+target_link_libraries(navigation PUBLIC core navigation_config quick_ui dwmapi context_menu explorer_entries desktop_groups PRIVATE navreg winhttp bcrypt runtimeobject comdlg32)
 add_library(navigation_view STATIC src/navigation_view.cpp)
 target_link_libraries(navigation_view PUBLIC navigation_config quick_data comctl32 uiautomationcore oleaut32 ole32 uuid)
 add_library(FolderNoteNavigation SHARED src/navigation_extension.cpp src/navigation_extension.def)

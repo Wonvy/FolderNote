@@ -1,6 +1,7 @@
 #include "../src/core.h"
 #include "../src/desktop_groups_model.h"
 #include "../src/desktop_groups_render.h"
+#include "../src/desktop_groups_storage.h"
 #include <algorithm>
 #include <cstdint>
 #include <fstream>
@@ -15,33 +16,6 @@ constexpr wchar_t value[] = L"DesktopGroups";
 
 void check(bool condition, const char *message) {
   if (!condition) throw std::runtime_error(message);
-}
-
-void exerciseDesktopGrid() {
-  const RECT screen{-500, -100, 0, 400};
-  const POINT origin{-445, -55};
-  const SIZE spacing{100, 110};
-  const POINT desired[]{{-496, -80}, {-310, -67}, {-345, 51}, {40, 440}};
-  const POINT occupied[]{{-345, -55}, {-430, 63}};
-  const auto positions = desktop_groups::snapDesktopPositions(screen, origin, spacing, desired, occupied);
-  check(positions && positions->size() == 4, "snap all dragged icons on the destination monitor");
-  const POINT expected[]{{-445, -55}, {-245, -55}, {-345, 55}, {-45, 385}};
-  for (size_t i = 0; i < std::size(expected); ++i)
-    check((*positions)[i].x == expected[i].x && (*positions)[i].y == expected[i].y,
-          "stay on the Explorer lattice, reserve free cells, and constrain near edges");
-  check(!desktop_groups::snapDesktopPositions({-455, -70, -435, -40}, origin, spacing, desired, {}),
-        "leave the layout alone when there are not enough grid cells");
-
-  const SIZE original{165, 204};
-  const auto smaller = desktop_groups::desktopSpacingForIcon(original, 147, 80);
-  check(smaller.cx == 98 && smaller.cy == 137, "retain native padding around zoomed desktop icons");
-  const desktop_groups::LooseItem native[]{{L"one", {82, 98}}, {L"two", {247, 302}}, {L"three", {97, 104}, smaller}};
-  const auto nativeOrigin = desktop_groups::desktopGridOrigin({0, 0, 2477, 1080}, original, native);
-  check(nativeOrigin.x == 82 && nativeOrigin.y == 98, "infer the same native origin from positions across columns and rows");
-  const auto moved = desktop_groups::scaleDesktopPosition(native[1].position, nativeOrigin, original, original, smaller);
-  check(moved.x == 147 && moved.y == 202, "existing icons compact to adjacent cells on the smaller grid");
-  const auto restored = desktop_groups::scaleDesktopPosition(moved, nativeOrigin, original, smaller, original);
-  check(restored.x == 247 && restored.y == 302, "saved cells return to native coordinates at native size");
 }
 
 void exerciseShadow() {
@@ -85,6 +59,64 @@ struct TemporaryFiles {
     fn::fs::remove_all(root, error);
   }
 };
+
+void exerciseBoxStorage(const fn::fs::path &root) {
+  using namespace desktop_groups;
+  const auto personal = root / L"Personal Desktop";
+  const auto shared = root / L"Public Desktop";
+  const auto nested = personal / L"Folder" / L"nested.txt";
+  const auto outside = root / L"outside.txt";
+  const auto document = personal / L"Report.txt";
+  const auto duplicate = shared / document.filename();
+  fn::fs::create_directories(nested.parent_path());
+  fn::fs::create_directory(shared);
+  for (const auto &file : {outside, document, duplicate, nested}) std::ofstream(file) << "contents";
+
+  const std::vector<std::wstring> roots{personal.native(), shared.native()};
+  const fn::fs::path folder(boxStorageFolder(roots));
+  check(folder.parent_path() == personal && !fn::fs::exists(folder), "choose a lazy personal Desktop folder");
+  check(storeBoxItem(roots, outside.native()).empty() && storeBoxItem(roots, nested.native()).empty() &&
+        storeBoxItem(roots, personal.native()).empty() && !fn::fs::exists(folder),
+        "reject paths outside the direct Desktop and leave it unchanged");
+
+  const auto moved = storeBoxItem(roots, (personal / L"REPORT.txt").native());
+  check(moved == (folder / document.filename()).native() && fn::fs::exists(moved) && !fn::fs::exists(document) &&
+        boxStoredItem(roots, moved) == moved, "move the actual document and preserve the original name");
+  check(storeBoxItem(roots, folder.native()).empty() && storeBoxItem(roots, moved).empty() &&
+        boxStoredItem(roots, folder.native()).empty(), "never organize the storage folder or move a stored item again");
+
+  const auto distinct = storeBoxItem(roots, duplicate.native());
+  check(distinct == (folder / L"Report (2).txt").native() &&
+        fn::fs::exists(distinct) && fn::fs::exists(moved) && !fn::fs::exists(duplicate),
+        "give same-name Desktop items different paths without overwriting");
+  check(rollbackBoxMove(distinct, duplicate.native()) && !fn::fs::exists(distinct) && fn::fs::exists(duplicate),
+        "roll back a move to its exact source after a layout failure");
+
+  std::ofstream(document) << "new content";
+  check(!rollbackBoxMove(moved, document.native()) && fn::fs::exists(moved), "a rollback also preserves collisions");
+  const auto restored = restoreBoxItem(roots, moved);
+  check(restored == (personal / L"Report (2).txt").native() && fn::fs::exists(restored) &&
+        !fn::fs::exists(moved) && fn::fs::exists(document), "return to the Desktop without overwriting a new file");
+
+  const auto movedFolder = storeBoxItem(roots, nested.parent_path().native());
+  check(movedFolder == (folder / nested.parent_path().filename()).native() &&
+        fn::fs::exists(fn::fs::path(movedFolder) / nested.filename()) && !fn::fs::exists(nested.parent_path()) &&
+        restoreBoxItem(roots, movedFolder) == nested.parent_path().native() && fn::fs::exists(nested),
+        "round-trip a directory with its contents intact");
+
+  check(fn::fs::remove(folder), "remove the empty test storage directory");
+  std::error_code linkError;
+  fn::fs::create_directory_symlink(nested.parent_path(), folder, linkError);
+  if (!linkError) {
+    check(boxStoredItem(roots, (folder / nested.filename()).native()).empty() &&
+          storeBoxItem(roots, document.native()).empty() && fn::fs::exists(document),
+          "reject a storage path redirected through a directory link");
+    check(fn::fs::remove(folder), "remove the test directory link");
+  }
+  std::ofstream(folder) << "existing file at the reserved path";
+  check(storeBoxItem(roots, document.native()).empty() && fn::fs::is_regular_file(folder) &&
+        fn::fs::exists(document), "leave the file alone when the storage path is unavailable");
+}
 
 struct TemporaryRegistry {
   HKEY user = nullptr, key = nullptr;
@@ -549,8 +581,8 @@ int main() {
     TemporaryRegistry registry;
     registry.redirect(files.root.filename().native());
     exercise(files.root);
+    exerciseBoxStorage(files.root / L"storage-test");
     exerciseShadow();
-    exerciseDesktopGrid();
   } catch (const fn::Error &error) {
     std::wcerr << error.message << L'\n';
     return 1;

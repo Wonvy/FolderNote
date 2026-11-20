@@ -15,6 +15,7 @@
 #include "app_version.h"
 #include <shellapi.h>
 #include <shlobj.h>
+#include <string_view>
 static bool quiet = false;
 static int show(HWND h, LPCWSTR text, LPCWSTR title, UINT flags) {
   if (quiet)
@@ -69,7 +70,7 @@ static void createSettingsShortcut(const fn::fs::path &active) {
   }
   if (FAILED(hr)) throw fn::Error{lang::text(L"无法创建 FolderNote 设置的开始菜单入口。")};
 }
-static void registerMenus(const fn::fs::path &active, bool modern) {
+static void registerMenus(const fn::fs::path &active, bool modern, bool seedSettings = true) {
   const auto icon = L"\"" + (active / L"FolderNote.exe").native() + L"\",-" +
                     std::to_wstring(IDI_FOLDERNOTE);
   for (int i = 0; i < 3; ++i) {
@@ -94,10 +95,11 @@ static void registerMenus(const fn::fs::path &active, bool modern) {
   removeKey(L"Software\\Classes\\Directory\\shell\\FolderNote.Settings");
   removeKey(L"Software\\Classes\\Directory\\Background\\shell\\FolderNote.Settings");
   removeKey(std::wstring(L"Software\\Classes\\CLSID\\") + fn::settingsId);
-  // Persist first-install defaults so previously cached modules also see them.
-  // Existing choices (including Off) are read before writing and preserved.
-  navigation::saveSettings(navigation::notesEnabled(), navigation::configuredAction(),
-                           navigation::preferredAction());
+  // Background upgrades leave settings and existing menu visibility to the settings window.
+  // Persist defaults during interactive installations so previously cached modules also see them.
+  if (seedSettings)
+    navigation::saveSettings(navigation::notesEnabled(), navigation::configuredAction(),
+                             navigation::preferredAction());
 }
 static constexpr const wchar_t* payloadNames[]={L"FolderNote.exe",L"FolderNoteShell.dll",L"FolderNoteNavigation.dll",L"Install.exe",L"Uninstall.exe"};
 static constexpr auto winuiBootstrap = L"Microsoft.WindowsAppRuntime.Bootstrap.dll";
@@ -193,6 +195,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
 #ifdef FOLDERNOTE_UNINSTALL_ONLY
     uninstall = !worker;
 #endif
+    const bool automaticUpdate = !uninstall && n > 1 && std::wstring_view(args[1]) == L"--automatic-update";
+    quiet = quiet || automaticUpdate;
     for (int i = 1; i + 1 < n; ++i)
       if (std::wstring(args[i]) == L"--parent") {
         DWORD pid = wcstoul(args[i + 1], nullptr, 10);
@@ -320,13 +324,13 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
         if (GetFileAttributesW((source / name).c_str()) == INVALID_FILE_ATTRIBUTES)
           throw fn::Error{lang::text(L"请完整解压安装包，保持 Install.exe、FolderNote.exe、"
                           L"FolderNoteShell.dll、FolderNoteNavigation.dll 和 Uninstall.exe 在同一文件夹。")};
-      navreg::ensureMachine(self);
+      navreg::ensureMachine(self, !automaticUpdate);
       auto active=stageVersion(source,dest);
       const auto icon = L"\"" + (active / L"FolderNote.exe").native() + L"\",-" +
                         std::to_wstring(IDI_FOLDERNOTE);
       navigation::stopLegacy();
       navreg::registerUser(active);
-      registerMenus(active, navigationOnly);
+      registerMenus(active, navigationOnly, !automaticUpdate);
       context::registerCommands(active / L"FolderNote.exe");
       createSettingsShortcut(active);
       std::wstring u = L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstal"

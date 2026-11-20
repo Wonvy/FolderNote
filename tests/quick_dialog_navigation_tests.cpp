@@ -14,6 +14,7 @@ HWND targetWindow() { return reinterpret_cast<HWND>(0x101); }
 HWND addressWindow() { return reinterpret_cast<HWND>(0x102); }
 HWND filenameWindow() { return reinterpret_cast<HWND>(0x103); }
 HWND otherWindow() { return reinterpret_cast<HWND>(0x104); }
+HWND addressCombo() { return reinterpret_cast<HWND>(0x105); }
 struct Message { HWND window; UINT kind; WPARAM key; std::wstring text; };
 struct Simulation {
   HWND foreground = otherWindow(), focus = filenameWindow(), foregroundAfterActivate = nullptr;
@@ -22,6 +23,8 @@ struct Simulation {
   bool guiInfo = true, writeDelivered = true, writeAccepted = true, enterDelivered = true, keyUpDelivered = true;
   bool enumerateAddress = true, focusDelivered = true, focusChanges = true;
   int modifier = 0, activations = 0, guiQueries = 0, globalInputs = 0;
+  bool addressVisible = true, revealOnF4 = false, postAccepted = true;
+  int addressShortcuts = 0;
   DWORD slept = 0;
   std::vector<HWND> enumerated;
   std::vector<Message> messages;
@@ -52,6 +55,22 @@ BOOL fakeChildren(HWND window, WNDENUMPROC callback, LPARAM data) {
   if (simulation.enumerateAddress) {
     simulation.enumerated.push_back(addressWindow());
     if (!callback(addressWindow(), data)) return FALSE;
+  }
+  return TRUE;
+}
+BOOL fakeVisible(HWND window) { return window == addressWindow() && simulation.addressVisible; }
+HWND fakeParent(HWND window) { return window == addressWindow() ? addressCombo() : targetWindow(); }
+int fakeClassName(HWND window, LPWSTR buffer, int capacity) {
+  if (window != addressCombo() || capacity < 9) return 0;
+  return static_cast<int>(wcscpy_s(buffer, capacity, L"ComboBox") == 0 ? 8 : 0);
+}
+BOOL fakePost(HWND window, UINT message, WPARAM key, LPARAM) {
+  check(window == targetWindow() && key == VK_F4 && (message == WM_KEYDOWN || message == WM_KEYUP),
+        "address accelerator is queued only on the original dialog");
+  if (!simulation.postAccepted) return FALSE;
+  if (message == WM_KEYDOWN) {
+    ++simulation.addressShortcuts;
+    if (simulation.revealOnF4) { simulation.addressVisible = true; simulation.focus = addressWindow(); }
   }
   return TRUE;
 }
@@ -113,6 +132,10 @@ bool addressEdit(HWND edit, HWND dialog) {
 #define GetWindowThreadProcessId fakeWindowProcess
 #define SetForegroundWindow fakeForeground
 #define GetForegroundWindow fakeGetForeground
+#define IsWindowVisible fakeVisible
+#define GetParent fakeParent
+#define GetClassNameW fakeClassName
+#define PostMessageW fakePost
 #define GetAsyncKeyState fakeKeys
 #define EnumChildWindows fakeChildren
 #define SendInput fakeInput
@@ -125,6 +148,10 @@ bool addressEdit(HWND edit, HWND dialog) {
 #undef GetGUIThreadInfo
 #undef SendInput
 #undef EnumChildWindows
+#undef IsWindowVisible
+#undef GetParent
+#undef GetClassNameW
+#undef PostMessageW
 #undef GetAsyncKeyState
 #undef GetForegroundWindow
 #undef SetForegroundWindow
@@ -210,16 +237,54 @@ void cancellation() {
 }
 void focusSafety() {
   {
+    Request request;
+    simulation.afterWrite = [] { simulation.focus = addressCombo(); };
+    simulation.beforeFocus = [] {
+      if (simulation.slept) simulation.focus = addressWindow();
+    };
+    check(request.run() == Result::Success && simulation.slept == 10 && count(WM_KEYDOWN) == 1,
+          "cross-process address update can temporarily focus the parent combo before Enter");
+  }
+  {
+    Request request;
+    simulation.afterWrite = [] { simulation.focus = addressCombo(); };
+    check(request.run() == Result::TargetChanged && simulation.slept <= 500 && !count(WM_KEYDOWN),
+          "a combo that keeps focus never receives Enter");
+  }
+  {
+    Request request;
+    simulation.afterWrite = [] { simulation.focus = addressCombo(); };
+    simulation.beforeFocus = [] {
+      if (simulation.slept) simulation.focus = filenameWindow();
+    };
+    check(request.run() == Result::TargetChanged && simulation.slept == 10 && !count(WM_KEYDOWN),
+          "focus leaving the address combo for the filename cancels submission immediately");
+  }
+  for (int mode = 0; mode < 3; ++mode) {
+    Request request;
+    simulation.enumerateAddress = mode != 0;
+    simulation.addressVisible = mode != 1;
+    simulation.focusChanges = false;
+    simulation.revealOnF4 = true;
+    check(request.run() == Result::Success && simulation.addressShortcuts == 1 && count(WM_SETTEXT) == 1,
+          "missing, hidden or initially unfocusable address edit becomes available after local F4");
+  }
+  {
+    Request request; simulation.enumerateAddress = false; simulation.postAccepted = false;
+    check(request.run() == Result::InputBlocked, "blocked address accelerator is reported");
+    noEdits("blocked activation cannot submit the dialog");
+  }
+  {
     Request request; simulation.focusChanges = false;
     check(request.run() == Result::AddressUnavailable, "filename focus is never mistaken for the address edit");
     noEdits("filename focus receives neither path text nor Enter");
-    check(simulation.slept <= 500 && simulation.guiQueries <= 50, "missing address focus has a bounded polling interval");
+    check(simulation.slept <= 1000 && simulation.guiQueries <= 100, "missing address focus has a bounded polling interval");
   }
   {
     Request request; simulation.guiInfo = false;
     check(request.run() == Result::AddressUnavailable, "unreadable focus information leaves the dialog unchanged");
     noEdits("failed focus query never writes or submits text");
-    check(simulation.slept <= 500, "failed focus query cannot wait indefinitely");
+    check(simulation.slept <= 1000, "failed focus query cannot wait indefinitely");
   }
   for (bool replaceFocus : {false, true}) {
     Request request;

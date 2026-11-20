@@ -8,7 +8,6 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
-#include <map>
 #include <memory>
 #include <optional>
 #include <roapi.h>
@@ -602,8 +601,8 @@ std::vector<std::wstring> desktopRoots() {
     PWSTR raw = nullptr;
     const auto result = SHGetKnownFolderPath(*id, KF_FLAG_DONT_VERIFY, nullptr, &raw);
     std::unique_ptr<wchar_t, decltype(&CoTaskMemFree)> path(raw, CoTaskMemFree);
-    if (FAILED(result) || !path) continue;
-    auto root = quick::normalize(path.get());
+    auto root = SUCCEEDED(result) && path ? quick::normalize(path.get()) : std::wstring{};
+    if (roots.empty() && root.empty()) return {};
     if (!root.empty() && (roots.empty() || !samePath(roots.front(), root))) roots.push_back(std::move(root));
   }
   return roots;
@@ -611,81 +610,6 @@ std::vector<std::wstring> desktopRoots() {
 
 bool samePath(const std::wstring &a, const std::wstring &b) {
   return quick::same(a, b);
-}
-
-SIZE desktopSpacingForIcon(SIZE nativeSpacing, int nativeIconSize, int iconSize) {
-  const auto spacing = [&](LONG step) { return std::clamp(step - nativeIconSize + iconSize, LONG(iconSize), 2048L); };
-  return {spacing(nativeSpacing.cx), spacing(nativeSpacing.cy)};
-}
-
-POINT desktopGridOrigin(const RECT &work, SIZE nativeSpacing, std::span<const LooseItem> nativeItems) {
-  const POINT fallback{work.left + nativeSpacing.cx / 2, work.top + nativeSpacing.cy / 2};
-  auto origin = fallback;
-  std::map<LONG, int> columns, rows;
-  const auto count = [](auto &counts, LONG coordinate, LONG start, LONG step, LONG &best) {
-    const auto remainder = (coordinate - start) % step;
-    const auto offset = (remainder + step + step / 2) % step - step / 2;
-    if (++counts[offset] > counts[best - start]) best = start + offset;
-  };
-  if (nativeSpacing.cx <= 0 || nativeSpacing.cy <= 0) return origin;
-  for (const auto &item : nativeItems) {
-    if (item.spacing.cx || item.spacing.cy || !PtInRect(&work, item.position)) continue;
-    count(columns, item.position.x, fallback.x, nativeSpacing.cx, origin.x);
-    count(rows, item.position.y, fallback.y, nativeSpacing.cy, origin.y);
-  }
-  return origin;
-}
-
-POINT scaleDesktopPosition(POINT position, POINT nativeOrigin, SIZE nativeSpacing, SIZE from, SIZE to) {
-  const auto scale = [](LONG coordinate, LONG origin, LONG nativeStep, LONG oldStep, LONG newStep) {
-    const auto oldOrigin = origin + (oldStep - nativeStep) / 2;
-    const auto newOrigin = origin + (newStep - nativeStep) / 2;
-    return newOrigin + MulDiv(coordinate - oldOrigin, newStep, oldStep);
-  };
-  return {scale(position.x, nativeOrigin.x, nativeSpacing.cx, from.cx, to.cx),
-          scale(position.y, nativeOrigin.y, nativeSpacing.cy, from.cy, to.cy)};
-}
-
-std::optional<std::vector<POINT>> snapDesktopPositions(const RECT &work, POINT origin, SIZE spacing,
-    std::span<const POINT> desired, std::span<const POINT> occupied) {
-  if (!validBounds(work) || spacing.cx <= 0 || spacing.cy <= 0) return std::nullopt;
-  const auto index = [](LONG coordinate, LONG base, LONG step) { return (double(coordinate) - base) / step; };
-  const auto firstColumn = static_cast<long long>(std::ceil(index(work.left, origin.x, spacing.cx)));
-  const auto lastColumn = static_cast<long long>(std::floor(index(work.right - 1, origin.x, spacing.cx)));
-  const auto firstRow = static_cast<long long>(std::ceil(index(work.top, origin.y, spacing.cy)));
-  const auto lastRow = static_cast<long long>(std::floor(index(work.bottom - 1, origin.y, spacing.cy)));
-  if (firstColumn > lastColumn || firstRow > lastRow) return std::nullopt;
-
-  std::set<std::pair<long long, long long>> used;
-  for (const auto point : occupied) {
-    if (!PtInRect(&work, point)) continue;
-    used.emplace(std::clamp(std::llround(index(point.x, origin.x, spacing.cx)), firstColumn, lastColumn),
-                 std::clamp(std::llround(index(point.y, origin.y, spacing.cy)), firstRow, lastRow));
-  }
-  std::vector<POINT> positions;
-  positions.reserve(desired.size());
-  for (const auto target : desired) {
-    double closest = std::numeric_limits<double>::infinity();
-    std::pair<long long, long long> cell{};
-    POINT position{};
-    for (auto row = firstRow; row <= lastRow; ++row) {
-      for (auto column = firstColumn; column <= lastColumn; ++column) {
-        if (used.contains({column, row})) continue;
-        const POINT candidate{static_cast<LONG>(origin.x + column * spacing.cx),
-                              static_cast<LONG>(origin.y + row * spacing.cy)};
-        const double dx = double(candidate.x) - target.x, dy = double(candidate.y) - target.y;
-        const double distance = dx * dx + dy * dy;
-        if (distance >= closest) continue;
-        closest = distance;
-        cell = {column, row};
-        position = candidate;
-      }
-    }
-    if (!std::isfinite(closest)) return std::nullopt;
-    used.insert(cell);
-    positions.push_back(position);
-  }
-  return positions;
 }
 
 bool isDesktopShellItem(const std::wstring &path) {

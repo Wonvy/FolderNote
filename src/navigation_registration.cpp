@@ -167,15 +167,24 @@ static void elevate(const fn::fs::path &helper, bool install, const std::wstring
     throw fn::Error{lang::text(L"导航扩展注册未完成，请重新运行安装或卸载程序并允许管理员授权。")};
 }
 
-void ensureMachine(const fn::fs::path &helper) {
-  auto sid = currentUserSid();
+static bool requiresMachineRegistration(const std::wstring &sid) {
   // Upgrades must migrate the old toolbar entry even when this user's BHO
   // ownership was already registered by an earlier version.
-  if (!machineRegistered(sid) || legacyToolbarRegistered()) {
-    elevate(helper, true, sid);
-    if (!machineRegistered(sid) || legacyToolbarRegistered())
-      throw fn::Error{lang::text(L"导航扩展注册结果未通过检查。")};
-  }
+  return !machineRegistered(sid) || legacyToolbarRegistered();
+}
+
+bool requiresMachineRegistration() {
+  return requiresMachineRegistration(currentUserSid());
+}
+
+void ensureMachine(const fn::fs::path &helper, bool allowElevation) {
+  const auto sid = currentUserSid();
+  if (!requiresMachineRegistration(sid)) return;
+  if (!allowElevation)
+    throw fn::Error{lang::text(L"导航扩展注册未完成，请重新运行安装或卸载程序并允许管理员授权。")};
+  elevate(helper, true, sid);
+  if (requiresMachineRegistration(sid))
+    throw fn::Error{lang::text(L"导航扩展注册结果未通过检查。")};
 }
 
 void removeMachine(const fn::fs::path &helper) {

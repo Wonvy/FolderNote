@@ -180,6 +180,24 @@ struct Staging {
   }
 };
 
+struct InstallLock {
+  HANDLE mutex = CreateMutexW(nullptr, FALSE, L"Local\\FolderNote.Update.Install");
+
+  InstallLock() {
+    if (mutex) {
+      const auto status = WaitForSingleObject(mutex, 0);
+      if (status == WAIT_OBJECT_0 || status == WAIT_ABANDONED) return;
+      CloseHandle(mutex);
+    }
+    throw fn::Error{lang::text(L"更新失败，请稍后重试。")};
+  }
+
+  ~InstallLock() {
+    ReleaseMutex(mutex);
+    CloseHandle(mutex);
+  }
+};
+
 void run(const fn::fs::path &program, const fn::fs::path &workingDirectory, const std::wstring &arguments,
          const wchar_t *error, bool console = false, bool wait = true) {
   auto command = L"\"" + program.native() + L"\" " + arguments;
@@ -219,7 +237,9 @@ void extract(const fn::fs::path &directory, bool win11Package) {
       L"try { $total=0; foreach ($name in 'Install.exe','Uninstall.exe','FolderNote.exe',"
       L"'FolderNoteShell.dll','FolderNoteNavigation.dll'";
   if (win11Package) script += L",'Install-Win11.exe','FolderNote.msix'";
-  script += L") { $entry=$zip.GetEntry($name); if (!$entry -or $entry.Length -le 0) { throw 'Missing installer file' }; "
+  script += L",'Microsoft.WindowsAppRuntime.Bootstrap.dll') { $entry=$zip.GetEntry($name); "
+            L"if (!$entry -and $name -eq 'Microsoft.WindowsAppRuntime.Bootstrap.dll') { continue }; "
+            L"if (!$entry -or $entry.Length -le 0) { throw 'Missing installer file' }; "
             L"$total+=$entry.Length; if ($total -gt 200MB) { throw 'Installer files are too large' }; "
             L"[IO.Compression.ZipFileExtensions]::ExtractToFile($entry,[IO.Path]::Combine($directory,$name),$false) "
             L"} } finally { $zip.Dispose() }\"";
@@ -268,7 +288,8 @@ std::optional<Release> check(const std::wstring &repository, const std::wstring 
   throw fn::Error{lang::text(L"GitHub 发布缺少适用的安装包。")};
 }
 
-void install(const Release &release) {
+bool install(const Release &release, bool (*allowAutomaticInstall)()) {
+  if (allowAutomaticInstall && release.win11Package) throw fn::Error{lang::text(L"无法启动更新安装。")};
   Staging staging;
   const auto digest = downloadDigest(release.downloadUrl, staging.path / L"update.zip");
   if (_wcsicmp(digest.c_str(), release.sha256.c_str()) != 0)
@@ -280,6 +301,13 @@ void install(const Release &release) {
     // MSIX replacement waits for this process to close. Its detached installer
     // still needs the unpacked files, so leave staging in the temporary directory.
     staging.path.clear();
-  } else run(staging.path / L"Install.exe", staging.path, L"", lang::text(L"更新安装未完成。"));
+  } else {
+    // Different settings builds can be open at the same time and share the same registration.
+    const InstallLock lock;
+    if (allowAutomaticInstall && !allowAutomaticInstall()) return false;
+    run(staging.path / L"Install.exe", staging.path, allowAutomaticInstall ? L"--automatic-update" : L"",
+        lang::text(L"更新安装未完成。"));
+  }
+  return true;
 }
 }

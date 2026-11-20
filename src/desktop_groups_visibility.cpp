@@ -80,15 +80,12 @@ DWORD owner(HWND list) {
   return list ? static_cast<DWORD>(reinterpret_cast<ULONG_PTR>(GetPropW(list, hiddenBy))) : 0;
 }
 
-bool setVisible(const IconView &view, bool show) {
+bool showView(const IconView &view) {
   if (!stillDesktop(view)) return false;
-  // Always queue the restoring show. A helper could die just after queuing
-  // its asynchronous hide and before Explorer actually handles that request.
-  if (!show && !visible(view.handle)) return true;
-  if (!ShowWindowAsync(view.handle, show ? SW_SHOWNA : SW_HIDE)) return false;
+  if (!ShowWindowAsync(view.handle, SW_SHOWNA)) return false;
   for (int i = 0; i < 25; ++i) {
     if (!stillDesktop(view)) return false;
-    if (visible(view.handle) == show) return true;
+    if (visible(view.handle)) return true;
     Sleep(20);
   }
   return false;
@@ -100,7 +97,7 @@ bool restore(DWORD onlyOwner) {
   const auto view = desktopView();
   const auto pid = owner(view.handle);
   if (!pid || (onlyOwner && pid != onlyOwner)) return true;
-  if (!setVisible(view, true)) return !stillDesktop(view);
+  if (!showView(view)) return !stillDesktop(view);
   RemovePropW(view.handle, hiddenBy);
   return true;
 }
@@ -112,37 +109,6 @@ std::wstring readinessName(DWORD pid, HANDLE process) {
       std::to_wstring((static_cast<ULONGLONG>(created.dwHighDateTime) << 32) | created.dwLowDateTime);
 }
 
-bool ensureWatch() {
-  static Handle watcher;
-  if (watcher.value) {
-    if (WaitForSingleObject(watcher.value, 0) == WAIT_TIMEOUT) return true;
-    CloseHandle(watcher.value);
-    watcher.value = nullptr;
-  }
-  const DWORD pid = GetCurrentProcessId();
-  const auto readyName = readinessName(pid, GetCurrentProcess());
-  if (readyName.empty()) return false;
-  const Handle ready(CreateEventW(nullptr, TRUE, FALSE, readyName.c_str()));
-  if (!ready.value) return false;
-  ResetEvent(ready.value);
-
-  const auto exe = fn::modulePath();
-  auto command = L"\"" + exe.native() + L"\" --desktop-groups-watch " + std::to_wstring(pid);
-  STARTUPINFOW startup{sizeof(startup)};
-  PROCESS_INFORMATION process{};
-  if (!CreateProcessW(exe.c_str(), command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr,
-                      &startup, &process)) return false;
-  const Handle thread(process.hThread);
-  const HANDLE events[]{ready.value, process.hProcess};
-  if (WaitForMultipleObjects(ARRAYSIZE(events), events, FALSE, 2500) != WAIT_OBJECT_0 ||
-      WaitForSingleObject(process.hProcess, 0) != WAIT_TIMEOUT) {
-    CloseHandle(process.hProcess);
-    return false;
-  }
-  watcher.value = process.hProcess;
-  return true;
-}
-
 bool ownExecutable(HANDLE process) {
   std::wstring path(32768, L'\0');
   DWORD size = static_cast<DWORD>(path.size());
@@ -150,24 +116,6 @@ bool ownExecutable(HANDLE process) {
   path.resize(size);
   return CompareStringOrdinal(path.c_str(), -1, fn::modulePath().c_str(), -1, TRUE) == CSTR_EQUAL;
 }
-}
-
-bool setDesktopIconsHidden(bool hide) try {
-  if (!hide) return restoreDesktopIcons();
-  const Lock lock;
-  if (!lock.held) return false;
-  const auto view = desktopView();
-  if (!stillDesktop(view)) return false;
-  const DWORD pid = GetCurrentProcessId();
-  const DWORD previous = owner(view.handle);
-  // The existing hidden state belongs to Explorer if we did not put it there.
-  if (!previous && !visible(view.handle)) return true;
-  if (!ensureWatch() || !stillDesktop(view)) return false;
-  if (previous != pid && !SetPropW(view.handle, hiddenBy, reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(pid))))
-    return false;
-  return setVisible(view, false);
-} catch (...) {
-  return false;
 }
 
 bool restoreDesktopIcons() { return restore(0); }

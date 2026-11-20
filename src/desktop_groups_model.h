@@ -4,7 +4,6 @@
 #include <cstddef>
 #include <filesystem>
 #include <optional>
-#include <span>
 #include <string>
 #include <vector>
 
@@ -69,12 +68,6 @@ struct LooseItem {
   // Older layouts used the native grid, so zero represents its spacing.
   SIZE spacing{};
 };
-
-SIZE desktopSpacingForIcon(SIZE nativeSpacing, int nativeIconSize, int iconSize);
-POINT desktopGridOrigin(const RECT &work, SIZE nativeSpacing, std::span<const LooseItem> nativeItems);
-POINT scaleDesktopPosition(POINT position, POINT nativeOrigin, SIZE nativeSpacing, SIZE from, SIZE to);
-std::optional<std::vector<POINT>> snapDesktopPositions(const RECT &work, POINT origin, SIZE spacing,
-    std::span<const POINT> desired, std::span<const POINT> occupied);
 
 struct Layout {
   std::vector<Group> groups;

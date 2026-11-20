@@ -14,9 +14,10 @@ inline constexpr wchar_t userKey[] =
 std::wstring currentUserSid();
 bool validSid(const std::wstring &sid);
 bool machineRegistered(const std::wstring &sid);
+bool requiresMachineRegistration();
 void registerMachine(const std::wstring &sid);
 void unregisterMachine(const std::wstring &sid);
-void ensureMachine(const fn::fs::path &helper);
+void ensureMachine(const fn::fs::path &helper, bool allowElevation = true);
 void removeMachine(const fn::fs::path &helper);
 void registerUser(const fn::fs::path &directory);
 void unregisterUser();

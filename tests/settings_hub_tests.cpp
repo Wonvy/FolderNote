@@ -87,6 +87,47 @@ void inspectVersion(HWND window) {
   check(extent.cx <= bounds.right - bounds.left && extent.cy <= bounds.bottom - bounds.top,
         "version text is not clipped at current scale");
 }
+void automaticUpdates() {
+  using namespace navigation;
+  Hub hub;
+  showPage(SettingsPage::Preferences);
+  const auto toggle = GetDlgItem(hub.window, automaticUpdateCheck);
+  const auto explanation = GetDlgItem(hub.window, automaticUpdateDescription);
+  check(visibleStyle(toggle) && visibleStyle(explanation) && windowText(toggle) == L"自动更新" &&
+        SendMessageW(toggle, BM_GETCHECK, 0, 0) == BST_UNCHECKED && !automaticUpdatesEnabled(),
+        "automatic updates are opt-in and available in preferences");
+  check(IsWindowEnabled(toggle) == (*app::updateRepository != L'\0'), "automatic updates require a configured source");
+  if (*app::updateRepository) {
+    SendMessageW(toggle, BM_CLICK, 0, 0);
+    check(automaticUpdatesEnabled() && !updateWork.valid(), "save the enabled preference without starting network in a hidden fixture");
+    check(!canInstallAutomatically(), "a development executable without an active installation can only offer a manual update");
+    SendMessageW(toggle, BM_CLICK, 0, 0);
+    check(!automaticUpdatesEnabled(), "save the disabled preference immediately");
+  }
+  const auto now = updateClock();
+  constexpr ULONGLONG day = 24ULL * 60 * 60 * 10000000;
+  check(automaticCheckDue(now), "first background check is due");
+  check(RegSetKeyValueW(HKEY_CURRENT_USER, configKey, lastAutomaticCheckValue, REG_QWORD, &now, sizeof(now)) == ERROR_SUCCESS &&
+        !automaticCheckDue(now) && !automaticCheckDue(now + day - 1) && automaticCheckDue(now + day) &&
+        automaticCheckDue(now - 1), "background checks are limited to once a day and recover when the clock moves back");
+  std::promise<UpdateResult> completed;
+  updateWork = completed.get_future();
+  updateOperation = UpdateOperation::Automatic;
+  completed.set_value({updater::Release{L"9.0.1", {}, {}, true}, {}, false});
+  finishUpdateWork(hub.window);
+  check(availableUpdate && availableUpdate->win11Package && IsWindowEnabled(GetDlgItem(hub.window, updateButton)) &&
+        windowText(GetDlgItem(hub.window, updateStatusLabel)).find(L"9.0.1") != std::wstring::npos,
+        "a background check reports an available Win11 update for manual confirmation");
+  SetWindowPos(hub.window, nullptr, 0, 0, scale(900), scale(500), SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+  const auto status = childBounds(GetDlgItem(hub.window, updateStatusLabel), hub.window);
+  const auto footer = childBounds(GetDlgItem(hub.window, 33), hub.window);
+  check(status.bottom > status.top && status.bottom <= footer.top, "update status fits above the footer at minimum size");
+  availableUpdate.reset();
+  updateStatus.clear();
+  updateControls(hub.window);
+  showPage(SettingsPage::Features);
+  check(!visibleStyle(toggle), "automatic update controls stay on the preferences page");
+}
 void inspectNewTabOption() {
   if (!navigation::tabsSupported()) return;
   navigation::showPage(navigation::SettingsPage::Features);
@@ -241,18 +282,14 @@ void scenarios() {
   check(!navigation::preferNewTabEnabled(), "new-tab preference defaults off");
   check(!desktop_groups::enabled() && SendMessageW(navigation::desktopGroupsCheck, BM_GETCHECK, 0, 0) == BST_UNCHECKED &&
         !IsWindowEnabled(navigation::desktopGroupsManager), "desktop groups are off by default");
-  check(!desktop_groups::managedIconsEnabled() &&
-        SendMessageW(navigation::managedIconsCheck, BM_GETCHECK, 0, 0) == BST_UNCHECKED &&
-        !IsWindowEnabled(navigation::managedIconsCheck), "native desktop icons are the default");
+  check(!GetDlgItem(navigation::body, 26), "desktop boxes use native desktop icons without an optional mode");
   check(SendMessageW(navigation::desktopGroupsGlassCheck, BM_GETCHECK, 0, 0) == BST_CHECKED,
         "new desktop groups use glass by default");
   inspectDesktopGroupsPreview();
   SendMessageW(navigation::desktopGroupsCheck, BM_SETCHECK, BST_CHECKED, 0);
   SendMessageW(hub.window, WM_COMMAND, MAKEWPARAM(navigation::desktopGroupsToggle, BN_CLICKED), 0);
-  check(!desktop_groups::enabled() && !IsWindowEnabled(navigation::desktopGroupsManager) &&
-        IsWindowEnabled(navigation::managedIconsCheck),
+  check(!desktop_groups::enabled() && !IsWindowEnabled(navigation::desktopGroupsManager),
         "desktop groups only become available after saving the draft");
-  SendMessageW(navigation::managedIconsCheck, BM_SETCHECK, BST_CHECKED, 0);
   if (navigation::tabsSupported()) {
     check(GetDlgItem(navigation::body, 21) == navigation::preferNewTabCheck &&
           !IsWindowEnabled(navigation::preferNewTabCheck), "new-tab option starts disabled when tabs are off");
@@ -315,7 +352,6 @@ void scenarios() {
     check(visibleStyle(navigation::body) && !visibleStyle(manager), "sidebar returns to feature page");
     check(SendMessageW(navigation::notesCheck, BM_GETCHECK, 0, 0) == BST_CHECKED &&
           SendMessageW(navigation::desktopGroupsCheck, BM_GETCHECK, 0, 0) == BST_CHECKED &&
-          SendMessageW(navigation::managedIconsCheck, BM_GETCHECK, 0, 0) == BST_CHECKED &&
           SendMessageW(navigation::desktopGroupsGlassCheck, BM_GETCHECK, 0, 0) == BST_UNCHECKED &&
           SendMessageW(navigation::themeChoice, CB_GETCURSEL, 0, 0) == DWORD(ui::ThemeMode::Dark),
           "repeated switches keep all draft controls");
@@ -330,27 +366,25 @@ void scenarios() {
   check(!IsWindow(hub.window) && !IsWindow(manager) && !IsWindow(features) && !IsWindow(version),
         "closing the hub destroys both pages and fixed controls");
   check(!navigation::notesEnabled() && ui::configuredTheme() == ui::ThemeMode::System &&
-        !navigation::preferNewTabEnabled() && !desktop_groups::enabled() && !desktop_groups::managedIconsEnabled() &&
+        !navigation::preferNewTabEnabled() && !desktop_groups::enabled() &&
         navigation::configuredDesktopGroupsGlass(),
         "cancel does not commit feature, theme or glass drafts");
   navigation::applySettings(false, navigation::Action::Parent, navigation::Action::Parent,
                             false, true, ui::ThemeMode::System, false, false, true,
-                            navigation::DesktopGroupsSettings{true, false, 8, 55, true, 72, 18, 9, true});
+                            navigation::DesktopGroupsSettings{true, false, 8, 55, true, 72, 18, 9});
   const auto savedShadow = desktop_groups::configuredAppearance();
-  check(desktop_groups::enabled() && desktop_groups::managedIconsEnabled() && !savedShadow.glass && savedShadow.shadow &&
+  check(desktop_groups::enabled() && !savedShadow.glass && savedShadow.shadow &&
         savedShadow.shadowOpacity == 72 && savedShadow.shadowBlur == 18 && savedShadow.shadowOffset == 9,
         "settings save persists the desktop groups and appearance choices");
   navigation::saveSettings(false, navigation::Action::Parent, navigation::Action::Parent,
                           false, true, ui::ThemeMode::System, false, true);
   Hub reopened;
   check(desktop_groups::enabled() && SendMessageW(navigation::desktopGroupsCheck, BM_GETCHECK, 0, 0) == BST_CHECKED &&
-        SendMessageW(navigation::managedIconsCheck, BM_GETCHECK, 0, 0) == BST_CHECKED &&
         SendMessageW(navigation::desktopGroupsGlassCheck, BM_GETCHECK, 0, 0) == BST_UNCHECKED &&
         IsWindowEnabled(navigation::desktopGroupsManager), "existing save callers preserve the desktop groups and glass choices");
   SendMessageW(navigation::desktopGroupsCheck, BM_SETCHECK, BST_UNCHECKED, 0);
   SendMessageW(reopened.window, WM_COMMAND, MAKEWPARAM(navigation::desktopGroupsToggle, BN_CLICKED), 0);
-  check(desktop_groups::enabled() && !IsWindowEnabled(navigation::desktopGroupsManager) &&
-        !IsWindowEnabled(navigation::managedIconsCheck),
+  check(desktop_groups::enabled() && !IsWindowEnabled(navigation::desktopGroupsManager),
         "unchecking desktop groups stages a change and disables management");
   if (navigation::tabsSupported()) {
     check(!IsWindowEnabled(navigation::preferNewTabCheck) &&
@@ -361,7 +395,7 @@ void scenarios() {
   check(navigation::preferNewTabEnabled(), "cancel leaves previously saved new-tab choice untouched");
   navigation::applySettings(false, navigation::Action::Parent, navigation::Action::Parent,
                             false, true, ui::ThemeMode::System, false, true, true, navigation::DesktopGroupsSettings{false, true});
-  check(!desktop_groups::enabled() && !desktop_groups::managedIconsEnabled() && navigation::configuredDesktopGroupsGlass(),
+  check(!desktop_groups::enabled() && navigation::configuredDesktopGroupsGlass(),
         "settings save can turn off desktop groups without losing the appearance choice");
 }
 void languages() {
@@ -372,7 +406,6 @@ void languages() {
           windowText(GetDlgItem(hub.window, IDOK)) == L"Save" &&
           windowText(navigation::desktopGroupsCheck) == L"Desktop boxes" &&
           windowText(navigation::desktopGroupsGlassCheck) == L"Frosted glass (Acrylic)" &&
-          windowText(navigation::managedIconsCheck) == L"Icon organization mode" &&
           windowText(navigation::desktopGroupsManager) == L"Manage desktop boxes", "English settings labels load");
   }
   wchar_t directory[MAX_PATH]{}, file[MAX_PATH]{};
@@ -558,7 +591,7 @@ void contextCommands() {
 int main() {
   CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
   int result = 0;
-  try { Registry registry; scenarios(); languages(); desktopFenceMenu(); contextInventory(); contextCommands(); std::cout << "PASS " << checks << " settings, language and context menu assertions\n"; }
+  try { Registry registry; automaticUpdates(); scenarios(); languages(); desktopFenceMenu(); contextInventory(); contextCommands(); std::cout << "PASS " << checks << " settings, language and context menu assertions\n"; }
   catch (const std::exception &error) { std::cerr << "FAIL " << checks << ": " << error.what() << "\n"; result = 1; }
   CoUninitialize(); return result;
 }

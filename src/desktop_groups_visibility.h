@@ -2,8 +2,7 @@
 #include <windows.h>
 
 namespace desktop_groups {
-// Uses the live Explorer desktop view and leaves files and shell settings alone.
-bool setDesktopIconsHidden(bool hide);
+// Restores the Explorer view only when it was hidden by an older version of FolderNote.
 bool restoreDesktopIcons();
 int watchDesktopIcons(DWORD helperPid);
 }

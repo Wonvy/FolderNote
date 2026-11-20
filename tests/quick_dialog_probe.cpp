@@ -153,7 +153,7 @@ DWORD WINAPI work(void *argument) {
   if (SUCCEEDED(initialized)) CoUninitialize(); state->done = true; return 0;
 }
 struct Verification {
-  ComPtr<IFileSaveDialog> dialog;
+  ComPtr<IFileDialog> dialog;
   std::shared_ptr<Worker> worker = std::make_shared<Worker>();
   HWND target = nullptr, owner = nullptr; HANDLE thread = nullptr;
   std::wstring initial, destination;
@@ -165,7 +165,11 @@ struct Verification {
     if (!worker->requestName.empty()) { quick::detail::MenuRequest cancel(worker->requestName.c_str()); cancel.begin(); }
   }
   void close(bool success) {
-    if (finished) return; finished = true; passed = success; cancelWorker(); dialog->Close(HRESULT_FROM_WIN32(ERROR_CANCELLED));
+    if (finished) return;
+    finished = true; passed = success; cancelWorker();
+    // Close after the current dialog notification and any address dropdown unwind.
+    if (!owned(target) || !PostMessageW(target, WM_CLOSE, 0, 0))
+      dialog->Close(HRESULT_FROM_WIN32(ERROR_CANCELLED));
   }
   void folder(IFileDialog *current) {
     ComPtr<IShellItem> item; PWSTR path = nullptr;
@@ -173,10 +177,15 @@ struct Verification {
     const std::wstring actual(path); CoTaskMemFree(path);
     if (samePath(actual, initial)) initialReady = true;
     if (!samePath(actual, destination)) return;
-    reached = true; PWSTR value = nullptr; const auto result = current->GetFileName(&value);
-    preserved = SUCCEEDED(result) && value && !wcscmp(value, filename); CoTaskMemFree(value);
-    // Only fixture outcome labels are logged, never user paths or filenames.
-    log(L"folder-event: actual=Windows-destination filename-preserved=" + std::to_wstring(preserved) + L" read=" + hex(result));
+    reached = true;
+    log(L"folder-event: actual=Windows-destination");
+  }
+  bool hasFixtureName() {
+    PWSTR value = nullptr;
+    const auto result = dialog->GetFileName(&value);
+    const bool matches = SUCCEEDED(result) && value && !wcscmp(value, filename);
+    CoTaskMemFree(value);
+    return matches;
   }
   void tick() {
     if (finished) return;
@@ -189,7 +198,10 @@ struct Verification {
       reported = true; log(std::wstring(L"navigate-result: ") + name(worker->result.load()) + L" folder-event=" + std::to_wstring(reached));
       if (worker->result != quick::dialog::NavigateResult::Success) { focusTree(target); close(false); return; }
     }
-    if (worker->done && reached) { close(worker->result == quick::dialog::NavigateResult::Success && preserved); return; }
+    if (worker->done && reached) {
+      preserved = hasFixtureName();
+      close(worker->result == quick::dialog::NavigateResult::Success && preserved); return;
+    }
     if (thread || !initialReady || !owned(target) || !IsWindowVisible(target)) return;
     // A hidden process launch can leave the owned dialog inactive. Request
     // activation once during setup; never keep taking focus from the user.
@@ -199,11 +211,13 @@ struct Verification {
       log(L"fixture-activation: requested-once=" + std::to_wstring(activated != FALSE));
     }
     if (GetForegroundWindow() != target) return;
+    // Set the test value after initial folder selection and activation settle.
+    if (FAILED(dialog->SetFileName(filename)) || !hasFixtureName()) { close(false); return; }
     worker->target = target; worker->destination = destination;
     navigationStarted = GetTickCount64();
     worker->requestName = L"Local\\FolderNote.DialogProbe." + std::to_wstring(GetCurrentProcessId()) + L"." + std::to_wstring(started);
     auto argument = new std::shared_ptr<Worker>(worker);
-    log(L"navigate-start: owned foreground Save dialog; fixture temporary folder -> Windows folder");
+    log(L"navigate-start: owned foreground file dialog; fixture temporary folder -> Windows folder");
     thread = CreateThread(nullptr, 0, work, argument, 0, nullptr);
     if (!thread) { delete argument; log(L"FAIL worker creation"); close(false); }
   }
@@ -233,10 +247,10 @@ LRESULT CALLBACK ownerProc(HWND window, UINT message, WPARAM w, LPARAM l) {
   if (state && message == WM_TIMER && w == 71) { state->tick(); return 0; }
   return DefWindowProcW(window, message, w, l);
 }
-int verify() {
+int verify(bool open) {
   Verification state;
-  auto created = CoCreateInstance(CLSID_FileSaveDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&state.dialog));
-  if (FAILED(created)) { log(L"FAIL create Save dialog " + hex(created)); return 1; }
+  auto created = CoCreateInstance(open ? CLSID_FileOpenDialog : CLSID_FileSaveDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&state.dialog));
+  if (FAILED(created)) { log(L"FAIL create file dialog " + hex(created)); return 1; }
   wchar_t temp[32768]{}, system[MAX_PATH]{}; auto size = GetTempPathW(ARRAYSIZE(temp), temp);
   if (!size || size >= ARRAYSIZE(temp) || !GetWindowsDirectoryW(system, ARRAYSIZE(system))) { log(L"FAIL fixture folders"); return 1; }
   state.initial = temp; state.destination = system;
@@ -252,7 +266,7 @@ int verify() {
   ComPtr<Events> events; events.Attach(new Events(&state)); DWORD cookie = 0;
   auto advised = state.dialog->Advise(events.Get(), &cookie); HRESULT shown = E_FAIL;
   if (state.owner && SUCCEEDED(advised) && SetTimer(state.owner, 71, 50, nullptr)) {
-    log(L"verify: opening owned native Save dialog; filename submission is blocked"); shown = state.dialog->Show(state.owner);
+    log(open ? L"verify: native Open dialog" : L"verify: native Save dialog"); shown = state.dialog->Show(state.owner);
   } else log(L"FAIL observer/timer setup");
   state.cancelWorker(); if (state.owner) KillTimer(state.owner, 71);
   if (state.thread) {
@@ -266,17 +280,18 @@ int verify() {
   }
   if (SUCCEEDED(advised)) state.dialog->Unadvise(cookie);
   if (state.owner) DestroyWindow(state.owner); UnregisterClassW(cls.lpszClassName, cls.hInstance);
-  log(std::wstring(state.passed ? L"PASS" : L"FAIL") + L" native Save navigation: result=" + name(state.worker->result.load()) +
+  log(std::wstring(state.passed ? L"PASS" : L"FAIL") + L" native dialog navigation: result=" + name(state.worker->result.load()) +
       L" destination-folder-event=" + std::to_wstring(state.reached) + L" filename-preserved=" + std::to_wstring(state.preserved) + L" dialog-close=" + hex(shown));
   return state.passed ? 0 : 1;
 }
 }
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
   int count = 0; auto arguments = CommandLineToArgvW(GetCommandLineW(), &count);
-  const bool automated = count == 2 && !wcscmp(arguments[1], L"--verify"); LocalFree(arguments);
+  const bool open = count == 2 && !wcscmp(arguments[1], L"--verify-open");
+  const bool automated = open || (count == 2 && !wcscmp(arguments[1], L"--verify")); LocalFree(arguments);
   if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) return 1;
   int result = 0;
-  if (automated) result = verify();
+  if (automated) result = verify(open);
   else {
     ComPtr<IFileSaveDialog> dialog;
     if (SUCCEEDED(CoCreateInstance(CLSID_FileSaveDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog)))) {
