@@ -93,7 +93,7 @@ struct Manager {
       const auto &paths = window == pins ? data.pins : data.history;
       if (row < 0 || size_t(row) >= paths.size()) return;
       const auto attributes = GetFileAttributesW(paths[row].c_str());
-      if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY))
+      if (attributes != INVALID_FILE_ATTRIBUTES && quick_find::settings().opens((attributes & FILE_ATTRIBUTE_DIRECTORY) != 0))
         ShellExecuteW(window, L"open", paths[row].c_str(), nullptr, nullptr, SW_SHOWNORMAL);
     });
     SendMessageW(window, LB_SETITEMHEIGHT, 0, px(30));

@@ -273,9 +273,9 @@ static SettingsPage activePage = SettingsPage::Features;
 static int settingsSidebarWidth = 208;
 static bool draggingSettingsSidebar = false;
 static HWND updateTip;
-static constexpr std::array pageButtons{40, 41, 47, 49, 48, 50};
+static constexpr std::array pageButtons{40, 41, 47, 49, 48, 50, 75};
 static const wchar_t *pageTitle(size_t page) {
-  constexpr std::array labels{L"功能设置", L"置顶与历史", L"右键菜单管理", L"文件夹入口管理", L"设置", L"盒子样式"};
+  constexpr std::array labels{L"功能设置", L"置顶与历史", L"右键菜单管理", L"文件夹入口管理", L"设置", L"盒子样式", L"快捷搜索"};
   return lang::text(labels[page]);
 }
 static UINT selectPageMessage() { return RegisterWindowMessageW(L"FolderNote.Settings.SelectPage.v1"); }
@@ -352,7 +352,40 @@ static std::wstring languagePath(HWND owner, bool importing) {
   return path;
 }
 static constexpr int updateButton = 42, automaticUpdateCheck = 70, automaticUpdateDescription = 71, updateStatusLabel = 72;
-static constexpr int pinyinFindCheck = 73, pinyinFindDescription = 74;
+static constexpr int findDescription = 80, findScope = 81, findBoxes = 82, findLists = 83,
+    findExplorer = 84, findDialogs = 85, findFolderLabel = 86, findFolderAction = 87,
+    findFileLabel = 88, findFileAction = 89, findPositionLabel = 90, findPosition = 91,
+    findRowsLabel = 92, findRows = 93, findIcons = 94, findHint = 95;
+struct FindToggle { int id; const wchar_t *label; bool quick_find::Settings::*field; };
+static constexpr FindToggle findToggles[]{
+    {findBoxes, L"桌面盒子", &quick_find::Settings::boxes},
+    {findLists, L"软件内列表与中键菜单", &quick_find::Settings::lists},
+    {findExplorer, L"桌面与资源管理器", &quick_find::Settings::explorer},
+    {findDialogs, L"系统打开、保存和文件夹窗口", &quick_find::Settings::dialogs},
+    {findIcons, L"显示原生图标", &quick_find::Settings::showIcons}};
+static void refreshFindSettings(HWND window) {
+  const auto options = quick_find::settings();
+  for (const auto &toggle : findToggles)
+    SendDlgItemMessageW(window, toggle.id, BM_SETCHECK, options.*toggle.field ? BST_CHECKED : BST_UNCHECKED, 0);
+  SendDlgItemMessageW(window, findFolderAction, CB_SETCURSEL, options.openFolders ? 1 : 0, 0);
+  SendDlgItemMessageW(window, findFileAction, CB_SETCURSEL, options.openFiles ? 1 : 0, 0);
+  SendDlgItemMessageW(window, findPosition, CB_SETCURSEL, options.atPointer ? 0 : 1, 0);
+  SendDlgItemMessageW(window, findRows, CB_SETCURSEL, options.visibleRows - 5, 0);
+}
+static void saveFindSettings(HWND window) {
+  const auto previous = quick_find::settings();
+  auto options = previous;
+  for (const auto &toggle : findToggles)
+    options.*toggle.field = SendDlgItemMessageW(window, toggle.id, BM_GETCHECK, 0, 0) == BST_CHECKED;
+  options.openFolders = SendDlgItemMessageW(window, findFolderAction, CB_GETCURSEL, 0, 0) == 1;
+  options.openFiles = SendDlgItemMessageW(window, findFileAction, CB_GETCURSEL, 0, 0) == 1;
+  options.atPointer = SendDlgItemMessageW(window, findPosition, CB_GETCURSEL, 0, 0) == 0;
+  options.visibleRows = 5 + static_cast<unsigned>(SendDlgItemMessageW(window, findRows, CB_GETCURSEL, 0, 0));
+  const auto error = quick_find::saveSettings(options);
+  if (error != ERROR_SUCCESS) fn::fail(L"无法保存快捷搜索设置。", error);
+  if (options.explorer != previous.explorer || options.dialogs != previous.dialogs)
+    quick::syncHelper(quick::executable());
+}
 static constexpr UINT_PTR updateTimer = 42;
 static constexpr auto automaticUpdateValue = L"AutomaticUpdate";
 static constexpr auto lastAutomaticCheckValue = L"LastAutomaticUpdateCheck";
@@ -751,7 +784,7 @@ static void layoutSettings() {
   MoveWindow(GetDlgItem(settingsWindow, 31), scale(20), height - scale(39), scale(sidebar - 79), scale(22), TRUE);
   MoveWindow(GetDlgItem(settingsWindow, updateButton), scale(sidebar - 52), height - scale(44), scale(32), scale(32), TRUE);
   for (size_t i = 0; i < pageButtons.size(); ++i)
-    MoveWindow(GetDlgItem(settingsWindow, pageButtons[i]), scale(12), scale(103 + int(i) * 48), scale(sidebar - 24), scale(40), TRUE);
+    MoveWindow(GetDlgItem(settingsWindow, pageButtons[i]), scale(12), scale(95 + int(i) * 44), scale(sidebar - 24), scale(38), TRUE);
   auto preference = [&](int id, int x, int y, int w, int h) {
     auto control = GetDlgItem(settingsWindow, id);
     MoveWindow(control, scale(sidebar + 24 + x), scale(y), scale(w), scale(h), TRUE);
@@ -764,13 +797,32 @@ static void layoutSettings() {
   preference(32, 300, 84, 210, 22);
   preference(17, 300, 110, 210, 130);
   const int preferencesWidth = std::max(0, MulDiv(width, 96, dpi) - sidebar - 48);
-  preference(pinyinFindCheck, 0, 194, preferencesWidth, 26);
-  preference(pinyinFindDescription, 0, 224, preferencesWidth, 42);
-  preference(automaticUpdateCheck, 0, 275, std::min(210, preferencesWidth), 26);
-  preference(automaticUpdateDescription, 0, 305, preferencesWidth, 42);
-  constexpr int statusTop = 352;
+  preference(automaticUpdateCheck, 0, 208, std::min(210, preferencesWidth), 26);
+  preference(automaticUpdateDescription, 0, 240, preferencesWidth, 42);
+  constexpr int statusTop = 292;
   const int statusHeight = std::clamp(MulDiv(height, 96, dpi) - 72 - statusTop, 0, 62);
   preference(updateStatusLabel, 0, statusTop, preferencesWidth, statusHeight);
+  const int findColumn = (preferencesWidth - 24) / 2;
+  auto findControl = [&](int id, int x, int y, int w, int h) {
+    auto control = GetDlgItem(settingsWindow, id);
+    MoveWindow(control, scale(sidebar + 24 + x), scale(y), scale(w), scale(h), TRUE);
+    ShowWindow(control, activePage == SettingsPage::QuickFind ? SW_SHOWNA : SW_HIDE);
+  };
+  findControl(findDescription, 0, 80, preferencesWidth, 36);
+  findControl(findScope, 0, 122, preferencesWidth, 20);
+  findControl(findBoxes, 0, 146, findColumn, 26);
+  findControl(findLists, findColumn + 24, 146, findColumn, 26);
+  findControl(findExplorer, 0, 176, findColumn, 26);
+  findControl(findDialogs, findColumn + 24, 176, findColumn, 26);
+  for (const auto ids : {std::pair{findFolderLabel, findFolderAction}, std::pair{findFileLabel, findFileAction},
+                         std::pair{findPositionLabel, findPosition}, std::pair{findRowsLabel, findRows}}) {
+    const bool second = ids.first == findFileLabel || ids.first == findRowsLabel;
+    const int y = ids.first < findPositionLabel ? 212 : 282;
+    findControl(ids.first, second ? findColumn + 24 : 0, y, findColumn, 20);
+    findControl(ids.second, second ? findColumn + 24 : 0, y + 24, findColumn, 200);
+  }
+  findControl(findIcons, 0, 350, preferencesWidth, 26);
+  findControl(findHint, 0, 382, preferencesWidth, 32);
   const int boxLeft = scale(sidebar + 24);
   const int boxWidth = std::max(0, width - scale(sidebar + 48));
   const int boxGap = scale(24);
@@ -806,18 +858,20 @@ static void layoutSettings() {
   MoveWindow(GetDlgItem(settingsWindow, IDCANCEL), width - scale(112), height - scale(44), scale(88), scale(32), TRUE);
   for (int id : {33, 13, IDOK, IDCANCEL})
     ShowWindow(GetDlgItem(settingsWindow, id),
-        activePage == SettingsPage::ContextMenus || activePage == SettingsPage::ExplorerEntries ? SW_HIDE : SW_SHOWNA);
+        activePage == SettingsPage::ContextMenus || activePage == SettingsPage::ExplorerEntries ||
+        (activePage == SettingsPage::QuickFind && id != IDCANCEL) ? SW_HIDE : SW_SHOWNA);
   layoutBody();
   ShowWindow(settingsScroll.window(), activePage == SettingsPage::Features && overflow ? SW_SHOWNA : SW_HIDE);
 }
 static void showPage(SettingsPage page) {
   activePage = page;
-  const std::array pages{body, managerPage, contextPage, entriesPage, HWND{}, HWND{}};
+  const std::array pages{body, managerPage, contextPage, entriesPage, HWND{}, HWND{}, HWND{}};
   const auto target = pages[size_t(page)];
   for (auto panel : pages)
     if (panel && panel != target) ShowWindow(panel, SW_HIDE);
   ShowWindow(GetDlgItem(settingsWindow, 30), page == SettingsPage::ContextMenus ? SW_HIDE : SW_SHOWNA);
   SetWindowTextW(GetDlgItem(settingsWindow, 30), pageTitle(size_t(page)));
+  SetWindowTextW(GetDlgItem(settingsWindow, IDCANCEL), lang::text(page == SettingsPage::QuickFind ? L"关闭" : L"取消"));
   for (int id : pageButtons)
     RedrawWindow(GetDlgItem(settingsWindow, id), nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW);
   layoutSettings();
@@ -1033,10 +1087,6 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
       SendMessageW(updateTip, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&tool));
     }
     ui::muted(add(h, L"STATIC", lang::text(L"外观主题"), 0, 32));
-    const auto pinyinFind = add(h, L"BUTTON", lang::text(L"中文首字母快速定位"), BS_AUTOCHECKBOX | WS_TABSTOP, pinyinFindCheck);
-    SendMessageW(pinyinFind, BM_SETCHECK, quick_find::external::enabled() ? BST_CHECKED : BST_UNCHECKED, 0);
-    ui::muted(add(h, L"STATIC", lang::text(L"在资源管理器和系统文件选择窗口的文件列表中，输入名称首字母即可定位。盒子和软件内列表始终支持。"),
-                  SS_NOPREFIX, pinyinFindDescription));
     const auto automaticUpdate = add(h, L"BUTTON", lang::text(L"自动更新"), BS_AUTOCHECKBOX | WS_TABSTOP,
                                      automaticUpdateCheck);
     SendMessageW(automaticUpdate, BM_SETCHECK, automaticUpdatesEnabled() ? BST_CHECKED : BST_UNCHECKED, 0);
@@ -1045,6 +1095,25 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     ui::muted(add(h, L"STATIC", L"", SS_NOPREFIX, updateStatusLabel));
     updateControls(h);
     constexpr DWORD comboStyle = CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS | WS_TABSTOP;
+    ui::muted(add(h, L"STATIC", lang::text(L"输入名称或中文首字母显示候选菜单。更改立即保存，下次搜索生效。"), SS_NOPREFIX, findDescription));
+    ui::muted(add(h, L"STATIC", lang::text(L"使用范围"), SS_NOPREFIX, findScope));
+    for (const auto &toggle : findToggles)
+      add(h, L"BUTTON", lang::text(toggle.label), BS_AUTOCHECKBOX | WS_TABSTOP, toggle.id);
+    for (const auto field : {std::pair{findFolderLabel, L"选择文件夹时"}, std::pair{findFileLabel, L"选择文件时"},
+                             std::pair{findPositionLabel, L"弹窗位置"}, std::pair{findRowsLabel, L"可见候选数量"}})
+      ui::muted(add(h, L"STATIC", lang::text(field.second), SS_NOPREFIX, field.first));
+    for (int id : {findFolderAction, findFileAction, findPosition, findRows}) {
+      auto combo = add(h, L"COMBOBOX", L"", comboStyle, id);
+      if (id == findRows) {
+        for (int rows = 5; rows <= 12; ++rows) SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(std::to_wstring(rows).c_str()));
+      } else {
+        const auto labels = id == findPosition ? std::array{L"鼠标位置", L"当前列表上方"} : std::array{L"仅定位选中", L"直接打开"};
+        for (auto label : labels) SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(lang::text(label)));
+      }
+      SendMessageW(combo, CB_SETITEMHEIGHT, WPARAM(-1), scale(26));
+    }
+    ui::muted(add(h, L"STATIC", lang::text(L"系统文件窗口中的文件始终只选中；菜单命令仅定位，不自动执行。"), SS_NOPREFIX, findHint));
+    refreshFindSettings(h);
     ui::muted(add(h, L"STATIC", lang::text(L"界面语言"), 0, 46));
     HWND language = add(h, L"COMBOBOX", L"", comboStyle, languageChoice);
     SendMessageW(language, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"简体中文"));
@@ -1245,13 +1314,15 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
       showPage(SettingsPage(button - pageButtons.begin()));
     } else if (LOWORD(w) == 13 && HIWORD(w) == BN_CLICKED) {
       try { copyDiagnostics(h); } catch (const fn::Error &e) { MessageBoxW(h, e.message.c_str(), L"FolderNote", MB_OK | MB_ICONERROR); }
-    } else if (LOWORD(w) == pinyinFindCheck && HIWORD(w) == BN_CLICKED) {
+    } else if ((HIWORD(w) == BN_CLICKED && std::any_of(std::begin(findToggles), std::end(findToggles),
+                   [&](const auto &toggle) { return toggle.id == LOWORD(w); })) ||
+               (HIWORD(w) == CBN_SELCHANGE && (LOWORD(w) == findFolderAction || LOWORD(w) == findFileAction ||
+                                             LOWORD(w) == findPosition || LOWORD(w) == findRows))) {
       try {
-        quick_find::external::saveEnabled(SendDlgItemMessageW(h, pinyinFindCheck, BM_GETCHECK, 0, 0) == BST_CHECKED);
-        quick::syncHelper(fn::modulePath().native());
-      } catch (...) {
-        SendDlgItemMessageW(h, pinyinFindCheck, BM_SETCHECK, quick_find::external::enabled() ? BST_CHECKED : BST_UNCHECKED, 0);
-        MessageBoxW(h, lang::text(L"无法启用快速定位，请重新打开设置后重试。"), L"FolderNote", MB_OK | MB_ICONERROR);
+        saveFindSettings(h);
+      } catch (const fn::Error &error) {
+        refreshFindSettings(h);
+        MessageBoxW(h, error.message.c_str(), L"FolderNote", MB_OK | MB_ICONERROR);
       }
     } else if (LOWORD(w) == automaticUpdateCheck && HIWORD(w) == BN_CLICKED && *app::updateRepository &&
                (!updateWork.valid() || workingAutomatically())) {
@@ -1296,7 +1367,8 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     EnumChildWindows(h, [](HWND child, LPARAM value) -> BOOL { SendMessageW(child, WM_SETFONT, value, TRUE); return TRUE; }, reinterpret_cast<LPARAM>(font));
     SendMessageW(GetDlgItem(h, 30), WM_SETFONT, reinterpret_cast<WPARAM>(headingFont), TRUE);
     SendMessageW(GetDlgItem(h, 35), WM_SETFONT, reinterpret_cast<WPARAM>(headingFont), TRUE);
-    for (auto combo : {themeChoice, choice, GetDlgItem(h, languageChoice)}) {
+    for (auto combo : {themeChoice, choice, GetDlgItem(h, languageChoice), GetDlgItem(h, findFolderAction),
+         GetDlgItem(h, findFileAction), GetDlgItem(h, findPosition), GetDlgItem(h, findRows)}) {
       SendMessageW(combo, CB_SETITEMHEIGHT, WPARAM(-1), scale(26));
       for (int i = 0; i < SendMessageW(combo, CB_GETCOUNT, 0, 0); ++i) SendMessageW(combo, CB_SETITEMHEIGHT, i, scale(26));
     }
@@ -1354,6 +1426,7 @@ int settings(HINSTANCE instance, SettingsPage page) {
       if (message.message == WM_KEYDOWN && (message.wParam == VK_ESCAPE || message.wParam == VK_RETURN)) {
         HWND dropped = nullptr;
         for (auto combo : {themeChoice, choice, GetDlgItem(window, languageChoice),
+             GetDlgItem(window, findFolderAction), GetDlgItem(window, findFileAction), GetDlgItem(window, findPosition), GetDlgItem(window, findRows),
              explorer_entries_page::locationControl(entriesPage)})
           if (SendMessageW(combo, CB_GETDROPPEDSTATE, 0, 0)) dropped = combo;
         if (dropped) { SendMessageW(dropped, CB_SHOWDROPDOWN, FALSE, 0); continue; }

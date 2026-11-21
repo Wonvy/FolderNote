@@ -14,12 +14,13 @@
 #include <chrono>
 #include <shellapi.h>
 #include <filesystem>
+#include <shlobj.h>
+#include <shlwapi.h>
+#include <map>
 
 namespace quick_find::external {
 namespace {
 using Microsoft::WRL::ComPtr;
-constexpr auto settingsKey = L"Software\\FolderNote";
-constexpr auto settingName = L"PinyinQuickFind";
 struct Input { HWND root, focus; DWORD process; wchar_t character; ULONGLONG time; unsigned long long epoch; bool command = false; };
 std::atomic<HWND> currentTarget{};
 std::atomic<HWND> candidateWindow{};
@@ -30,6 +31,53 @@ std::mutex mutex;
 std::condition_variable wake;
 std::deque<Input> pending;
 std::thread worker;
+
+bool desktopHost(HWND window) {
+  wchar_t type[80]{}; GetClassNameW(window, type, ARRAYSIZE(type));
+  // The runtime already verifies Shell ownership before admitting a target.
+  return !wcscmp(type, L"Progman") || !wcscmp(type, L"WorkerW");
+}
+struct ShellEntry { std::wstring path; bool folder = false, verified = false; };
+using ShellItems = std::map<std::wstring, ShellEntry>;
+void addShellEntry(ShellItems &items, std::wstring label, ShellEntry entry) {
+  auto [found, inserted] = items.emplace(std::move(label), std::move(entry));
+  // User/public desktop entries can have identical display names. Selection
+  // stays with the actual UIA item; ambiguous names must not infer an action.
+  if (!inserted) found->second = {};
+}
+ShellItems shellItems(IShellFolder *folder) {
+  ShellItems result;
+  ComPtr<IEnumIDList> children;
+  if (!folder || FAILED(folder->EnumObjects(nullptr, SHCONTF_FOLDERS | SHCONTF_NONFOLDERS |
+      SHCONTF_INCLUDEHIDDEN, &children)) || !children) return result;
+  const auto deadline = GetTickCount64() + 8000;
+  for (int count = 0; count < 20000 && GetTickCount64() < deadline; ++count) {
+    PITEMID_CHILD child = nullptr;
+    const auto next = children->Next(1, &child, nullptr);
+    if (next != S_OK || !child) { CoTaskMemFree(child); return next == S_FALSE ? result : ShellItems{}; }
+    struct Release { PITEMID_CHILD value; ~Release() { CoTaskMemFree(value); } } release{child};
+    const auto name = [&](SHGDNF flags) {
+      STRRET value{}; PWSTR text = nullptr; std::wstring label;
+      if (SUCCEEDED(folder->GetDisplayNameOf(child, flags, &value)) &&
+          SUCCEEDED(StrRetToStrW(&value, child, &text)) && text) label = text;
+      CoTaskMemFree(text); return label;
+    };
+    auto label = name(SHGDN_INFOLDER);
+    if (label.empty()) continue;
+    ShellEntry entry; entry.path = name(SHGDN_FORPARSING);
+    SFGAOF attributes = SFGAO_FOLDER | SFGAO_STREAM | SFGAO_LINK;
+    PCUITEMID_CHILD id = child;
+    entry.verified = !entry.path.empty() && SUCCEEDED(folder->GetAttributesOf(1, &id, &attributes));
+    entry.folder = entry.verified && (attributes & SFGAO_FOLDER) && !(attributes & (SFGAO_STREAM | SFGAO_LINK));
+    addShellEntry(result, std::move(label), std::move(entry));
+  }
+  // An incomplete enumeration cannot rule out duplicate display names.
+  return {};
+}
+ShellItems desktopItems() {
+  ComPtr<IShellFolder> desktop;
+  return SUCCEEDED(SHGetDesktopFolder(&desktop)) ? shellItems(desktop.Get()) : ShellItems{};
+}
 
 bool fileSurface(HWND focus) {
   wchar_t type[80]{};
@@ -73,7 +121,12 @@ ComPtr<IUIAutomationElement> focusedList(IUIAutomation *ui, const Input &input) 
   return {};
 }
 struct Item { ComPtr<IUIAutomationElement> element; };
-struct Contents { std::vector<Item> items; std::vector<Name> names; std::vector<std::wstring> labels; };
+struct Contents {
+  std::vector<Item> items;
+  std::vector<Name> names;
+  std::vector<std::wstring> labels;
+  ShellItems shell;
+};
 Contents readItems(IUIAutomation *ui, IUIAutomationElement *list, const Input &input) {
   Contents result;
   const auto append = [&](ComPtr<IUIAutomationElement> item) {
@@ -127,24 +180,40 @@ void locate(IUIAutomation *ui, const Input &input, IUIAutomationElement *list,
   if (!unchanged) return;
   // Shell list providers often leave ItemType empty. Verify the real directory
   // instead, and reject ambiguous hidden-extension names before invoking.
-  const auto parent = quick::dialog::currentPath(input.root);
-  const auto path = std::filesystem::path(parent) / contents.labels[row];
-  const auto attributes = parent.empty() ? INVALID_FILE_ATTRIBUTES : GetFileAttributesW(path.c_str());
-  bool folder = attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY);
-  if (folder) {
-    WIN32_FIND_DATAW entry{};
-    const auto search = FindFirstFileW((path.native() + L".*").c_str(), &entry);
-    if (search != INVALID_HANDLE_VALUE) {
-      int checked = 0;
-      do {
-        if (++checked > 256) { folder = false; break; }
-        if (entry.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
-        SHFILEINFOW info{};
-        const auto other = std::filesystem::path(parent) / entry.cFileName;
-        if (!SHGetFileInfoW(other.c_str(), 0, &info, sizeof(info), SHGFI_DISPLAYNAME) ||
-            contents.labels[row] == info.szDisplayName) { folder = false; break; }
-      } while (FindNextFileW(search, &entry));
-      FindClose(search);
+  bool folder = false, verified = false;
+  if (desktopHost(input.root)) {
+    // The native desktop merges user/public folders and virtual Shell items;
+    // it has no address bar and cannot be resolved against one disk directory.
+    const auto actual = desktopItems();
+    const auto now = actual.find(contents.labels[row]), before = contents.shell.find(contents.labels[row]);
+    if (now != actual.end() && before != contents.shell.end() && now->second.verified &&
+        before->second.verified && now->second.path == before->second.path) {
+      verified = true; folder = now->second.folder;
+    }
+  } else {
+    const auto parent = quick::dialog::currentPath(input.root);
+    const auto path = std::filesystem::path(parent) / contents.labels[row];
+    const auto attributes = parent.empty() ? INVALID_FILE_ATTRIBUTES : GetFileAttributesW(path.c_str());
+    folder = attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY);
+    verified = attributes != INVALID_FILE_ATTRIBUTES;
+    if (!parent.empty() && (folder || !verified)) {
+      WIN32_FIND_DATAW entry{};
+      const auto search = FindFirstFileW((path.native() + L".*").c_str(), &entry);
+      if (search != INVALID_HANDLE_VALUE) {
+        int checked = 0;
+        do {
+          if (++checked > 256) { verified = false; break; }
+          if (entry.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+          SHFILEINFOW info{};
+          const auto other = std::filesystem::path(parent) / entry.cFileName;
+          if (!SHGetFileInfoW(other.c_str(), 0, &info, sizeof(info), SHGFI_DISPLAYNAME)) { verified = false; break; }
+          if (contents.labels[row] == info.szDisplayName) {
+            if (verified) { verified = false; break; }
+            verified = true; folder = false;
+          }
+        } while (FindNextFileW(search, &entry));
+        FindClose(search);
+      }
     }
   }
   ComPtr<IUIAutomationVirtualizedItemPattern> virtualized;
@@ -156,7 +225,9 @@ void locate(IUIAutomation *ui, const Input &input, IUIAutomationElement *list,
   if (FAILED(selection->Select()) || !current(input)) return;
   ComPtr<IUIAutomationScrollItemPattern> scroll;
   if (SUCCEEDED(item->GetCurrentPatternAs(UIA_ScrollItemPatternId, IID_PPV_ARGS(&scroll))) && scroll) scroll->ScrollIntoView();
-  if (folder && current(input)) {
+  wchar_t windowClass[64]{}; GetClassNameW(input.root, windowClass, ARRAYSIZE(windowClass));
+  const bool fileDialog = !wcscmp(windowClass, L"#32770");
+  if (verified && settings().opens(folder, fileDialog) && current(input)) {
     ComPtr<IUIAutomationInvokePattern> invoke;
     if (SUCCEEDED(item->GetCurrentPatternAs(UIA_InvokePatternId, IID_PPV_ARGS(&invoke))) && invoke) { invoke->Invoke(); return; }
     ComPtr<IUIAutomationLegacyIAccessiblePattern> legacy;
@@ -206,9 +277,16 @@ void run() {
           contents = readItems(ui.Get(), list.Get(), input);
           if (!current(input)) { candidatePending = false; continue; }
           previousEpoch = input.epoch;
-          const auto parent = quick::dialog::currentPath(input.root);
+          const bool desktop = desktopHost(input.root);
+          const auto parent = desktop ? std::wstring{} : quick::dialog::currentPath(input.root);
+          if (desktop) contents.shell = desktopItems();
           std::vector<CandidateIcon> icons;
-          for (const auto &label : contents.labels) icons.emplace_back(quick::icons::Source::child(parent, label));
+          for (const auto &label : contents.labels) {
+            if (!desktop) icons.emplace_back(quick::icons::Source::child(parent, label));
+            else if (const auto entry = contents.shell.find(label); entry != contents.shell.end() && !entry->second.path.empty())
+              icons.emplace_back(quick::icons::Source::file(entry->second.path));
+            else icons.emplace_back();
+          }
           if (!current(input)) { candidatePending = false; continue; }
           popup.begin(input.focus, contents.labels, [&, input](int row) { locate(ui.Get(), input, list.Get(), contents, row); }, std::move(icons));
         }
@@ -234,12 +312,12 @@ void run() {
 }
 }
 bool enabled() {
-  DWORD value = 0, size = sizeof(value);
-  return RegGetValueW(HKEY_CURRENT_USER, settingsKey, settingName, RRF_RT_REG_DWORD, nullptr, &value, &size) == ERROR_SUCCESS && value == 1;
+  const auto options = settings();
+  return options.explorer || options.dialogs;
 }
 void saveEnabled(bool value) {
-  const DWORD flag = value ? 1 : 0;
-  if (RegSetKeyValueW(HKEY_CURRENT_USER, settingsKey, settingName, REG_DWORD, &flag, sizeof(flag)) != ERROR_SUCCESS)
+  auto options = settings(); options.explorer = options.dialogs = value;
+  if (saveSettings(options) != ERROR_SUCCESS)
     throw std::runtime_error("could not save quick find preference");
 }
 bool start() {

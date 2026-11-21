@@ -191,9 +191,21 @@ static void desktopTests(HWND dialog) {
   check(quick::isDesktop(shell) && quick::isDesktop(worker), "recognize both shell and WorkerW desktop hosts");
   check(!quick::isDesktop(wallpaper) && !quick::isDesktop(ordinary) && !quick::isDesktop(shellView),
         "wallpaper-only hosts, applications and non-root children are excluded");
+  enable(false, false);
+  auto search = quick_find::Settings{}; search.explorer = true;
+  check(quick_find::saveSettings(search) == ERROR_SUCCESS, "enable desktop/Explorer search without middle menus");
+  check(quick::searchTarget(shell) == shell && quick::searchTarget(worker) == worker,
+        "quick search admits both native desktop hosts independently of middle menu and dialog options");
+  for (auto rejected : {wallpaper, ordinary, shellView, dialog, HWND{}})
+    check(!quick::searchTarget(rejected), "search excludes wallpaper, unrelated apps, child views and disabled dialogs");
   foreignProcessWindow = worker;
   check(!quick::isDesktop(worker), "desktop class and view cannot impersonate the Shell process");
+  check(!quick::searchTarget(worker), "search rejects desktop class impersonation");
   foreignProcessWindow = nullptr;
+  search.explorer = false; search.dialogs = true;
+  check(quick_find::saveSettings(search) == ERROR_SUCCESS && !quick::searchTarget(shell) && !quick::searchTarget(worker),
+        "dialog-only search does not intercept desktop typing");
+  quick_find::external::saveEnabled(false);
   simulatedShell = nullptr; check(!quick::isDesktop(shell), "no Shell window means no desktop target"); simulatedShell = shell;
   for (bool dialogs : {false, true}) {
     enable(true, dialogs);

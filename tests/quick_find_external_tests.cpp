@@ -1,5 +1,6 @@
 // Real system picker and UIA integration, confined to generated test files.
 #include "../src/quick_find_external.cpp"
+#include "quick_find_test_settings.h"
 #include <shlobj.h>
 #include <filesystem>
 #include <fstream>
@@ -28,6 +29,49 @@ std::wstring selectedName(IUIAutomationElement *list) {
   BSTR name = nullptr; item->get_CurrentName(&name);
   std::wstring result = name ? name : L""; SysFreeString(name); return result;
 }
+void shellTests(const std::filesystem::path &directory) {
+  using namespace quick_find::external;
+  require(std::filesystem::create_directory(directory), "create Shell fixture directory");
+  const auto folder = directory / L"素材", file = directory / L"设计.txt", shortcut = directory / L"文件夹链接.lnk";
+  std::filesystem::create_directory(folder);
+  std::ofstream(file) << "isolated fixture";
+  ComPtr<IShellLinkW> link; ComPtr<IPersistFile> persist;
+  require(SUCCEEDED(CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&link))), "create test shortcut");
+  require(SUCCEEDED(link->SetPath(folder.c_str())) && SUCCEEDED(link.As(&persist)) &&
+      SUCCEEDED(persist->Save(shortcut.c_str(), TRUE)), "save test shortcut");
+  ComPtr<IShellItem> item; ComPtr<IShellFolder> parent;
+  require(SUCCEEDED(SHCreateItemFromParsingName(directory.c_str(), nullptr, IID_PPV_ARGS(&item))) &&
+      SUCCEEDED(item->BindToHandler(nullptr, BHID_SFObject, IID_PPV_ARGS(&parent))), "bind test Shell folder");
+  const auto entries = shellItems(parent.Get());
+  require(entries.size() == 3, "enumerate Shell display names including hidden extensions");
+  for (const auto &path : {folder, file, shortcut}) {
+    SHFILEINFOW info{};
+    require(SHGetFileInfoW(path.c_str(), 0, &info, sizeof(info), SHGFI_DISPLAYNAME) != 0, "read actual displayed name");
+    const auto found = entries.find(info.szDisplayName);
+    require(found != entries.end() && found->second.verified && found->second.path == path.native(),
+        "display name resolves to its absolute parsing path");
+    require(found->second.folder == (path == folder), "folders open while ordinary files and shortcuts follow the file setting");
+    require(quick::icons::read(quick::icons::Source::file(found->second.path), 16) != nullptr,
+        "resolved Shell entry loads its native icon");
+  }
+  ShellItems duplicate;
+  addShellEntry(duplicate, L"同名", {folder.native(), true, true});
+  addShellEntry(duplicate, L"同名", {file.native(), false, true});
+  addShellEntry(duplicate, L"同名", {shortcut.native(), false, true});
+  require(!duplicate.at(L"同名").verified && duplicate.at(L"同名").path.empty(),
+      "duplicate user/public desktop names cannot infer an open action or wrong icon");
+  const auto desktop = desktopItems();
+  size_t checked = 0;
+  for (const auto &[label, entry] : desktop) {
+    if (!entry.verified) continue;
+    ComPtr<IShellItem> resolved;
+    require(SUCCEEDED(SHCreateItemFromParsingName(entry.path.c_str(), nullptr, IID_PPV_ARGS(&resolved))),
+        "native desktop entries resolve including public and virtual items");
+    ++checked;
+  }
+  std::cout << "Shell names, absolute paths, folder/file policy, native icons and ambiguity passed; "
+            << checked << " native desktop entries verified read-only.\n";
+}
 }
 int main(int count, char **arguments) {
   using namespace quick_find::external;
@@ -38,6 +82,13 @@ int main(int count, char **arguments) {
       (L"FolderNote-FindTest-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
   int result = 1;
   try {
+    if (count > 1 && std::string_view(arguments[1]) == "--shell-only") {
+      shellTests(directory); result = 0;
+    } else {
+    QuickFindTestSettings isolated;
+    auto preferences = quick_find::Settings{};
+    preferences.openFiles = true; // Even this mode must not submit open/save dialogs.
+    require(quick_find::saveSettings(preferences) == ERROR_SUCCESS, "save isolated preferences");
     require(std::filesystem::create_directory(directory), "create isolated directory");
     const auto makeItem = [&](const std::wstring &name) {
       if (folders) std::filesystem::create_directory(directory / name);
@@ -82,7 +133,19 @@ int main(int count, char **arguments) {
           ready = GetForegroundWindow() == window && fileSurface(info.hwndFocus) && focusedList(ui.Get(), input) != nullptr;
         }
         require(ready, "recognize settled file list focus");
-        const auto contents = readItems(ui.Get(), list.Get(), input);
+        // The picker can focus its list before Shell finishes populating it.
+        // Wait for fixture readiness instead of treating early partial data as
+        // a failed search; focus/target validation still applies on every read.
+        auto contents = readItems(ui.Get(), list.Get(), input);
+        for (int retry = 0; retry < 30 && contents.names.size() < 187 && current(input); ++retry) {
+          Sleep(100); input.time = GetTickCount64();
+          contents = readItems(ui.Get(), list.Get(), input);
+        }
+        if (contents.names.size() < 187) {
+          GUITHREADINFO info{sizeof(info)}; GetGUIThreadInfo(GetWindowThreadProcessId(window, nullptr), &info);
+          std::cerr << "fixture count=" << contents.names.size() << " foreground=" << (GetForegroundWindow() == window)
+                    << " sameFocus=" << (info.hwndFocus == input.focus) << " current=" << current(input) << '\n';
+        }
         require(contents.names.size() >= 187, "enumerate virtualized offscreen items");
         const auto type = [](const char *text) {
           for (; *text; ++text) {
@@ -102,6 +165,11 @@ int main(int count, char **arguments) {
             if (popup && IsWindowVisible(popup) && std::wstring_view(caption).starts_with(query)) return GetDlgItem(popup, 2);
             Sleep(25);
           }
+          GUITHREADINFO info{sizeof(info)}; GetGUIThreadInfo(GetWindowThreadProcessId(window, nullptr), &info);
+          std::string requested; for (auto c = query; *c; ++c) requested += static_cast<char>(*c);
+          std::cerr << "query=" << requested << " foreground=" << (GetForegroundWindow() == window)
+                    << " sameFocus=" << (info.hwndFocus == input.focus) << " popup=" << candidateWindow.load()
+                    << " pending=" << candidatePending.load() << " stopping=" << stopping.load() << '\n';
           throw std::runtime_error("candidate list did not display query");
         };
         const auto before = selectedName(list.Get());
@@ -131,6 +199,14 @@ int main(int count, char **arguments) {
         require(selectedName(list.Get()) == beforeEmptyQuery, "confirming empty candidates leaves original selection");
         press(VK_ESCAPE); Sleep(80);
         require(!candidateWindow.load(), "Escape dismisses candidates");
+        preferences.openFolders = false;
+        require(quick_find::saveSettings(preferences) == ERROR_SUCCESS, "switch folders to locate only");
+        cancel(); type("SC"); candidates(L"SC"); press(VK_RETURN);
+        for (int i = 0; i < 60 && selectedName(list.Get()) != L"素材"; ++i) Sleep(25);
+        require(selectedName(list.Get()) == L"素材", "locate-only folder selects the actual item");
+        require(quick::dialog::currentPath(window) == directory.wstring(), "locate-only folder keeps current directory");
+        preferences.openFolders = true;
+        require(quick_find::saveSettings(preferences) == ERROR_SUCCESS, "switch folders back to open");
         cancel(); type("S");
         auto choices = candidates(L"S");
         wchar_t first[128]{}; SendMessageW(choices, LB_GETTEXT, 0, reinterpret_cast<LPARAM>(first));
@@ -200,6 +276,7 @@ int main(int count, char **arguments) {
     });
     dialog->Show(nullptr);
     driver.join();
+    }
   } catch (const std::exception &error) { std::cerr << error.what() << '\n'; }
   // Only the uniquely created fixture directory is ever removed.
   if (directory.parent_path() == std::filesystem::temp_directory_path() && directory.filename().native().starts_with(L"FolderNote-FindTest-")) {

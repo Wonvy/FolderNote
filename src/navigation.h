@@ -34,6 +34,6 @@ std::wstring diagnostics();
 void stopLegacy();
 void stop();
 void reload();
-enum class SettingsPage { Features, QuickFolders, ContextMenus, ExplorerEntries, Preferences, BoxAppearance };
+enum class SettingsPage { Features, QuickFolders, ContextMenus, ExplorerEntries, Preferences, BoxAppearance, QuickFind };
 int settings(HINSTANCE instance, SettingsPage page = SettingsPage::Features);
 } // namespace navigation

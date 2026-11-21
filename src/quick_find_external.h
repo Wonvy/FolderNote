@@ -1,5 +1,6 @@
 #pragma once
 #include <windows.h>
+#include "quick_find_settings.h"
 namespace quick_find::external {
 bool enabled();
 void saveEnabled(bool enabled);

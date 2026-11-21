@@ -77,17 +77,21 @@ bool eligibleTarget(HWND window, DWORD expectedProcess = 0) {
   const auto targetIntegrity = integrity(pid), ownIntegrity = integrity(GetCurrentProcessId());
   return targetIntegrity != 0xffffffff && ownIntegrity != 0xffffffff && targetIntegrity <= ownIntegrity;
 }
-void updateTarget() {
-  HWND window = GetForegroundWindow();
-  eligible.store(eligibleTarget(window) ? window : nullptr);
-  dialog::observeHistory(eligible.load() == window && isFileDialog(window) ? window : nullptr);
+HWND searchTarget(HWND window) {
   HWND search = nullptr;
-  if (quick_find::external::enabled() && (isExplorer(window) || isFileDialog(window))) {
+  const auto findOptions = quick_find::settings();
+  if ((findOptions.explorer && (isDesktop(window) || isExplorer(window))) || (findOptions.dialogs && isFileDialog(window))) {
     DWORD process = 0; GetWindowThreadProcessId(window, &process);
     const auto targetLevel = integrity(process), ownLevel = integrity(GetCurrentProcessId());
     if (targetLevel != 0xffffffff && ownLevel != 0xffffffff && targetLevel <= ownLevel) search = window;
   }
-  quick_find::external::target(search);
+  return search;
+}
+void updateTarget() {
+  HWND window = GetForegroundWindow();
+  eligible.store(eligibleTarget(window) ? window : nullptr);
+  dialog::observeHistory(eligible.load() == window && isFileDialog(window) ? window : nullptr);
+  quick_find::external::target(searchTarget(window));
 }
 void CALLBACK foregroundEvent(HWINEVENTHOOK, DWORD event, HWND window, LONG, LONG, DWORD, DWORD) {
   if (event == EVENT_OBJECT_SHOW && (!window || GetAncestor(window, GA_ROOT) != GetForegroundWindow() ||

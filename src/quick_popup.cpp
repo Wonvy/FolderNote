@@ -445,7 +445,7 @@ struct Session {
     trim(active + 1);
   }
   void character(wchar_t character) {
-    if (done || panels.empty() || sliderDrag) return;
+    if (done || panels.empty() || sliderDrag || !quick_find::settings().lists) return;
     auto &panel = *panels[active];
     hideTip(); KillTimer(root(), hoverTimer);
     if (!panel.find.active()) {
@@ -464,7 +464,7 @@ struct Session {
           active = level; select(target, row);
           const auto path = target.branch->items[row].iconPath;
           const auto attributes = path.empty() ? INVALID_FILE_ATTRIBUTES : GetFileAttributesW(path.c_str());
-          if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY)) {
+          if (attributes != INVALID_FILE_ATTRIBUTES && quick_find::settings().opens((attributes & FILE_ATTRIBUTE_DIRECTORY) != 0)) {
             ShellExecuteW(target.window, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
             finish();
           }

@@ -1,6 +1,8 @@
 #pragma once
 #include "quick_find.h"
+#include "quick_find_settings.h"
 #include "theme.h"
+#include "theme_scroll.h"
 #include "quick_icons.h"
 #include <functional>
 #include <windows.h>
@@ -38,14 +40,18 @@ public:
   void character(wchar_t value);
   bool key(UINT value);
 private:
-  HWND window = nullptr, list = nullptr, caption = nullptr, hint = nullptr;
+  HWND window = nullptr, list = nullptr, caption = nullptr, count = nullptr;
   HWND context = nullptr, focus = nullptr;
   HHOOK mouse = nullptr;
   HFONT font = nullptr;
   ui::Theme theme;
+  ui::ScrollBar scroll;
+  Settings options;
   UINT dpi = 96;
   RECT anchorRect{};
   bool opened = false, show = false;
+  bool refreshing = false;
+  int pageRows = 1;
   std::wstring buffer;
   std::vector<std::wstring> labels;
   std::vector<Name> names;
@@ -54,6 +60,7 @@ private:
   std::unique_ptr<quick::icons::Cache> iconCache;
   Choose choose;
   void refresh();
+  void syncScroll();
   void confirm();
   int px(int value) const { return MulDiv(value, dpi, 96); }
   static LRESULT CALLBACK proc(HWND, UINT, WPARAM, LPARAM);

@@ -87,6 +87,52 @@ void inspectVersion(HWND window) {
   check(extent.cx <= bounds.right - bounds.left && extent.cy <= bounds.bottom - bounds.top,
         "version text is not clipped at current scale");
 }
+void quickSearchSettings() {
+  using namespace navigation;
+  {
+    Hub hub;
+    SendDlgItemMessageW(hub.window, pageButtons[size_t(SettingsPage::QuickFind)], BM_CLICK, 0, 0);
+    check(activePage == SettingsPage::QuickFind && windowText(GetDlgItem(hub.window, 30)) == L"快捷搜索", "dedicated search page routes from sidebar");
+    check(!visibleStyle(body) && !visibleStyle(GetDlgItem(hub.window, IDOK)), "search preferences save immediately without feature form");
+    check(SendDlgItemMessageW(hub.window, findFolderAction, CB_GETCURSEL, 0, 0) == 1 &&
+          SendDlgItemMessageW(hub.window, findFileAction, CB_GETCURSEL, 0, 0) == 0, "existing folder-open file-select defaults appear");
+    const auto choose = [&](int id, int row) {
+      SendDlgItemMessageW(hub.window, id, CB_SETCURSEL, row, 0);
+      SendMessageW(hub.window, WM_COMMAND, MAKEWPARAM(id, CBN_SELCHANGE), reinterpret_cast<LPARAM>(GetDlgItem(hub.window, id)));
+    };
+    choose(findFolderAction, 0); choose(findFileAction, 1); choose(findPosition, 1); choose(findRows, 0);
+    SendDlgItemMessageW(hub.window, findIcons, BM_CLICK, 0, 0);
+    SendDlgItemMessageW(hub.window, findBoxes, BM_CLICK, 0, 0);
+    const auto saved = quick_find::settings();
+    check(!saved.openFolders && saved.openFiles && !saved.atPointer && saved.visibleRows == 5 && !saved.showIcons && !saved.boxes,
+          "settings controls persist independent actions, position, rows, icons and box scope immediately");
+    for (UINT scaleDpi : {96u, 144u, 192u}) {
+      RECT target{0, 0, MulDiv(900, scaleDpi, 96), MulDiv(500, scaleDpi, 96)};
+      SendMessageW(hub.window, WM_DPICHANGED, MAKEWPARAM(scaleDpi, scaleDpi), reinterpret_cast<LPARAM>(&target));
+      RECT client{}; GetClientRect(hub.window, &client);
+      const auto close = childBounds(GetDlgItem(hub.window, IDCANCEL), hub.window);
+      for (int id = findDescription; id <= findHint; ++id) {
+        const auto control = GetDlgItem(hub.window, id);
+        const auto bounds = childBounds(control, hub.window);
+        check(visibleStyle(control) && bounds.left >= scale(settingsSidebarWidth) && bounds.right <= client.right &&
+              bounds.top >= 0 && bounds.bottom <= close.top, "search controls fit at minimum size and every DPI");
+      }
+      const auto lastTab = childBounds(GetDlgItem(hub.window, pageButtons.back()), hub.window);
+      check(lastTab.bottom < childBounds(GetDlgItem(hub.window, updateButton), hub.window).top, "seventh sidebar tab fits above version and update");
+      check(SendDlgItemMessageW(hub.window, findRows, CB_GETITEMHEIGHT, WPARAM(-1), 0) == scale(26), "search combo scales on DPI change");
+    }
+    showPage(SettingsPage::Features);
+    check(!visibleStyle(GetDlgItem(hub.window, findFolderAction)) && visibleStyle(body), "search controls hide on other pages");
+  }
+  {
+    Hub reopened; showPage(SettingsPage::QuickFind);
+    check(SendDlgItemMessageW(reopened.window, findFolderAction, CB_GETCURSEL, 0, 0) == 0 &&
+          SendDlgItemMessageW(reopened.window, findFileAction, CB_GETCURSEL, 0, 0) == 1 &&
+          SendDlgItemMessageW(reopened.window, findRows, CB_GETCURSEL, 0, 0) == 0, "reopening settings restores selections");
+  }
+  quick_find::saveSettings({});
+  activePage = SettingsPage::Features;
+}
 void automaticUpdates() {
   using namespace navigation;
   Hub hub;
@@ -588,10 +634,25 @@ void contextCommands() {
         "disabling removes Shell menu entries");
 }
 }
-int main() {
+int main(int argc, char **argv) {
   CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
   int result = 0;
-  try { Registry registry; automaticUpdates(); scenarios(); languages(); desktopFenceMenu(); contextInventory(); contextCommands(); std::cout << "PASS " << checks << " settings, language and context menu assertions\n"; }
+  try {
+    Registry registry;
+    if (argc == 2 && std::string_view(argv[1]) == "--preview-search") {
+      Hub preview;
+      navigation::showPage(navigation::SettingsPage::QuickFind);
+      SetWindowTextW(preview.window, L"FolderNote — 快捷搜索预览（隔离设置）");
+      ShowWindow(preview.window, SW_SHOWNORMAL);
+      MSG message{};
+      while (GetMessageW(&message, nullptr, 0, 0) > 0) {
+        if (!IsDialogMessageW(preview.window, &message)) { TranslateMessage(&message); DispatchMessageW(&message); }
+      }
+    } else {
+      quickSearchSettings(); automaticUpdates(); scenarios(); languages(); desktopFenceMenu(); contextInventory(); contextCommands();
+      std::cout << "PASS " << checks << " settings, language and context menu assertions\n";
+    }
+  }
   catch (const std::exception &error) { std::cerr << "FAIL " << checks << ": " << error.what() << "\n"; result = 1; }
   CoUninitialize(); return result;
 }

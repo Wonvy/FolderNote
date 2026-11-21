@@ -40,7 +40,11 @@ ctest --test-dir build -C Release --output-on-failure -R "^(ExplorerTabsTests|Na
 
 中文首字母定位由 `quick_find` 共用匹配器、`quick_find_controls` 内部列表适配和 `quick_find_external` 系统文件列表适配组成。离线字库及许可证随程序编译；更新字库时运行 `py -3 tools/generate_pinyin_initials.py`，脚本使用固定的上游提交，并记录输入数据的 SHA-256。
 
-`QuickFindTests` 检查匹配、输入会话和原生列表；`QuickFindExternalTests`、`QuickFindSaveDialogTests`、`QuickFindFolderDialogTests` 会短暂打开只含自动生成测试文件的系统选择窗口，检查虚拟列表定位和输入框隔离。它们需要交互式 Windows 桌面并串行运行。启用 WinUI 时，`DesktopFindTests` 还检查盒子视图的实际键盘事件、滚动和选择。
+`quick_find_settings` 将快捷搜索的启用范围、文件夹／文件确认动作及弹窗选项原子保存到 HKCU `Software\FolderNote\QuickFindOptions` DWORD，首次读取兼容旧的 `PinyinQuickFind`。设置页立即保存，弹窗开始时读取外观选项，确认候选时读取动作；仅改变跨软件范围时重启后台。原生桌面沿用 Explorer 范围位，运行时验证 Progman／WorkerW 的 Shell 进程身份，输入仍限于文件列表；桌面元数据由 Shell 桌面命名空间提供，覆盖个人／公共目录和虚拟项目，显示名重复时只选中，不推断打开动作。系统文件窗口中的文件不触发默认动作，避免提交打开／保存。`SettingsHubTests` 检查独立页、持久化与最小窗口下的 100%／150%／200% DPI 布局；`QuickFind*Tests` 的设置写入均使用进程内隔离注册表。
+
+`QuickFindTests` 检查匹配、输入会话和原生列表；`QuickFindShellTests` 检查桌面解析、原生图标、文件夹／文件分类及重名处理；`QuickFindExternalTests`、`QuickFindSaveDialogTests`、`QuickFindFolderDialogTests` 会短暂打开只含自动生成测试文件的系统选择窗口，检查虚拟列表定位和输入框隔离。它们需要交互式 Windows 桌面并串行运行。启用 WinUI 时，`DesktopFindTests` 还检查盒子视图的实际键盘事件、滚动和选择。
+
+`QuickFindTests --render-preview <目录>` 可将真实候选窗口渲染为深浅主题下的多结果、单结果、无匹配 BMP 预览；渲染使用隐藏夹具和隔离设置，不操作桌面文件。自动检查覆盖滚动条显隐、滚轮与拖动、键盘翻页同步，以及关闭弹窗时释放鼠标捕获。
 
 ## 目录与组件
 
@@ -91,7 +95,7 @@ ctest --test-dir build -C Release --output-on-failure -R "^(ExplorerTabsTests|Na
 
 Shell 查询和导航可能重入窗口消息，甚至在调用尚未返回时更换或释放站点。保持站点代次、查询代次及导航事务的检查；在旧结果回写前确认对象、窗口和事务仍有效。不要同时发起多个标签导航，不要让过期错误或计时器回滚较新的导航。
 
-双击空白处导航由扩展处理。后台组件的启用条件为 `quickEnabled() || (tabsSupported() && tabsEnabled() && preferNewTabEnabled())`：中键快速定位和 Windows 10 新标签接管共用 `--quick-helper` 及本工具自己的登录启动项，两者均停用时退出。只开启新标签接管时不应启用中键鼠标处理。安装、升级与设置保存统一调用 `quick::syncHelper`，卸载调用 `quick::stopHelper`，保留用户功能设置。文件对话框支持关闭时，资源管理器中键仍由扩展处理；开启时由后台组件处理资源管理器和文件对话框，避免重复触发。全局鼠标钩子只做轻量判断，完整窗口与权限校验留在处理线程。桌面窗口需匹配 Shell 进程与桌面宿主结构；点击菜单中的目录通过 Shell 或新标签请求打开，不对桌面调用目录导航。不要把可选组件改为所有安装都必须运行的后台服务。
+双击空白处导航由扩展处理。后台组件的启用条件为 `quickEnabled() || (tabsSupported() && tabsEnabled() && preferNewTabEnabled()) || quick_find::external::enabled()`：中键快速定位、Windows 10 新标签接管和跨软件快捷搜索共用 `--quick-helper` 及本工具自己的登录启动项，三者均停用时退出。只开启新标签接管时不应启用中键鼠标处理。安装、升级与设置保存统一调用 `quick::syncHelper`，卸载调用 `quick::stopHelper`，保留用户功能设置。文件对话框支持关闭时，资源管理器中键仍由扩展处理；开启时由后台组件处理资源管理器和文件对话框，避免重复触发。全局鼠标钩子只做轻量判断，完整窗口与权限校验留在处理线程。桌面窗口需匹配 Shell 进程与桌面宿主结构；点击菜单中的目录通过 Shell 或新标签请求打开，不对桌面调用目录导航。不要把可选组件改为所有安装都必须运行的后台服务。
 
 “始终在新标签中打开文件夹”保存为当前用户 `Software\FolderNote` 下的 `ExplorerOpenInNewTab` DWORD，默认关闭。旧版 `saveSettings` 调用保留这个值，关闭多标签也不清除用户选择。只接管启用后新出现的资源管理器窗口，不合并已存在的窗口；没有可用标签宿主时保留首个普通窗口。BHO 在 SetSite 阶段向后台申请暂缓呈现，确认已有支持当前协议的目标后，在来源窗口第一次显示前设置 DWM APP cloak；不改变 WS_VISIBLE，保证 Shell 视图和标签栏继续初始化。窗口拥有独立的 20 秒恢复计时器，关闭过程不解除 cloak，失败、停用和超时则恢复显示。晚于首次显示才附着的 BHO 不强制隐藏既有窗口。交接确认遇到同目录的重复完成事件会限时重试，不重新增加标签；真实导航或选择变化仍取消关闭。标签右键“在新窗口打开”绕过接管，保留原标签。Windows 11 原生标签不在该功能范围内。
 
@@ -107,7 +111,7 @@ Shell 查询和导航可能重入窗口消息，甚至在调用尚未返回时�
 
 ## 测试与实机验证
 
-当前工作版本的 CTest 注册了 21 组测试（1.8.7 为 19 组）。`QuickDesktopMenuTests` 使用生产菜单模型和窗口控制器，验证复制 / 移动文字按钮原位切换、取消、禁用、鼠标与键盘操作、三档缩放和目标命令；`QuickRuntimeTests` 覆盖桌面识别以及旧修饰键手势不再被拦截；`QuickTransferTests` 覆盖当前视图选择、空选择无父目录回退、快照、系统接口参数和取消，并在临时目录实际复制 / 移动中文、多选及嵌套文件夹。测试通过隐藏窗口、临时目录和进程内注册表重定向隔离状态，不应修改真实置顶、历史、功能开关或安装注册。需要新增安装或注册测试时，沿用现有隔离夹具，不要把实际 `Install.exe --quiet` 当成普通单元测试步骤。
+1.9.8 的 CTest 注册了 40 组测试（启用 WinUI 构建时）。`QuickDesktopMenuTests` 使用生产菜单模型和窗口控制器，验证复制 / 移动文字按钮原位切换、取消、禁用、鼠标与键盘操作、三档缩放和目标命令；`QuickRuntimeTests` 覆盖桌面识别以及旧修饰键手势不再被拦截；`QuickTransferTests` 覆盖当前视图选择、空选择无父目录回退、快照、系统接口参数和取消，并在临时目录实际复制 / 移动中文、多选及嵌套文件夹。测试通过隐藏窗口、临时目录和进程内注册表重定向隔离状态，不应修改真实置顶、历史、功能开关或安装注册。需要新增安装或注册测试时，沿用现有隔离夹具，不要把实际 `Install.exe --quiet` 当成普通单元测试步骤。
 
 | 改动范围 | 优先运行的测试 |
 | --- | --- |

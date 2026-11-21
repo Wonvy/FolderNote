@@ -307,7 +307,7 @@ struct Page {
       if (row < 0 || size_t(row) >= rows.size()) return;
       const auto path = std::visit([](const auto &entry) { return entry.target; }, rows[row].row);
       const auto attributes = GetFileAttributesW(path.c_str());
-      if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY))
+      if (attributes != INVALID_FILE_ATTRIBUTES && quick_find::settings().opens((attributes & FILE_ATTRIBUTE_DIRECTORY) != 0))
         ShellExecuteW(window, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
     });
     add(0, L"STATIC", L"", SS_LEFT | SS_NOPREFIX | SS_ENDELLIPSIS, StatusLine);

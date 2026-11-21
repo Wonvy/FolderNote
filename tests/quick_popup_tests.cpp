@@ -2,6 +2,7 @@
 // The hidden tests do not install the popup's short-lived input observers,
 // change the real foreground window, or write user settings.
 #include "../src/quick_popup.cpp"
+#include "quick_find_test_settings.h"
 #include <objbase.h>
 #include <iostream>
 #include <stdexcept>
@@ -33,6 +34,7 @@ int main() {
   using namespace quick::popup;
   CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
   try {
+    QuickFindTestSettings isolated;
     auto instance = GetModuleHandleW(nullptr); registerPanel(instance);
     {
       Session session(instance, ui::ThemeMode::Dark); session.create(model(), {50, 50}, false);

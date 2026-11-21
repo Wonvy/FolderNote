@@ -10,7 +10,7 @@ bool shortcutModifiers() {
 }
 namespace {
 constexpr UINT_PTR subclassId = 0x464E5046;
-struct Control { Popup popup; bool listView; std::function<void(int)> openFolder; std::function<CandidateIcon(int)> icon; };
+struct Control { Popup popup; bool listView; std::function<void(int)> activate; std::function<CandidateIcon(int)> icon; };
 std::vector<std::wstring> names(HWND window, bool listView) {
   const auto count = listView ? ListView_GetItemCount(window) : static_cast<int>(SendMessageW(window, LB_GETCOUNT, 0, 0));
   std::vector<std::wstring> result;
@@ -62,6 +62,9 @@ LRESULT CALLBACK input(HWND window, UINT message, WPARAM w, LPARAM l, UINT_PTR i
     if (message == WM_KILLFOCUS || message == WM_LBUTTONDOWN || message == LB_RESETCONTENT ||
         message == LVM_DELETEALLITEMS) state->popup.close();
     if (GetFocus() == window && !shortcutModifiers()) {
+      if ((message == WM_CHAR || message == WM_KEYDOWN) && !settings().lists) {
+        state->popup.close(); return DefSubclassProc(window, message, w, l);
+      }
       if (message == WM_CHAR && w == L'\b') return 0; // Handled once at keydown.
       if (message == WM_CHAR && inputCharacter(static_cast<wchar_t>(w))) {
         if (!state->popup.active()) {
@@ -83,11 +86,11 @@ LRESULT CALLBACK input(HWND window, UINT message, WPARAM w, LPARAM l, UINT_PTR i
             }
             icons.push_back(std::move(icon));
           }
-          state->popup.begin(window, items, [window, listView = state->listView, items, openFolder = state->openFolder](int row) {
+          state->popup.begin(window, items, [window, listView = state->listView, items, activate = state->activate](int row) {
             const auto current = names(window, listView);
             if (row >= 0 && size_t(row) < current.size() && current[row] == items[row]) {
               select(window, listView, row);
-              if (openFolder && IsWindow(window)) openFolder(row);
+              if (activate && IsWindow(window)) activate(row);
             }
           }, std::move(icons));
         }
@@ -101,7 +104,7 @@ LRESULT CALLBACK input(HWND window, UINT message, WPARAM w, LPARAM l, UINT_PTR i
   return DefSubclassProc(window, message, w, l);
 }
 }
-void attach(HWND list, std::function<void(int)> openFolder, std::function<CandidateIcon(int)> icon) {
+void attach(HWND list, std::function<void(int)> activate, std::function<CandidateIcon(int)> icon) {
   if (!list || GetWindowThreadProcessId(list, nullptr) != GetCurrentThreadId()) return;
   DWORD_PTR existing = 0;
   if (GetWindowSubclass(list, input, subclassId, &existing)) return;
@@ -113,7 +116,7 @@ void attach(HWND list, std::function<void(int)> openFolder, std::function<Candid
        !(GetWindowLongPtrW(list, GWL_STYLE) & LBS_HASSTRINGS)))) return;
   auto state = std::make_unique<Control>();
   state->listView = listView;
-  state->openFolder = std::move(openFolder);
+  state->activate = std::move(activate);
   state->icon = std::move(icon);
   if (SetWindowSubclass(list, input, subclassId, reinterpret_cast<DWORD_PTR>(state.get()))) state.release();
 }

@@ -2339,7 +2339,7 @@ void Panel::refresh(const Group &group) {
 
 bool Panel::findInput(UINT message, WPARAM key) {
   if (message == WM_LBUTTONDOWN || message == WM_KILLFOCUS) { findPopup.close(); return false; }
-  if (quick_find::shortcutModifiers() || desktop.editing || desktop.dragging || desktop.menuOpen || collapsed()) {
+  if (quick_find::shortcutModifiers() || desktop.editing || desktop.dragging || desktop.menuOpen || collapsed() || !quick_find::settings().boxes) {
     findPopup.close(); return false;
   }
   if (message == WM_KEYDOWN && findPopup.key(static_cast<UINT>(key))) return true;
@@ -2360,7 +2360,7 @@ bool Panel::findInput(UINT message, WPARAM key) {
 #endif
     queueScrollSync();
     const auto attributes = GetFileAttributesW(orderedItems[match].c_str());
-    if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY))
+    if (attributes != INVALID_FILE_ATTRIBUTES && quick_find::settings().opens((attributes & FILE_ATTRIBUTE_DIRECTORY) != 0))
       PostMessageW(window, WM_COMMAND, OpenItem, 0);
     }, std::move(icons));
   }

@@ -71,6 +71,7 @@ BOOL CALLBACK explorerWindow(HWND window, LPARAM data) {
 // Read only, requested explicitly from Settings. No persistent diagnostics worker.
 std::wstring diagnostics() {
   std::wostringstream text;
+  const auto search = quick_find::settings();
   constexpr auto windowsKey = L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion";
   text << L"FolderNote " << app::version << L" 诊断\r\n"
        << L"Windows 版本：" << stringValue(HKEY_LOCAL_MACHINE, windowsKey, L"DisplayVersion")
@@ -83,6 +84,10 @@ std::wstring diagnostics() {
        << L"双击导航：" << (configuredAction() == Action::Parent ? L"上一级" :
                               configuredAction() == Action::Back ? L"后退" : L"关闭") << L"\r\n"
        << L"自动加载入口：" << (keyExists(HKEY_LOCAL_MACHINE, navreg::machineKey) ? L"存在" : L"缺失/不可读") << L"\r\n";
+  text << L"快捷搜索范围：盒子=" << search.boxes << L"，软件列表=" << search.lists
+       << L"，桌面与资源管理器=" << search.explorer << L"，系统文件窗口=" << search.dialogs
+       << L"；文件夹=" << (search.openFolders ? L"打开" : L"定位") << L"；文件=" << (search.openFiles ? L"打开" : L"定位")
+       << L"；鼠标位置=" << search.atPointer << L"；原生图标=" << search.showIcons << L"；可见候选=" << search.visibleRows << L"\r\n";
   text << L"Win10 多标签：" << (tabsSupported() ? (tabsEnabled() ? L"开启" : L"关闭") : L"此系统不加载")
        << L"；始终在新标签打开：" << (preferNewTabEnabled() ? L"开启" : L"关闭")
        << L"；上次激活窗口/请求/显示：" << tabValue(L"TabsActivationWindows") << L"/" << tabValue(L"TabsActivationRequested") << L"/" << tabValue(L"TabsActivationVisible")
