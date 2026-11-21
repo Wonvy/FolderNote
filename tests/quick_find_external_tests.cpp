@@ -1,6 +1,7 @@
 // Real system picker and UIA integration, confined to generated test files.
 #include "../src/quick_find_external.cpp"
 #include "quick_find_test_settings.h"
+#include "shell_paths.h"
 #include <shlobj.h>
 #include <filesystem>
 #include <fstream>
@@ -48,7 +49,7 @@ void shellTests(const std::filesystem::path &directory) {
     SHFILEINFOW info{};
     require(SHGetFileInfoW(path.c_str(), 0, &info, sizeof(info), SHGFI_DISPLAYNAME) != 0, "read actual displayed name");
     const auto found = entries.find(info.szDisplayName);
-    require(found != entries.end() && found->second.verified && found->second.path == path.native(),
+    require(found != entries.end() && found->second.verified && sameShellTestPath(found->second.path, path.native()),
         "display name resolves to its absolute parsing path");
     require(found->second.folder == (path == folder), "folders open while ordinary files and shortcuts follow the file setting");
     require(quick::icons::read(quick::icons::Source::file(found->second.path), 16) != nullptr,
@@ -204,7 +205,7 @@ int main(int count, char **arguments) {
         cancel(); type("SC"); candidates(L"SC"); press(VK_RETURN);
         for (int i = 0; i < 60 && selectedName(list.Get()) != L"素材"; ++i) Sleep(25);
         require(selectedName(list.Get()) == L"素材", "locate-only folder selects the actual item");
-        require(quick::dialog::currentPath(window) == directory.wstring(), "locate-only folder keeps current directory");
+        require(sameShellTestPath(quick::dialog::currentPath(window), directory.wstring()), "locate-only folder keeps current directory");
         preferences.openFolders = true;
         require(quick_find::saveSettings(preferences) == ERROR_SUCCESS, "switch folders back to open");
         cancel(); type("S");
@@ -223,16 +224,16 @@ int main(int count, char **arguments) {
         const auto destination = (directory / L"素材").wstring();
         std::wstring actualPath;
         const auto deadline = GetTickCount64() + 3000;
-        do { actualPath = quick::dialog::currentPath(window); if (actualPath == destination) break; Sleep(25); }
+        do { actualPath = quick::dialog::currentPath(window); if (sameShellTestPath(actualPath, destination)) break; Sleep(25); }
         while (GetTickCount64() < deadline);
-        if (actualPath != destination) {
+        if (!sameShellTestPath(actualPath, destination)) {
           for (size_t i = 0; i < contents.labels.size(); ++i) if (contents.labels[i] == L"素材") {
             BSTR type = nullptr; contents.items[i].element->get_CurrentItemType(&type);
             std::wcerr << L"folder type=" << (type ? type : L"<null>") << L" path=" << actualPath << std::endl;
             SysFreeString(type);
           }
         }
-        require(actualPath == destination, "folder candidate navigates inside the existing picker");
+        require(sameShellTestPath(actualPath, destination), "folder candidate navigates inside the existing picker");
         list = byType(ui.Get(), root.Get(), UIA_ListControlTypeId);
         require(list != nullptr, "destination file list remains available");
         require(SUCCEEDED(list->SetFocus()), "focus destination file list after navigation");
