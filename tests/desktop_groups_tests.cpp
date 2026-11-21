@@ -52,6 +52,64 @@ void exerciseShadow() {
   }
 }
 
+void exerciseThumbnailMask() {
+  using Bitmap = std::unique_ptr<std::remove_pointer_t<HBITMAP>, decltype(&DeleteObject)>;
+  using Icon = std::unique_ptr<std::remove_pointer_t<HICON>, decltype(&DestroyIcon)>;
+  using Images = std::unique_ptr<std::remove_pointer_t<HIMAGELIST>, decltype(&ImageList_Destroy)>;
+  INITCOMMONCONTROLSEX controls{sizeof(controls), ICC_LISTVIEW_CLASSES};
+  check(InitCommonControlsEx(&controls), "initialize real image lists");
+  for (const int size : {24, 32, 48, 64, 96, 144, 192}) {
+    BITMAPINFO format{};
+    format.bmiHeader = {sizeof(BITMAPINFOHEADER), size, -size, 1, 32, BI_RGB};
+    void *rawPixels = nullptr;
+    const Bitmap bitmap(CreateDIBSection(nullptr, &format, DIB_RGB_COLORS, &rawPixels, nullptr, 0), DeleteObject);
+    check(bitmap && rawPixels, "create thumbnail pixels");
+    auto pixels = static_cast<DWORD *>(rawPixels);
+    const int glyphSize = std::max(1, size / 5);
+    const int stride = ((size + 15) / 16) * 2;
+    std::vector<BYTE> maskBits(static_cast<size_t>(stride) * size, 0xff);
+    std::fill_n(pixels, size * size, 0);
+    for (int y = 0; y < glyphSize; ++y) for (int x = 0; x < glyphSize; ++x) {
+      pixels[y * size + x] = 0xff7090b0;
+      maskBits[y * stride + x / 8] &= static_cast<BYTE>(~(0x80 >> (x % 8)));
+    }
+    const Bitmap mask(CreateBitmap(size, size, 1, 1, maskBits.data()), DeleteObject);
+    ICONINFO info{TRUE, 0, 0, mask.get(), bitmap.get()};
+    const Icon placeholder(CreateIconIndirect(&info), DestroyIcon);
+    const Images images(ImageList_Create(size, size, ILC_COLOR32 | ILC_MASK, 0, 2), ImageList_Destroy);
+    check(mask && placeholder && images && ImageList_AddIcon(images.get(), placeholder.get()) == 0,
+          "seed a small placeholder on a large icon canvas");
+    const auto readPixels = [&](int index) {
+      const Icon icon(ImageList_GetIcon(images.get(), index, ILD_TRANSPARENT), DestroyIcon);
+      ICONINFO extracted{};
+      check(icon && GetIconInfo(icon.get(), &extracted), "extract the displayed thumbnail");
+      const Bitmap color(extracted.hbmColor, DeleteObject), iconMask(extracted.hbmMask, DeleteObject);
+      std::vector<DWORD> result(static_cast<size_t>(size) * size);
+      const auto dc = CreateCompatibleDC(nullptr);
+      const auto rows = GetDIBits(dc, color.get(), 0, size, result.data(), &format, DIB_RGB_COLORS);
+      DeleteDC(dc);
+      check(rows == size, "read displayed thumbnail alpha");
+      return result;
+    };
+    std::fill_n(pixels, size * size, 0xff30a0d0);
+    check(desktop_groups::setDesktopThumbnail(images.get(), 0, bitmap.get()) == 0,
+          "replace placeholder with an opaque photograph");
+    const auto photo = readPixels(0);
+    check(std::all_of(photo.begin(), photo.end(), [](DWORD pixel) { return pixel >> 24 == 255; }),
+          "a full thumbnail must not retain the tiny placeholder mask after zoom");
+    check(desktop_groups::setDesktopThumbnail(images.get(), -1, bitmap.get()) == 1 && readPixels(1) == photo,
+          "cached and newly loaded thumbnails have identical pixels");
+    std::fill_n(pixels, size * size, 0);
+    for (int y = 0; y < size; ++y) for (int x = size / 4; x < size * 3 / 4; ++x)
+      pixels[y * size + x] = 0xff30a0d0;
+    check(desktop_groups::setDesktopThumbnail(images.get(), 0, bitmap.get()) == 0,
+          "replace with an alpha thumbnail");
+    const auto transparent = readPixels(0);
+    check(transparent.front() == 0 && transparent[size / 2] == 0xff30a0d0 && transparent.back() == 0,
+          "resetting the old mask preserves the new thumbnail's transparency");
+  }
+}
+
 struct TemporaryFiles {
   fn::fs::path root = fn::fs::temp_directory_path() /
       (L"FolderNoteDesktopGroups-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
@@ -62,6 +120,80 @@ struct TemporaryFiles {
     fn::fs::remove_all(root, error);
   }
 };
+
+void exerciseThumbnailFit(const fn::fs::path &root) {
+  struct ComSession {
+    HRESULT status = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    ~ComSession() { if (SUCCEEDED(status)) CoUninitialize(); }
+  } com;
+  check(SUCCEEDED(com.status), "initialize Shell thumbnail extraction");
+  using Bitmap = std::unique_ptr<std::remove_pointer_t<HBITMAP>, decltype(&DeleteObject)>;
+  const DWORD corners[]{0xffd03020, 0xff20c040, 0xff3050d0, 0xffd0b020};
+  for (const SIZE shape : {SIZE{160, 80}, SIZE{80, 160}, SIZE{480, 24}, SIZE{24, 480}, SIZE{80, 80}, SIZE{9, 5}}) {
+    std::vector<DWORD> source(static_cast<size_t>(shape.cx) * shape.cy, 0xff808080);
+    for (int y = 0; y < shape.cy; ++y) for (int x = 0; x < shape.cx; ++x) {
+      if ((x < shape.cx / 3 || x >= shape.cx * 2 / 3) && (y < shape.cy / 3 || y >= shape.cy * 2 / 3))
+        source[y * shape.cx + x] = corners[(y >= shape.cy / 2 ? 2 : 0) + (x >= shape.cx / 2 ? 1 : 0)];
+    }
+    BITMAPINFOHEADER sourceFormat{sizeof(BITMAPINFOHEADER), shape.cx, -shape.cy, 1, 32, BI_RGB};
+    BITMAPFILEHEADER fileHeader{};
+    fileHeader.bfType = 0x4d42;
+    fileHeader.bfOffBits = sizeof(fileHeader) + sizeof(sourceFormat);
+    fileHeader.bfSize = fileHeader.bfOffBits + static_cast<DWORD>(source.size() * sizeof(DWORD));
+    const auto path = root / (L"thumbnail-" + std::to_wstring(shape.cx) + L"x" + std::to_wstring(shape.cy) + L".bmp");
+    std::ofstream file(path, std::ios::binary);
+    file.write(reinterpret_cast<const char *>(&fileHeader), sizeof(fileHeader));
+    file.write(reinterpret_cast<const char *>(&sourceFormat), sizeof(sourceFormat));
+    file.write(reinterpret_cast<const char *>(source.data()), source.size() * sizeof(DWORD));
+    file.close();
+    check(static_cast<bool>(file), "write a photograph with distinct corner markers");
+    for (const int size : {24, 32, 48, 64, 96, 144, 192}) {
+      const Bitmap image(desktop_groups::loadDesktopThumbnail(path.native(), size), DeleteObject);
+      BITMAP dimensions{};
+      check(image && GetObjectW(image.get(), sizeof(dimensions), &dimensions) &&
+            dimensions.bmWidth == size && dimensions.bmHeight == size,
+            "aspect-fitted thumbnails retain the square image-list canvas at every zoom");
+      BITMAPINFO format{};
+      format.bmiHeader = {sizeof(BITMAPINFOHEADER), size, -size, 1, 32, BI_RGB};
+      std::vector<DWORD> pixels(static_cast<size_t>(size) * size);
+      const auto dc = CreateCompatibleDC(nullptr);
+      const auto rows = GetDIBits(dc, image.get(), 0, size, pixels.data(), &format, DIB_RGB_COLORS);
+      DeleteDC(dc);
+      check(rows == size, "read the complete fitted thumbnail");
+      RECT content{size, size, 0, 0};
+      for (int y = 0; y < size; ++y) for (int x = 0; x < size; ++x) {
+        if (pixels[y * size + x] >> 24) {
+          content.left = std::min(content.left, static_cast<LONG>(x));
+          content.top = std::min(content.top, static_cast<LONG>(y));
+          content.right = std::max(content.right, static_cast<LONG>(x + 1));
+          content.bottom = std::max(content.bottom, static_cast<LONG>(y + 1));
+        } else check(pixels[y * size + x] == 0, "padding stays fully transparent");
+      }
+      const auto width = content.right - content.left, height = content.bottom - content.top;
+      const auto longest = std::max(shape.cx, shape.cy);
+      check(std::max(width, height) == size &&
+            std::abs(width - MulDiv(shape.cx, size, longest)) <= 1 &&
+            std::abs(height - MulDiv(shape.cy, size, longest)) <= 1,
+            "landscape, portrait and panoramic pictures keep their original aspect ratio");
+      check(std::abs(content.left - (size - content.right)) <= 1 &&
+            std::abs(content.top - (size - content.bottom)) <= 1,
+            "uncropped pictures stay centered in the icon area");
+      // Very thin or tiny sources necessarily blend the short-axis markers.
+      if (std::min(width, height) < 6 || std::min(shape.cx, shape.cy) < 6) continue;
+      for (int corner = 0; corner < 4; ++corner) {
+        const auto x = content.left + (corner % 2 ? width - 1 - width / 8 : width / 8);
+        const auto y = content.top + (corner / 2 ? height - 1 - height / 8 : height / 8);
+        const auto actual = pixels[y * size + x], expected = corners[corner];
+        for (const int shift : {0, 8, 16}) {
+          if (std::abs(static_cast<int>((actual >> shift) & 255) - static_cast<int>((expected >> shift) & 255)) >= 40)
+            throw std::runtime_error("thumbnail corner lost: " + std::to_string(shape.cx) + "x" +
+                std::to_string(shape.cy) + " at " + std::to_string(size) + ", corner " + std::to_string(corner) +
+                ", actual " + std::to_string(actual) + ", expected " + std::to_string(expected));
+        }
+      }
+    }
+  }
+}
 
 class ShellIdListDrop final : public Microsoft::WRL::RuntimeClass<
     Microsoft::WRL::RuntimeClassFlags<Microsoft::WRL::ClassicCom>, IDataObject> {
@@ -648,6 +780,8 @@ int main() {
     exercise(files.root);
     exerciseBoxStorage(files.root / L"storage-test");
     exerciseShadow();
+    exerciseThumbnailMask();
+    exerciseThumbnailFit(files.root);
   } catch (const fn::Error &error) {
     std::wcerr << error.message << L'\n';
     return 1;

@@ -225,11 +225,15 @@ void touchHistory(const std::wstring &path) {
   storeVisit(path, false);
 }
 void visitAsync(const std::wstring &path) noexcept {
+  visitAsync(path, generation());
+}
+DWORD historyGeneration() { return generation(); }
+void visitAsync(const std::wstring &path, DWORD expectedGeneration) noexcept {
   if (path.empty() || pending.fetch_add(1) >= 16) { if (!path.empty()) --pending; return; }
   HMODULE module = nullptr;
   try {
     if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, reinterpret_cast<LPCWSTR>(&record), &module)) { --pending; return; }
-    auto item = std::make_unique<Visit>(Visit{path, module, generation()});
+    auto item = std::make_unique<Visit>(Visit{path, module, expectedGeneration});
     if (TrySubmitThreadpoolCallback(record, item.get(), nullptr)) { item.release(); return; }
   } catch (...) { }
   if (module) FreeLibrary(module);

@@ -1,9 +1,11 @@
 #include "quick_folders.h"
 #include "language.h"
 #include "quick_legacy.h"
+#include "quick_dialog_history.h"
 #include "tabs_routing.h"
 #include "navigation.h"
 #include "core.h"
+#include "desktop_groups_process.h"
 #include <atomic>
 #include <memory>
 #include <new>
@@ -12,9 +14,11 @@
 namespace quick {
 namespace {
 constexpr wchar_t helperClass[] = L"FolderNote.QuickFolders.Helper.v1";
+constexpr wchar_t readyProperty[] = L"FolderNote.QuickFolders.Ready.v2";
 constexpr wchar_t runKey[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 constexpr wchar_t runName[] = L"FolderNote.QuickFolders";
 constexpr UINT showMessage = WM_APP + 0x511, foregroundMessage = WM_APP + 0x512;
+constexpr UINT_PTR historyTimer = 2;
 std::atomic<HWND> eligible{nullptr};
 HWND receiver = nullptr;
 struct MenuRequest { HWND target; DWORD process; POINT point; };
@@ -26,6 +30,18 @@ struct MiddleGesture {
 } middle;
 bool helperEnabled() {
   return navigation::quickEnabled() || tabs::routing::enabled();
+}
+bool launchHelper(const std::wstring &exe, const desktop_groups::DesktopLaunchContext &context) {
+  using desktop_groups::DesktopLaunchMode;
+  if (context.mode == DesktopLaunchMode::Unavailable) return false;
+  if (context.mode == DesktopLaunchMode::Explorer)
+    return desktop_groups::executeFromDesktop(exe, L"--quick-helper --from-desktop-shell", context);
+  auto command = L"\"" + exe + L"\" --quick-helper";
+  STARTUPINFOW startup{sizeof(startup)}; PROCESS_INFORMATION process{};
+  if (!CreateProcessW(exe.c_str(), command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
+                      nullptr, nullptr, &startup, &process)) return false;
+  CloseHandle(process.hThread); CloseHandle(process.hProcess);
+  return true;
 }
 bool classIs(HWND window, const wchar_t *name) {
   wchar_t cls[128]{}; GetClassNameW(window, cls, ARRAYSIZE(cls));
@@ -63,6 +79,7 @@ bool eligibleTarget(HWND window, DWORD expectedProcess = 0) {
 void updateTarget() {
   HWND window = GetForegroundWindow();
   eligible.store(eligibleTarget(window) ? window : nullptr);
+  dialog::observeHistory(eligible.load() == window && isFileDialog(window) ? window : nullptr);
 }
 void CALLBACK foregroundEvent(HWINEVENTHOOK, DWORD event, HWND window, LONG, LONG, DWORD, DWORD) {
   if (event == EVENT_OBJECT_SHOW && (!window || GetAncestor(window, GA_ROOT) != GetForegroundWindow() ||
@@ -140,7 +157,8 @@ LRESULT CALLBACK helperProc(HWND window, UINT message, WPARAM w, LPARAM l) {
   if (tabs::routing::message(window, message, w, l, routingResult)) return routingResult;
   if (message == WM_CLOSE) { DestroyWindow(window); return 0; }
   if (message == WM_DESTROY) {
-    tabs::routing::stop(); KillTimer(window, 1); legacy::shutdown();
+    RemovePropW(window, readyProperty);
+    tabs::routing::stop(); KillTimer(window, 1); KillTimer(window, historyTimer); legacy::shutdown(); dialog::stopHistory();
     MSG pending{};
     while (PeekMessageW(&pending, window, showMessage, showMessage, PM_REMOVE))
       delete reinterpret_cast<MenuRequest *>(pending.lParam);
@@ -153,6 +171,7 @@ LRESULT CALLBACK helperProc(HWND window, UINT message, WPARAM w, LPARAM l) {
       return accepted ? TRUE : FALSE;
     }
     if (message == WM_TIMER && w == 1) { if (!legacy::reap()) KillTimer(window, 1); return 0; }
+    if (message == WM_TIMER && w == historyTimer) { updateTarget(); return 0; }
     if (message == foregroundMessage) { updateTarget(); return 0; }
     if (message == showMessage) {
       std::unique_ptr<MenuRequest> request(reinterpret_cast<MenuRequest *>(l));
@@ -232,7 +251,7 @@ void configureStartup(const std::wstring &exe, bool enabled) {
       reinterpret_cast<const BYTE *>(command.c_str()), static_cast<DWORD>((command.size() + 1) * sizeof(wchar_t))); RegCloseKey(key); }
   if (error) fn::fail(lang::text(L"选项已保存，但无法启用快速定位启动项"), error);
 }
-void stopHelper(bool removeStartup) {
+bool stopHelper(bool removeStartup) {
   // Close transient menus as well, including a hidden 1.6.1 popup waiting in
   // GetMessage. Posting WM_CLOSE wakes old versions without killing Explorer
   // or a settings/note editor that might contain unsaved input.
@@ -252,22 +271,40 @@ void stopHelper(bool removeStartup) {
   if (window) {
     DWORD pid = 0; GetWindowThreadProcessId(window, &pid);
     HANDLE process = OpenProcess(SYNCHRONIZE, FALSE, pid);
-    PostMessageW(window, WM_CLOSE, 0, 0);
-    if (process) { WaitForSingleObject(process, 2000); CloseHandle(process); }
+    const bool posted = PostMessageW(window, WM_CLOSE, 0, 0) != FALSE;
+    if (process) { if (posted) WaitForSingleObject(process, 2000); CloseHandle(process); }
+    return posted;
   }
+  return true;
 }
 void syncHelper(const std::wstring &exe) {
-  stopHelper();
-  if (!helperEnabled()) return;
-  auto command = L"\"" + exe + L"\" --quick-helper";
+  if (!stopHelper(false))
+    throw fn::Error{lang::text(L"设置已保存，但旧的文件夹后台组件未能退出。请以管理员身份打开 FolderNote 设置并再次保存，或注销后重新登录。")};
+  if (!helperEnabled()) { configureStartup({}, false); return; }
+  const auto context = desktop_groups::desktopLaunchContext();
   configureStartup(exe, true);
-  STARTUPINFOW startup{sizeof(startup)}; PROCESS_INFORMATION process{};
-  if (!CreateProcessW(exe.c_str(), command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process))
+  if (!launchHelper(exe, context))
     fn::fail(lang::text(L"选项已保存，但无法启动文件夹后台组件"));
-  CloseHandle(process.hThread); CloseHandle(process.hProcess);
+  for (int attempt = 0; attempt < 100; ++attempt) {
+    const auto window = FindWindowExW(HWND_MESSAGE, nullptr, helperClass, nullptr);
+    if (window && GetPropW(window, readyProperty) &&
+        desktop_groups::desktopReceiverStatus(window, context) == desktop_groups::DesktopReceiverStatus::Compatible) return;
+    Sleep(50);
+  }
+  fn::fail(lang::text(L"选项已保存，但无法启动文件夹后台组件"), ERROR_TIMEOUT);
 }
-int helper(HINSTANCE instance) {
+int helper(HINSTANCE instance, bool delegated) {
   if (!helperEnabled()) return 0;
+  // Explorer and its router must have matching integrity levels. Inheriting
+  // an administrator settings/installer token silently rejects every frame.
+  const auto context = desktop_groups::desktopLaunchContext();
+  if (context.mode != desktop_groups::DesktopLaunchMode::Direct) {
+    if (delegated || context.mode != desktop_groups::DesktopLaunchMode::Explorer) return 1;
+    const auto running = FindWindowExW(HWND_MESSAGE, nullptr, helperClass, nullptr);
+    if (running && desktop_groups::desktopReceiverStatus(running, context) == desktop_groups::DesktopReceiverStatus::Elevated &&
+        !stopHelper(false)) return 1;
+    return launchHelper(fn::modulePath().native(), context) ? 0 : 1;
+  }
   HANDLE mutex = CreateMutexW(nullptr, FALSE, L"Local\\FolderNote.QuickFolders.Helper.v1");
   if (!mutex) return 1;
   // A settings/upgrade restart may outlive stopHelper's short UI wait. Wait in
@@ -283,12 +320,14 @@ int helper(HINSTANCE instance) {
   const bool router = routeMode && tabs::routing::start(receiver);
   auto event = quickMode ? SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, nullptr, foregroundEvent, 0, 0, WINEVENT_OUTOFCONTEXT) : nullptr;
   auto shown = quickMode ? SetWinEventHook(EVENT_OBJECT_SHOW, EVENT_OBJECT_SHOW, nullptr, foregroundEvent, 0, 0, WINEVENT_OUTOFCONTEXT) : nullptr;
-  if (quickMode) updateTarget();
+  if (quickMode) { updateTarget(); SetTimer(receiver, historyTimer, 250, nullptr); }
   HookStart hook{quickMode ? CreateEventW(nullptr, TRUE, FALSE, nullptr) : nullptr};
   DWORD threadId = 0;
   HANDLE thread = hook.ready ? CreateThread(nullptr, 0, hookThread, &hook, 0, &threadId) : nullptr;
   if (thread) WaitForSingleObject(hook.ready, INFINITE);
-  if ((thread && hook.hook) || router) {
+  const bool ready = (!quickMode || (thread && hook.hook)) && (!routeMode || router) &&
+                     SetPropW(receiver, readyProperty, reinterpret_cast<HANDLE>(1));
+  if (ready) {
     MSG message;
     while (GetMessageW(&message, nullptr, 0, 0) > 0) { TranslateMessage(&message); DispatchMessageW(&message); }
   }
@@ -301,6 +340,6 @@ int helper(HINSTANCE instance) {
   if (IsWindow(receiver)) DestroyWindow(receiver);
   receiver = nullptr;
   ReleaseMutex(mutex); CloseHandle(mutex);
-  return (quickMode && !hook.hook) || (routeMode && !router) ? 1 : 0;
+  return ready ? 0 : 1;
 }
 }

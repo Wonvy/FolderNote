@@ -1,0 +1,46 @@
+#include "../src/update.h"
+#include "../src/core.h"
+#include <iostream>
+#include <stdexcept>
+
+static void check(bool value) { if (!value) throw std::runtime_error("release selection assertion"); }
+static std::string asset(const std::string &name, std::string digest = "sha256:" + std::string(64, 'a'),
+                         std::string repository = "Wonvy/FolderNote") {
+  return "{\"name\":\"" + name + "\",\"digest\":\"" + digest +
+      "\",\"browser_download_url\":\"https://github.com/" + repository + "/releases/download/v1.9.7/" + name + "\"}";
+}
+static auto parse(const std::string &assets, bool modern = false, const wchar_t *current = L"1.9.6") {
+  return updater::parseRelease("{\"tag_name\":\"v1.9.7\",\"assets\":[" + assets + "]}", L"Wonvy/FolderNote", current, modern);
+}
+template <typename Action> static void rejects(Action action) {
+  bool failed = false;
+  try { action(); } catch (const fn::Error &) { failed = true; }
+  check(failed);
+}
+int main() {
+  try {
+    const auto zip = asset("FolderNote-win-x64.zip");
+    const auto setup = asset("FolderNote-Setup-x64.exe");
+    auto result = parse(zip + "," + setup);
+    check(result && result->standaloneInstaller && !result->win11Package && result->version == L"1.9.7");
+    check(parse(setup + "," + zip)->standaloneInstaller);
+    check(!parse(zip)->standaloneInstaller);
+    const auto modernZip = asset("FolderNote-win11-test.zip");
+    const auto modernSetup = asset("FolderNote-Setup-Win11-x64.exe");
+    result = parse(setup + "," + modernZip + "," + modernSetup, true);
+    check(result && result->standaloneInstaller && result->win11Package);
+    check(!parse(modernZip, true)->standaloneInstaller);
+    check(!parse(setup, false, L"1.9.7"));
+    check(!parse(setup, false, L"2.0.0"));
+    rejects([&] { parse(modernSetup); });
+    rejects([&] { parse(setup, true); });
+    rejects([&] { parse(asset("FolderNote-Setup-x64.exe", "sha256:bad") + "," + zip); });
+    rejects([&] { parse(asset("FolderNote-Setup-x64.exe", "sha256:" + std::string(64, 'g'))); });
+    rejects([&] { parse(asset("FolderNote-Setup-x64.exe", "sha256:" + std::string(64, 'a'), "Other/Repository")); });
+    rejects([] { updater::parseRelease("invalid", L"Wonvy/FolderNote", L"1.9.6"); });
+    std::cout << "Release selection, backward compatibility, and integrity checks passed.\n";
+    return 0;
+  } catch (const std::exception &error) { std::cerr << error.what() << '\n'; }
+    catch (const fn::Error &) { std::cerr << "Unexpected release error\n"; }
+  return 1;
+}

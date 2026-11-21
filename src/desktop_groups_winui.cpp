@@ -280,6 +280,7 @@ struct Surface::State {
   static constexpr double buttonWidth = 30;
   HWND parent = nullptr;
   HWND islandWindow = nullptr;
+  bool dropRegistered = false;
   Events events;
   ux::Hosting::DesktopWindowXamlSource island{nullptr};
   controls::Grid root{nullptr};
@@ -361,6 +362,7 @@ struct Surface::State {
   std::vector<Row> items;
   int size = 0;
   bool details = false, synchronizing = false;
+  bool previewSpaceDown = false;
 
   ~State() {
     try { if (frameToken) ux::Media::CompositionTarget::Rendering(frameToken); } catch (...) {}
@@ -368,6 +370,7 @@ struct Surface::State {
     try { if (reflowTimer) reflowTimer.Stop(); } catch (...) {}
     try { if (zoomAnimation) zoomAnimation.Stop(); } catch (...) {}
     if (islandWindow) RemoveWindowSubclass(islandWindow, islandInput, 1);
+    if (dropRegistered) RevokeDragDrop(islandWindow);
     try { if (acrylicAttached) island.SystemBackdrop(nullptr); } catch (...) {}
     try { if (island) island.Close(); } catch (...) {}
   }
@@ -1304,7 +1307,16 @@ struct Surface::State {
     body.Children().Append(overlay);
 
     body.AddHandler(ux::UIElement::PointerPressedEvent(), ::winrt::box_value(ux::Input::PointerEventHandler(
-        [this](auto const &, auto const &args) { beginSelection(args); })), true);
+        [this](auto const &, auto const &args) {
+          if (args.GetCurrentPoint(body).Properties().IsLeftButtonPressed()) {
+            // Desktop boxes deliberately do not activate on their frame. A
+            // file click must nevertheless give the island keyboard focus;
+            // otherwise Space still reaches Explorer and its old selection.
+            SetForegroundWindow(GetAncestor(parent, GA_ROOT));
+            SetFocus(islandWindow);
+          }
+          beginSelection(args);
+        })), true);
     body.AddHandler(ux::UIElement::PointerMovedEvent(), ::winrt::box_value(ux::Input::PointerEventHandler(
         [this](auto const &, const ux::Input::PointerRoutedEventArgs &args) {
           if (!selectionPointer || args.Pointer().PointerId() != selectionPointer.PointerId()) return;
@@ -1425,6 +1437,24 @@ struct Surface::State {
       }
       args.Handled(true);
     });
+    itemsView.PreviewKeyDown([this](auto const &, ux::Input::KeyRoutedEventArgs const &args) {
+      if (args.Key() != ::winrt::Windows::System::VirtualKey::Space || !events.preview || view.SelectedIndex() < 0 ||
+          ((GetKeyState(VK_CONTROL) | GetKeyState(VK_SHIFT) | GetKeyState(VK_MENU) |
+            GetKeyState(VK_LWIN) | GetKeyState(VK_RWIN)) & 0x8000)) return;
+      if (!args.KeyStatus().WasKeyDown)
+        previewSpaceDown = events.previewAvailable && events.previewAvailable();
+      if (previewSpaceDown) args.Handled(true);
+    });
+    itemsView.PreviewKeyUp([this](auto const &, ux::Input::KeyRoutedEventArgs const &args) {
+      if (args.Key() != ::winrt::Windows::System::VirtualKey::Space || !std::exchange(previewSpaceDown, false)) return;
+      args.Handled(true);
+      // Finish the gesture before activating Seer. Otherwise its global hook
+      // can receive the same Space release and immediately close the preview.
+      if (events.preview && view.SelectedIndex() >= 0 &&
+          !((GetKeyState(VK_CONTROL) | GetKeyState(VK_SHIFT) | GetKeyState(VK_MENU) |
+             GetKeyState(VK_LWIN) | GetKeyState(VK_RWIN)) & 0x8000)) events.preview(view.SelectedIndex());
+    });
+    itemsView.LostFocus([this](auto const &, auto const &) { previewSpaceDown = false; });
     itemsView.KeyDown([this](auto const &, ux::Input::KeyRoutedEventArgs const &args) {
       if (args.Key() == ::winrt::Windows::System::VirtualKey::Enter && events.open && view.SelectedIndex() >= 0) {
         events.open(view.SelectedIndex());
@@ -1444,7 +1474,7 @@ struct Surface::State {
   }
 };
 
-Surface::Surface(HWND parent, Events events) : state(std::make_unique<State>()) {
+Surface::Surface(HWND parent, Events events, IDropTarget *dropTarget) : state(std::make_unique<State>()) {
   try {
     state->parent = parent;
     state->events = std::move(events);
@@ -1556,6 +1586,13 @@ Surface::Surface(HWND parent, Events events) : state(std::make_unique<State>()) 
     CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(state->factory.put()));
     state->makeView(false, 32);
     state->configureSelection();
+    if (dropTarget) {
+      // OLE hit-tests the island's child HWND over the content area. Register
+      // the same native target here as on the host so files and Shell items
+      // follow the same path over the header, items and empty background.
+      ::winrt::check_hresult(RegisterDragDrop(state->islandWindow, dropTarget));
+      state->dropRegistered = true;
+    }
   } catch (const ::winrt::hresult_error &error) {
     logFailure(L"create surface", error);
     state.reset();
@@ -1564,6 +1601,10 @@ Surface::Surface(HWND parent, Events events) : state(std::make_unique<State>()) 
 
 Surface::~Surface() = default;
 bool Surface::available() const { return state && state->islandWindow && state->view; }
+
+void Surface::focus() {
+  if (available()) SetFocus(state->islandWindow);
+}
 
 void Surface::place(RECT bounds) {
   if (!available()) return;

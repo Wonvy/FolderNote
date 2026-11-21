@@ -36,6 +36,11 @@ foreach ($zip in $universalZip,$win11Zip) {
     }
 }
 
-Get-FileHash -Algorithm SHA256 -LiteralPath $universalZip,$win11Zip |
+$universalSetup = Join-Path $dist "$base-Setup-x64.exe"
+$win11Setup = Join-Path $dist "$base-Setup-Win11-x64.exe"
+& "$PSScriptRoot/build-setup.ps1" -Source $out -Destination $universalSetup
+& "$PSScriptRoot/build-setup.ps1" -Source "$dist/FolderNote-Win11-$version" -Destination $win11Setup -Win11
+
+Get-FileHash -Algorithm SHA256 -LiteralPath $universalSetup,$win11Setup,$universalZip,$win11Zip |
     ForEach-Object { "$($_.Hash)  $([IO.Path]::GetFileName($_.Path))" } |
     Set-Content -LiteralPath $checksums -Encoding ascii

@@ -145,7 +145,9 @@ cmake --build build-x86 --config Release --target LegacyDialogFixture
 .\packaging\build-release.ps1
 ```
 
-脚本在 `dist` 生成通用版、Windows 11 首层菜单测试版和 SHA-256 校验清单。通用版完整解压后运行 `Install.exe`，首层菜单测试版运行 `Install-Win11.exe`。
+脚本在 `dist` 生成通用版 `FolderNote-<版本>-Setup-x64.exe`、Windows 11 首层菜单测试版 `FolderNote-<版本>-Setup-Win11-x64.exe`、兼容 ZIP 和 SHA-256 校验清单。EXE 可直接运行，无需解压。`-StableNames` 省略文件名中的版本号，用于 GitHub Releases 和在线更新。
+
+`build-setup.ps1` 使用 Windows 自带的 MakeCab 将固定组件打包，随后构建 `Setup-standard` / `Setup-win11`，内嵌 CAB、软件图标与版本资源。启动器通过 SetupAPI 解包到独立临时目录，调用现有安装器并等待完成后清理目录。打包阶段运行 `SetupPackageTests` 对实际发布 EXE 解包、逐文件比较字节及全部图标尺寸，不修改宿主安装。`UpdateTests` 离线验证 EXE 优先选择、旧 ZIP 回退以及下载地址和 SHA-256 元数据校验。
 
 ### 首次发布到 GitHub
 
@@ -163,7 +165,7 @@ git tag -a "v$version" -m "FolderNote $version"
 git push github "v$version"
 ```
 
-推送 `main` 会在 Actions 生成构建产物，推送与 CMake 版本一致的 `v<版本>` 标签后会自动发布 Releases。CI 将当前 GitHub 仓库写入发布版，设置窗口便能检查后续发布。本地若要启用同一更新源，构建前用 `cmake --preset windows-x64 -DFOLDERNOTE_UPDATE_REPOSITORY=OWNER/FolderNote` 配置。升级时从 Releases 下载与你当前安装类型相同的包。
+推送 `main` 会在 Actions 生成构建产物，推送与 CMake 版本一致的 `v<版本>` 标签后会自动发布 Releases。CI 从 CHANGELOG 提取当前版本说明，上传两个独立 EXE、两个兼容 ZIP 和 SHA-256 清单后，将草稿公开并标记为最新版本。旧客户端继续下载 ZIP，新客户端优先下载同类型 EXE。CI 将当前 GitHub 仓库写入发布版，设置窗口便能检查后续发布。本地若要启用同一更新源，构建前用 `cmake --preset windows-x64 -DFOLDERNOTE_UPDATE_REPOSITORY=OWNER/FolderNote` 配置。
 
 ### Windows 11 首层菜单测试包
 

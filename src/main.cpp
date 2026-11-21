@@ -350,8 +350,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
     }
     LocalFree(argv); CoUninitialize(); return result;
   }
-  if (argc == 2 && std::wstring(argv[1]) == L"--quick-helper") {
-    LocalFree(argv); auto result = quick::helper(inst); CoUninitialize(); return result;
+  if ((argc == 2 || desktopDelegated) && std::wstring(argv[1]) == L"--quick-helper") {
+    LocalFree(argv); auto result = quick::helper(inst, desktopDelegated); CoUninitialize(); return result;
   }
   if (argc == 2 && std::wstring(argv[1]) == L"--quick-manage") {
     LocalFree(argv); auto result = navigation::settings(inst, navigation::SettingsPage::QuickFolders); CoUninitialize(); return result;

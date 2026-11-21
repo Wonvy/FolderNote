@@ -1,6 +1,7 @@
 #pragma once
 #include "desktop_groups_model.h"
 #include <windows.h>
+#include <oleidl.h>
 #include <cstddef>
 #include <functional>
 #include <memory>
@@ -20,6 +21,8 @@ struct Item {
 struct Events {
   std::function<void(std::vector<int>)> selection;
   std::function<void(int)> open;
+  std::function<bool(int)> preview;
+  std::function<bool()> previewAvailable;
   std::function<void(POINT)> context;
   std::function<void(int)> zoom;
   std::function<void(int)> beginDrag;
@@ -54,12 +57,13 @@ private:
 
 class Surface {
 public:
-  Surface(HWND parent, Events events);
+  Surface(HWND parent, Events events, IDropTarget *dropTarget = nullptr);
   ~Surface();
   Surface(const Surface &) = delete;
   Surface &operator=(const Surface &) = delete;
   bool available() const;
   void place(RECT bounds);
+  void focus();
   void show(bool visible);
   void animateReflow(bool resizing);
   void animateZoom(bool zoomIn);

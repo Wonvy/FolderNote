@@ -1,5 +1,6 @@
 #include "../src/quick_folders.h"
 #include "../src/navigation.h"
+#include "../src/desktop_groups_process.h"
 #include <iostream>
 #include <thread>
 #include <stdexcept>
@@ -9,6 +10,10 @@ namespace {
 HWND simulatedForeground = nullptr, underPointer = nullptr;
 HWND simulatedShell = nullptr, foreignProcessWindow = nullptr;
 int modifier = 0, extraModifier = 0, checks = 0;
+desktop_groups::DesktopLaunchContext helperContext{desktop_groups::DesktopLaunchMode::Direct, 0, 8192};
+bool launchSucceeds = true;
+int directLaunches = 0, shellLaunches = 0;
+std::wstring launchedExe, launchedArguments;
 std::vector<std::pair<HWND, POINT>> launches;
 HWND fakeForeground() { return simulatedForeground; }
 HWND fakeWindowFromPoint(POINT) { return underPointer; }
@@ -21,6 +26,25 @@ DWORD fakeWindowProcess(HWND window, DWORD *pid) {
 SHORT fakeKeys(int key) { return key == modifier || key == extraModifier ? SHORT(-32768) : 0; }
 LRESULT fakeNextHook(HHOOK, int, WPARAM, LPARAM) { return 73; }
 void check(bool condition, const char *reason) { ++checks; if (!condition) throw std::runtime_error(reason); }
+BOOL fakeCreateProcess(LPCWSTR exe, LPWSTR arguments, LPSECURITY_ATTRIBUTES, LPSECURITY_ATTRIBUTES,
+                       BOOL, DWORD flags, LPVOID, LPCWSTR, LPSTARTUPINFOW, LPPROCESS_INFORMATION process) {
+  ++directLaunches; launchedExe = exe; launchedArguments = arguments;
+  check(flags == CREATE_NO_WINDOW, "ordinary helper startup stays in the background");
+  if (!launchSucceeds) return FALSE;
+  process->hProcess = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+  process->hThread = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+  return process->hProcess && process->hThread;
+}
+HWND fakeFindWindowEx(HWND parent, HWND after, LPCWSTR name, LPCWSTR title) {
+  if (parent == HWND_MESSAGE && name && !wcscmp(name, L"FolderNote.QuickFolders.Helper.v1")) return nullptr;
+  return FindWindowExW(parent, after, name, title);
+}
+}
+namespace desktop_groups {
+DesktopLaunchContext fakeLaunchContext() { return helperContext; }
+bool fakeExecuteFromDesktop(const std::wstring &exe, const wchar_t *arguments, const DesktopLaunchContext &) {
+  ++shellLaunches; launchedExe = exe; launchedArguments = arguments; return launchSucceeds;
+}
 }
 namespace quick {
 void captureMenu(HWND target, HWND, POINT point) { launches.push_back({target, point}); }
@@ -34,7 +58,15 @@ void captureMenu(HWND target, HWND, POINT point) { launches.push_back({target, p
 #define GetAsyncKeyState fakeKeys
 #define CallNextHookEx fakeNextHook
 #define launchMenu captureMenu
+#define desktopLaunchContext fakeLaunchContext
+#define executeFromDesktop fakeExecuteFromDesktop
+#define CreateProcessW fakeCreateProcess
+#define FindWindowExW fakeFindWindowEx
 #include "../src/quick_runtime.cpp"
+#undef FindWindowExW
+#undef CreateProcessW
+#undef executeFromDesktop
+#undef desktopLaunchContext
 #undef launchMenu
 #undef CallNextHookEx
 #undef GetAsyncKeyState
@@ -79,6 +111,34 @@ static void helperLifetimeTests() {
   routing(1, 0);
   check(!quick::helperEnabled(), "custom tabs without routing do not require helper");
   routing(0, 0); enable(true);
+}
+static void helperLaunchTests() {
+  using desktop_groups::DesktopLaunchMode;
+  const std::wstring exe = L"C:\\Program Files\\FolderNote\\FolderNote.exe";
+  directLaunches = shellLaunches = 0;
+  check(quick::launchHelper(exe, {DesktopLaunchMode::Direct, 1, 8192}) &&
+        directLaunches == 1 && shellLaunches == 0 && launchedExe == exe &&
+        launchedArguments == L"\"" + exe + L"\" --quick-helper", "ordinary settings launch one normal helper");
+  check(quick::launchHelper(exe, {DesktopLaunchMode::Explorer, 1, 8192}) &&
+        directLaunches == 1 && shellLaunches == 1 && launchedExe == exe &&
+        launchedArguments == L"--quick-helper --from-desktop-shell",
+        "administrator settings delegate helper launch to Explorer instead of inheriting elevation");
+  check(!quick::launchHelper(exe, {}) && directLaunches == 1 && shellLaunches == 1,
+        "unavailable desktop context never launches an elevated fallback");
+  launchSucceeds = false;
+  check(!quick::launchHelper(exe, {DesktopLaunchMode::Explorer, 1, 8192}) && directLaunches == 1,
+        "failed Explorer delegation cannot fall back to an elevated router");
+  launchSucceeds = true;
+  helperContext.mode = DesktopLaunchMode::Explorer;
+  const auto before = shellLaunches;
+  check(quick::helper(GetModuleHandleW(nullptr)) == 0 && shellLaunches == before + 1 && directLaunches == 1,
+        "directly starting the helper as administrator relaunches it through Explorer before taking the singleton");
+  check(quick::helper(GetModuleHandleW(nullptr), true) == 1 && shellLaunches == before + 1,
+        "a delegated process that is still elevated cannot recurse or own the router");
+  helperContext.mode = DesktopLaunchMode::Unavailable;
+  check(quick::helper(GetModuleHandleW(nullptr)) == 1 && shellLaunches == before + 1,
+        "unverifiable desktop identity cannot start the helper");
+  helperContext.mode = DesktopLaunchMode::Direct;
 }
 static LRESULT mouse(UINT message, POINT point = {20, 20}) {
   MSLLHOOKSTRUCT data{}; data.pt = point;
@@ -279,7 +339,7 @@ int main() {
   CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
   int result = 0;
   try {
-    Isolated settings; helperLifetimeTests();
+    Isolated settings; helperLifetimeTests(); helperLaunchTests();
     WNDCLASSW shell{}; shell.hInstance = GetModuleHandleW(nullptr); shell.lpfnWndProc = DefWindowProcW; shell.lpszClassName = L"SHELLDLL_DefView";
     check(RegisterClassW(&shell) != 0, "register disposable file-dialog view");
     auto dialog = [&] {

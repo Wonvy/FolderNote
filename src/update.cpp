@@ -20,7 +20,9 @@ using Microsoft::WRL::Wrappers::HStringReference;
 constexpr auto invalidRelease = L"GitHub 发布信息格式无效。";
 constexpr size_t metadataLimit = 2 * 1024 * 1024, packageLimit = 100 * 1024 * 1024;
 
-const wchar_t *packageName(bool win11Package) {
+const wchar_t *packageName(bool win11Package, bool standaloneInstaller) {
+  if (standaloneInstaller)
+    return win11Package ? L"FolderNote-Setup-Win11-x64.exe" : L"FolderNote-Setup-x64.exe";
   return win11Package ? L"FolderNote-win11-test.zip" : L"FolderNote-win-x64.zip";
 }
 
@@ -252,6 +254,12 @@ std::optional<Release> check(const std::wstring &repository, const std::wstring 
   std::string content;
   get(L"https://api.github.com/repos/" + repository + L"/releases/latest", metadataLimit, 20000,
       [&](const char *buffer, DWORD size) { content.append(buffer, size); });
+  return parseRelease(content, repository, currentVersion, win11Package);
+}
+
+std::optional<Release> parseRelease(const std::string &content, const std::wstring &repository,
+                                   const std::wstring &currentVersion, bool win11Package) {
+  if (!repositoryName(repository) || content.size() > metadataLimit) throw fn::Error{lang::text(invalidRelease)};
   Runtime runtime;
   ComPtr<IJsonObjectStatics> parser;
   if ((FAILED(runtime.status) && runtime.status != RPC_E_CHANGED_MODE) ||
@@ -272,18 +280,23 @@ std::optional<Release> check(const std::wstring &repository, const std::wstring 
   unsigned count = 0;
   if (FAILED(object->GetNamedArray(HStringReference(L"assets").Get(), &assets)) ||
       FAILED(assets.As(&entries)) || FAILED(entries->get_Size(&count))) throw fn::Error{lang::text(invalidRelease)};
-  for (unsigned i = 0; i < count; ++i) {
+  // Prefer the standalone installer regardless of GitHub's asset order. ZIPs
+  // remain supported for older releases and are still published for old clients.
+  for (bool standalone : {true, false}) {
+   const auto name = packageName(win11Package, standalone);
+   for (unsigned i = 0; i < count; ++i) {
     ComPtr<IJsonObject> asset;
     if (FAILED(assets->GetObjectAt(i, &asset))) throw fn::Error{lang::text(invalidRelease)};
-    if (jsonString(asset.Get(), L"name") != packageName(win11Package)) continue;
+    if (jsonString(asset.Get(), L"name") != name) continue;
     auto url = jsonString(asset.Get(), L"browser_download_url");
-    const auto expected = L"https://github.com/" + repository + L"/releases/download/" + tag + L"/" + packageName(win11Package);
+    const auto expected = L"https://github.com/" + repository + L"/releases/download/" + tag + L"/" + name;
     if (CompareStringOrdinal(url.c_str(), static_cast<int>(url.size()), expected.c_str(),
                              static_cast<int>(expected.size()), TRUE) != CSTR_EQUAL) throw fn::Error{lang::text(invalidRelease)};
     auto digest = jsonString(asset.Get(), L"digest");
     if (!digest.starts_with(L"sha256:") || !validDigest(std::wstring_view(digest).substr(7)))
       throw fn::Error{lang::text(L"GitHub 发布缺少有效的 SHA-256 校验值。")};
-    return Release{version, std::move(url), digest.substr(7), win11Package};
+    return Release{version, std::move(url), digest.substr(7), win11Package, standalone};
+   }
   }
   throw fn::Error{lang::text(L"GitHub 发布缺少适用的安装包。")};
 }
@@ -291,12 +304,15 @@ std::optional<Release> check(const std::wstring &repository, const std::wstring 
 bool install(const Release &release, bool (*allowAutomaticInstall)()) {
   if (allowAutomaticInstall && release.win11Package) throw fn::Error{lang::text(L"无法启动更新安装。")};
   Staging staging;
-  const auto digest = downloadDigest(release.downloadUrl, staging.path / L"update.zip");
+  const auto package = staging.path / (release.standaloneInstaller ? L"Setup.exe" : L"update.zip");
+  const auto digest = downloadDigest(release.downloadUrl, package);
   if (_wcsicmp(digest.c_str(), release.sha256.c_str()) != 0)
     throw fn::Error{lang::text(L"安装包 SHA-256 校验失败，请重新下载。")};
-  extract(staging.path, release.win11Package);
+  if (!release.standaloneInstaller) extract(staging.path, release.win11Package);
+  const auto installer = release.standaloneInstaller ? package : staging.path /
+      (release.win11Package ? L"Install-Win11.exe" : L"Install.exe");
   if (release.win11Package) {
-    run(staging.path / L"Install-Win11.exe", staging.path, L"--parent " + std::to_wstring(GetCurrentProcessId()),
+    run(installer, staging.path, L"--parent " + std::to_wstring(GetCurrentProcessId()),
         lang::text(L"无法启动更新安装。"), false, false);
     // MSIX replacement waits for this process to close. Its detached installer
     // still needs the unpacked files, so leave staging in the temporary directory.
@@ -305,7 +321,7 @@ bool install(const Release &release, bool (*allowAutomaticInstall)()) {
     // Different settings builds can be open at the same time and share the same registration.
     const InstallLock lock;
     if (allowAutomaticInstall && !allowAutomaticInstall()) return false;
-    run(staging.path / L"Install.exe", staging.path, allowAutomaticInstall ? L"--automatic-update" : L"",
+    run(installer, staging.path, allowAutomaticInstall ? L"--automatic-update" : L"",
         lang::text(L"更新安装未完成。"));
   }
   return true;

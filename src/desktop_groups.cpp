@@ -6,6 +6,8 @@
 #include "desktop_groups_menu.h"
 #include "desktop_groups_item_menu.h"
 #include "desktop_groups_process.h"
+#include "desktop_groups_preview.h"
+#include "desktop_groups_zorder.h"
 #include "desktop_groups_render.h"
 #include "desktop_groups_storage.h"
 #ifdef FOLDERNOTE_WINUI
@@ -51,9 +53,19 @@ constexpr auto tabPreviewClass = L"FolderNote.DesktopGroups.TabPreview";
 constexpr auto mutexName = L"Local\\FolderNote.DesktopGroups";
 constexpr auto runKey = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 constexpr auto runName = L"FolderNote.DesktopGroups";
-constexpr UINT manageMessage = WM_APP + 1, trayMessage = WM_APP + 2, rejectedMessage = WM_APP + 3;
+constexpr UINT manageMessage = WM_APP + 1, rejectedMessage = WM_APP + 3;
 constexpr UINT dragMessage = WM_APP + 4, refreshMessage = WM_APP + 5;
 constexpr UINT createMessage = WM_APP + 6;
+constexpr UINT layerMessage = WM_APP + 7;
+void CALLBACK desktopLayerChanged(HWINEVENTHOOK, DWORD event, HWND target, LONG object, LONG child, DWORD, DWORD) {
+  if (event != EVENT_SYSTEM_FOREGROUND) {
+    if (object != OBJID_WINDOW || child != CHILDID_SELF) return;
+    wchar_t name[64]{};
+    GetClassNameW(target, name, ARRAYSIZE(name));
+    if (wcscmp(name, L"SeerWindowClass") && wcscmp(name, L"SeerViewerWindowClass")) return;
+  }
+  if (const auto receiver = FindWindowW(receiverClass, nullptr)) PostMessageW(receiver, layerMessage, 0, 0);
+}
 constexpr UINT dropBoxTabMessage = WM_APP + 41;
 constexpr UINT dragTimer = 2;
 constexpr UINT headerTimer = 3;
@@ -452,6 +464,7 @@ struct Panel {
   Desktop &desktop;
   size_t index;
   HWND window = nullptr, list = nullptr, toggle = nullptr;
+  Microsoft::WRL::ComPtr<IDropTarget> dropTarget;
   HWND tabs = nullptr;
   HWND shadow = nullptr;
   SIZE shadowSize{};
@@ -591,6 +604,8 @@ struct Panel {
     if (scaledIcons) ImageList_Destroy(scaledIcons);
   }
   int selection() const { return ListView_GetNextItem(list, -1, LVNI_SELECTED); }
+  bool previewSpaceDown = false;
+  bool preview(int row);
   void applyTheme(const ui::Palette &colors);
   void paintBackground(HDC dc, POINT offset = {});
   int headerHeight() const;
@@ -660,16 +675,18 @@ public:
   ULONGLONG lastDragScroll = 0;
   std::vector<std::wstring> dragItems;
   ULONGLONG lastFolderRefresh = 0;
+  HWINEVENTHOOK foregroundHook = nullptr, previewHook = nullptr;
 
   explicit Desktop(HINSTANCE module) : instance(module), groups(load()) {}
   ~Desktop() {
     quitting = true;
+    if (foregroundHook) UnhookWinEvent(foregroundHook);
+    if (previewHook) UnhookWinEvent(previewHook);
     if (dragPreview) DestroyWindow(dragPreview);
     if (dragIcon) DestroyIcon(dragIcon);
     panels.clear();
     if (window) DestroyWindow(window);
   }
-  void tray(DWORD action) const;
   bool openPanel(size_t index);
   void updateShadows();
   void highlight(HWND target);
@@ -750,6 +767,7 @@ void setDropEffect(IDataObject *data, const wchar_t *name, DWORD effect) {
 class DropTarget final : public IDropTarget {
   Panel &panel;
   ULONG references = 1;
+  Microsoft::WRL::ComPtr<IDropTargetHelper> dragImage;
   bool files = false;
   bool hasShellItems = false;
   DWORD effect(DWORD allowed) const {
@@ -760,7 +778,9 @@ class DropTarget final : public IDropTarget {
     return allowed & DROPEFFECT_COPY;
   }
 public:
-  explicit DropTarget(Panel &value) : panel(value) {}
+  explicit DropTarget(Panel &value) : panel(value) {
+    CoCreateInstance(CLSID_DragDropHelper, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dragImage));
+  }
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void **out) override {
     *out = nullptr;
     if (iid != IID_IUnknown && iid != IID_IDropTarget) return E_NOINTERFACE;
@@ -774,7 +794,7 @@ public:
     if (!remaining) delete this;
     return remaining;
   }
-  HRESULT STDMETHODCALLTYPE DragEnter(IDataObject *data, DWORD, POINTL, DWORD *effects) override {
+  HRESULT STDMETHODCALLTYPE DragEnter(IDataObject *data, DWORD, POINTL point, DWORD *effects) override {
     DragLeave();
     try {
       if (data && !panel.mapped()) {
@@ -791,27 +811,38 @@ public:
       DragLeave();
     }
     *effects = effect(*effects);
+    panel.desktop.highlight(*effects ? panel.window : nullptr);
+    POINT screen{point.x, point.y};
+    if (dragImage) dragImage->DragEnter(panel.window, data, &screen, *effects);
     return S_OK;
   }
-  HRESULT STDMETHODCALLTYPE DragOver(DWORD, POINTL, DWORD *effects) override {
+  HRESULT STDMETHODCALLTYPE DragOver(DWORD, POINTL point, DWORD *effects) override {
     *effects = effect(*effects);
+    panel.desktop.highlight(*effects ? panel.window : nullptr);
+    POINT screen{point.x, point.y};
+    if (dragImage) dragImage->DragOver(&screen, *effects);
     return S_OK;
   }
   HRESULT STDMETHODCALLTYPE DragLeave() override {
     files = hasShellItems = false;
+    panel.desktop.highlight(nullptr);
+    if (dragImage) dragImage->DragLeave();
     return S_OK;
   }
   HRESULT STDMETHODCALLTYPE Drop(IDataObject *data, DWORD, POINTL point, DWORD *effects) override {
     const auto offered = *effects;
     const auto allowed = effect(offered);
     *effects = DROPEFFECT_NONE;
-    DragLeave();
+    files = hasShellItems = false;
+    panel.desktop.highlight(nullptr);
+    DWORD visualEffect = DROPEFFECT_NONE;
     if (allowed) {
       try {
         auto paths = allowed == DROPEFFECT_MOVE ? desktopDropPaths(data) : desktopShellDropItems(data);
         if (allowed != DROPEFFECT_MOVE)
           std::erase_if(paths, [](const auto &path) { return !isDesktopShellItem(path); });
         if (panel.desktop.assign(panel, paths, {point.x, point.y}, true)) {
+          visualEffect = allowed;
           if (allowed == DROPEFFECT_MOVE) {
             // The target moved the files. The drag source must not delete anything.
             setDropEffect(data, CFSTR_PERFORMEDDROPEFFECT, DROPEFFECT_NONE);
@@ -825,6 +856,8 @@ public:
         PostMessageW(panel.window, rejectedMessage, 0, 0);
       }
     }
+    POINT screen{point.x, point.y};
+    if (dragImage) dragImage->Drop(data, &screen, visualEffect);
     return S_OK;
   }
 };
@@ -1435,6 +1468,23 @@ LRESULT CALLBACK tabInput(HWND control, UINT message, WPARAM w, LPARAM l, UINT_P
 
 LRESULT CALLBACK iconInput(HWND control, UINT message, WPARAM w, LPARAM l, UINT_PTR, DWORD_PTR data) {
   auto &panel = *reinterpret_cast<Panel *>(data);
+  if (message == WM_LBUTTONDOWN) {
+    SetForegroundWindow(panel.window);
+    SetFocus(control);
+  }
+  if (message == WM_KEYDOWN && w == VK_SPACE &&
+      !((GetKeyState(VK_CONTROL) | GetKeyState(VK_SHIFT) | GetKeyState(VK_MENU) |
+         GetKeyState(VK_LWIN) | GetKeyState(VK_RWIN)) & 0x8000)) {
+    if (l & (1LL << 30)) { if (panel.previewSpaceDown) return 0; }
+    else if ((panel.previewSpaceDown = panel.selection() >= 0 && desktopPreviewAvailable())) return 0;
+  }
+  if (message == WM_CHAR && w == L' ' && panel.previewSpaceDown) return 0;
+  if (message == WM_KEYUP && w == VK_SPACE && std::exchange(panel.previewSpaceDown, false)) {
+    if (!((GetKeyState(VK_CONTROL) | GetKeyState(VK_SHIFT) | GetKeyState(VK_MENU) |
+           GetKeyState(VK_LWIN) | GetKeyState(VK_RWIN)) & 0x8000)) panel.preview(panel.selection());
+    return 0;
+  }
+  if (message == WM_KILLFOCUS) panel.previewSpaceDown = false;
   if (message == WM_MOUSEMOVE || message == WM_MOUSELEAVE) {
     int row = -1;
     if (message == WM_MOUSEMOVE) {
@@ -1523,6 +1573,12 @@ LRESULT CALLBACK toggleInput(HWND control, UINT message, WPARAM w, LPARAM l, UIN
   return DefSubclassProc(control, message, w, l);
 }
 
+bool Panel::preview(int row) {
+  if (desktop.dragging || desktop.editing || desktop.menuOpen || desktop.quitting ||
+      row < 0 || static_cast<size_t>(row) >= displayed.size()) return false;
+  return previewDesktopItem(displayed[row]);
+}
+
 void Panel::zoom(int delta) {
   if (desktop.dragging || desktop.editing || desktop.quitting) return;
   constexpr int sizes[]{0, 24, 32, 48, 64, 96};
@@ -1563,13 +1619,8 @@ void Panel::loadThumbnails(int pixels) {
     try {
       for (size_t i = 0; i < paths.size() && !batch->canceled; ++i) {
         if (paths[i].empty()) continue;
-        Microsoft::WRL::ComPtr<IShellItemImageFactory> factory;
-        if (FAILED(SHCreateItemFromParsingName(paths[i].c_str(), nullptr, IID_PPV_ARGS(&factory)))) continue;
-        HBITMAP image = nullptr;
-        auto result = factory->GetImage({pixels, pixels}, SIIGBF_THUMBNAILONLY | SIIGBF_CROPTOSQUARE | SIIGBF_SCALEUP, &image);
-        if (FAILED(result)) result = factory->GetImage({pixels, pixels}, SIIGBF_ICONONLY | SIIGBF_SCALEUP, &image);
-        Thumbnail owned(image, DeleteObject);
-        if (SUCCEEDED(result) && owned) {
+        Thumbnail owned(loadDesktopThumbnail(paths[i], pixels), DeleteObject);
+        if (owned) {
           std::lock_guard lock(batch->mutex);
           batch->ready.emplace_back(static_cast<int>(i), std::move(owned));
         }
@@ -1596,11 +1647,11 @@ void Panel::applyThumbnails() {
     item.mask = LVIF_IMAGE;
     item.iItem = row;
     if (!ListView_GetItem(list, &item)) continue;
-    if (item.iImage >= 0) {
-      if (!ImageList_Replace(scaledIcons, item.iImage, image.get(), nullptr)) continue;
-    } else {
-      item.iImage = ImageList_Add(scaledIcons, image.get(), nullptr);
-      if (item.iImage >= 0) ListView_SetItem(list, &item);
+    const auto imageIndex = setDesktopThumbnail(scaledIcons, item.iImage, image.get());
+    if (imageIndex < 0) continue;
+    if (item.iImage != imageIndex) {
+      item.iImage = imageIndex;
+      ListView_SetItem(list, &item);
     }
     if (thumbnailCache.size() < 256) thumbnailCache.try_emplace(displayed[row], std::move(image));
 #ifdef FOLDERNOTE_WINUI
@@ -2394,7 +2445,9 @@ void Panel::renderPage(const Group &group) {
   renderedIconSize = pixels;
   Microsoft::WRL::ComPtr<IImageList> systemImages;
   if (scaledIcons) {
-    SHGetImageList(pixels > 48 ? SHIL_JUMBO : pixels > 32 ? SHIL_EXTRALARGE : SHIL_LARGE,
+    // Jumbo slots can contain a small icon on a 256px transparent canvas.
+    // Use a full-size placeholder until the asynchronous thumbnail arrives.
+    SHGetImageList(pixels > 32 ? SHIL_EXTRALARGE : SHIL_LARGE,
                    IID_PPV_ARGS(&systemImages));
     ListView_SetImageList(list, scaledIcons, LVSIL_NORMAL);
   }
@@ -2435,7 +2488,7 @@ void Panel::renderPage(const Group &group) {
       item.iImage = I_IMAGENONE;
       HICON bitmap = nullptr;
       if (const auto cached = thumbnailCache.find(path); cached != thumbnailCache.end()) {
-        item.iImage = ImageList_Add(scaledIcons, cached->second.get(), nullptr);
+        item.iImage = setDesktopThumbnail(scaledIcons, -1, cached->second.get());
       } else if (images && systemImages && SUCCEEDED(systemImages->GetIcon(icon.iIcon, ILD_TRANSPARENT, &bitmap))) {
         const auto scaled = static_cast<HICON>(CopyImage(bitmap, IMAGE_ICON, pixels, pixels, 0));
         item.iImage = ImageList_AddIcon(scaledIcons, scaled ? scaled : bitmap);
@@ -2854,9 +2907,8 @@ LRESULT CALLBACK Panel::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
       for (const auto bar : {panel->verticalScroll.window(), panel->horizontalScroll.window()})
         SetWindowPos(bar, HWND_TOP, 0, 0, 0, 0, SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE);
       desktop.theme.apply(window);
-      auto dropTarget = new DropTarget(*panel);
-      const auto registered = RegisterDragDrop(window, dropTarget);
-      dropTarget->Release();
+      panel->dropTarget.Attach(new DropTarget(*panel));
+      const auto registered = RegisterDragDrop(window, panel->dropTarget.Get());
       if (FAILED(registered)) return -1;
       return 0;
     }
@@ -3121,6 +3173,9 @@ LRESULT CALLBACK Panel::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
       return 0;
     }
     case WM_SETFOCUS:
+#ifdef FOLDERNOTE_WINUI
+      if (panel->hasSurface()) { panel->surface->focus(); return 0; }
+#endif
       SetFocus(panel->collapsed() ? panel->toggle : panel->list);
       return 0;
     case WM_CONTEXTMENU:
@@ -3288,6 +3343,8 @@ void Panel::openSurface() {
     ListView_SetItemState(list, row, LVIS_SELECTED, LVIS_SELECTED);
     PostMessageW(window, WM_COMMAND, OpenItem, 0);
   };
+  events.preview = [this](int row) { return preview(row); };
+  events.previewAvailable = [] { return desktopPreviewAvailable(); };
   events.context = [this](POINT point) { contextMenu(point); };
   events.zoom = [this](int delta) { zoom(delta); };
   events.wheel = [this](int delta) { return pageWheel(delta); };
@@ -3312,7 +3369,7 @@ void Panel::openSurface() {
     if (SendMessageW(window, WM_NCHITTEST, 0, position) == HTCAPTION)
       SendMessageW(window, WM_NCLBUTTONDOWN, HTCAPTION, position);
   };
-  surface = std::make_unique<winui::Surface>(window, std::move(events));
+  surface = std::make_unique<winui::Surface>(window, std::move(events), dropTarget.Get());
   if (hasSurface()) {
     for (auto control : {list, toggle, tabs, viewButtons[0], viewButtons[1]}) ShowWindow(control, SW_HIDE);
     surface->show(true);
@@ -3476,17 +3533,6 @@ bool Desktop::desktopDropAt(POINT point) const {
          GetClassNameW(root, name, ARRAYSIZE(name)) && wcscmp(name, L"WorkerW") == 0;
 }
 
-void Desktop::tray(DWORD action) const {
-  NOTIFYICONDATAW icon{sizeof(icon)};
-  icon.hWnd = window;
-  icon.uID = 1;
-  icon.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
-  icon.uCallbackMessage = trayMessage;
-  icon.hIcon = LoadIconW(instance, MAKEINTRESOURCEW(IDI_FOLDERNOTE));
-  wcsncpy_s(icon.szTip, lang::text(L"桌面盒子"), _TRUNCATE);
-  Shell_NotifyIconW(action, &icon);
-}
-
 class BoxFileMoves {
   const std::vector<std::wstring> &roots;
   HWND owner;
@@ -3636,37 +3682,9 @@ void Desktop::lower(HWND raisedPanel) const {
   }
   if (const auto raised = std::find(boxes.begin(), boxes.end(), raisedPanel); raised != boxes.end())
     std::rotate(boxes.begin(), raised, raised + 1);
-  auto above = GetWindow(host, GW_HWNDPREV);
-  const auto belongsToDesktop = [&](HWND candidate) {
-    if (std::find(boxes.begin(), boxes.end(), candidate) != boxes.end()) return true;
-    return std::any_of(panels.begin(), panels.end(), [candidate](const auto &panel) { return panel->shadow == candidate; });
-  };
-  while (above && (!IsWindowVisible(above) || belongsToDesktop(above))) above = GetWindow(above, GW_HWNDPREV);
-  const bool hostTopmost = showingDesktop || (GetWindowLongPtrW(host, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
-  if (hostTopmost) {
-    if (!above || !(GetWindowLongPtrW(above, GWL_EXSTYLE) & WS_EX_TOPMOST)) above = HWND_TOPMOST;
-  } else if (!above || (GetWindowLongPtrW(above, GWL_EXSTYLE) & WS_EX_TOPMOST)) {
-    above = HWND_TOP;
-  }
-  constexpr UINT flags = SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE | SWP_NOOWNERZORDER;
-  auto placeBehind = [&](HWND item) {
-    if (IsIconic(item)) ShowWindow(item, SW_SHOWNOACTIVATE);
-    const bool topmost = (GetWindowLongPtrW(item, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
-    if (topmost != hostTopmost)
-      SetWindowPos(item, hostTopmost ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0, flags);
-    const auto visible = IsWindowVisible(item) != FALSE;
-    auto predecessor = GetWindow(item, GW_HWNDPREV);
-    while (predecessor && !IsWindowVisible(predecessor)) predecessor = GetWindow(predecessor, GW_HWNDPREV);
-    const bool positioned = (above == HWND_TOP || above == HWND_TOPMOST)
-        ? !predecessor || (!hostTopmost && (GetWindowLongPtrW(predecessor, GWL_EXSTYLE) & WS_EX_TOPMOST))
-        : predecessor == above;
-    if (!visible || !positioned)
-      SetWindowPos(item, above, 0, 0, 0, 0, flags | (visible ? 0 : SWP_SHOWWINDOW));
-    above = item;
-  };
-  for (const auto box : boxes) placeBehind(box);
   for (const auto &panel : panels)
-    if (panel->shadow && panel->shadowSize.cx) placeBehind(panel->shadow);
+    if (panel->shadow && panel->shadowSize.cx) boxes.push_back(panel->shadow);
+  lowerDesktopWindows(host, boxes, desktopPreviewWindow(), showingDesktop || quick::isDesktop(active));
 }
 void Desktop::manage() {
   if (menuOpen || editing || dragging) return;
@@ -4373,7 +4391,6 @@ LRESULT CALLBACK Desktop::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
   if (!desktop) return DefWindowProcW(window, message, w, l);
   try {
     if (message == desktop->taskbarCreated) {
-      desktop->tray(NIM_ADD);
       desktop->lower();
       return 0;
     }
@@ -4401,6 +4418,9 @@ LRESULT CALLBACK Desktop::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
       desktop->updateShadows();
     }
     switch (message) {
+    case layerMessage:
+      desktop->lower();
+      return 0;
     case WM_TIMER:
       if (w == headerTimer) {
         POINT cursor{};
@@ -4452,9 +4472,6 @@ LRESULT CALLBACK Desktop::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
     case refreshMessage:
       for (size_t i = 0; i < desktop->panels.size(); ++i) desktop->panels[i]->refresh(desktop->groups[i]);
       return 0;
-    case trayMessage:
-      if (l == WM_RBUTTONUP || l == WM_LBUTTONUP) PostMessageW(window, manageMessage, 0, 0);
-      return 0;
     case manageMessage:
       if (!desktop->quitting && IsWindowEnabled(window)) desktop->manage();
       return 0;
@@ -4475,9 +4492,6 @@ LRESULT CALLBACK Desktop::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
       }, 0);
       PostQuitMessage(0);
       return 0;
-    case WM_DESTROY:
-      desktop->tray(NIM_DELETE);
-      break;
     case WM_NCDESTROY:
       desktop->window = nullptr;
       break;
@@ -4620,11 +4634,17 @@ int run(HINSTANCE instance, bool manage, bool create, bool delegated) {
 #endif
         if (!CreateWindowExW(WS_EX_TOOLWINDOW, receiverClass, L"", WS_POPUP, 0, 0, 0, 0,
                              nullptr, nullptr, instance, &desktop)) throw 0;
+        // React to Show Desktop and preview visibility immediately; the timer
+        // remains a fallback if Windows cannot install either notification.
+        constexpr auto eventFlags = WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS;
+        desktop.foregroundHook = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND,
+            nullptr, desktopLayerChanged, 0, 0, eventFlags);
+        desktop.previewHook = SetWinEventHook(EVENT_OBJECT_SHOW, EVENT_OBJECT_HIDE,
+            nullptr, desktopLayerChanged, 0, 0, eventFlags);
         // Migration from versions that hid the Explorer icon view. User changes to icon visibility are left alone.
         restoreDesktopIcons();
         for (size_t i = 0; i < desktop.groups.size(); ++i)
           if (!desktop.openPanel(i)) throw 0;
-        desktop.tray(NIM_ADD);
         if (!SetTimer(desktop.window, 1, 400, nullptr)) throw 0;
         if (!SetTimer(desktop.window, headerTimer, 70, nullptr)) throw 0;
         if (!SetPropW(desktop.window, readyProperty, reinterpret_cast<HANDLE>(1))) throw 0;

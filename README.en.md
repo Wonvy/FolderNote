@@ -57,7 +57,7 @@ Select **Folder entries** and choose a location. Switch between list and icon vi
 ## Organize the desktop
 
 1. In **Features**, enable **Desktop boxes** and save. Windows continues to manage desktop icons, their positions, and the native context menu. Use **Box appearance** to preview and adjust the corner radius, background opacity, frosted glass, and drop shadow.
-2. Right-click an empty area of the desktop and select **New box**. On Windows 11, this command may be under **Show more options**. You can also open the creation menu from **Manage desktop boxes** or the notification area icon. To configure a box, right-click its title bar.
+2. Right-click an empty area of the desktop and select **New box**. On Windows 11, this command may be under **Show more options**. You can also open the creation menu from **Manage desktop boxes** in settings. To configure a box, right-click its title bar.
 3. Drag a desktop file or folder into a regular box to move it to the `FolderNote Boxes` folder on your desktop. Drag it back to an empty area of the desktop or right-click and select **Remove from box** to move it back.
 4. Right-click empty space inside a box to switch between **Icons** and **List**, change the sort order, or adjust **Item spacing**. Use the button on the right side of the title bar to collapse or expand the box. The title menu lets you map a folder, adjust frosted glass and background opacity, and independently choose **Show icon** and **Show text**.
 5. Enable **Auto-collapse** in a box's title menu to expand it when you hover over the title and collapse it shortly after the pointer leaves. This option is off by default.
@@ -65,7 +65,7 @@ Select **Folder entries** and choose a location. Switch between list and icon vi
 
 ## Install and get started
 
-1. Extract the entire installer archive. Run `Install.exe` for the standard edition or `Install-Win11.exe` for the Windows 11 first-level context menu test edition. Keep the EXE, DLL, and MSIX files together. The first installation may request administrator approval to register the navigation extension.
+1. Download and run **FolderNote-Setup-x64.exe** from [Releases](https://github.com/Wonvy/FolderNote/releases/latest). No extraction is needed. Use **FolderNote-Setup-Win11-x64.exe** for the Windows 11 first-level context menu test edition. Both installers use the application icon and include all program components. The first installation may request administrator approval to register the navigation extension.
 2. Find **FolderNote** in the Start menu or open `FolderNote.exe`. Use the sidebar to switch between Features, Pins and history, Context Menu Manager, Folder entries, and Settings. The running version appears at the bottom left.
 3. Enable the features you want and save. To display notes, add the **Comments** column to File Explorer's Details view.
 4. Close and reopen File Explorer windows after installing or upgrading. If Explorer still has the old extension loaded, wait for any file operations to finish before restarting Explorer.
@@ -83,9 +83,9 @@ The standard edition uses the folder context menu on Windows 10 and **Show more 
 
 - Folder notes are stored in each folder's `desktop.ini`. Keep that file when copying folders. Repair can restore missing attributes. To restore deleted note contents, use a backup of the file.
 - Notes, visit history, and desktop group layouts stay on your PC. Manual checks and enabled automatic updates connect to GitHub.
-- When desktop boxes are enabled, the desktop helper starts at sign-in and adds a notification area icon. Layouts are saved to `%LOCALAPPDATA%\Programs\FolderNote\DesktopGroups.json`.
+- When desktop boxes are enabled, the desktop helper starts at sign-in without a notification area icon. Layouts are saved to `%LOCALAPPDATA%\Programs\FolderNote\DesktopGroups.json`.
 - The Explorer extension handles double-click navigation and Windows 10 tabs. A background helper supports the desktop middle-click menu and opening folders in new tabs. The helper exits when both features are off. Support for file and folder dialogs can be switched off separately.
-- Upgrades preserve settings, pinned folders, and history. Run `Uninstall.exe` to remove the app. Notes and preferences are retained.
+- Upgrades preserve settings, pinned folders, history, and box layouts. Remove **FolderNote System Tools** through Windows **Settings → Apps**, or run `Uninstall.exe` from its installed version directory. User files, notes, preferences, and history are retained.
 
 ## Build
 
@@ -113,4 +113,4 @@ Binaries go to `build/Release/`. Run `packaging/build-release.ps1` after the Rel
 
 ## Compatibility
 
-FolderNote targets Windows 10 and 11 on x64. The current build passed 27 CTest tests on Windows 10 22H2, covering folder entries, context menus, the settings interface, language selection, folder navigation, and file transfers. The unsigned Windows 11 first-level context menu package is intended for testing. See the [user guide](docs/USER_GUIDE.md) for supported configurations and troubleshooting.
+FolderNote targets Windows 10 and 11 on x64. Version 1.9.7 passed 34 CTest tests on Windows 10 22H2, covering desktop boxes, Seer preview layering, dialog history, installation and removal, update selection, and existing features. Both standalone installers also passed file and icon integrity checks. The unsigned Windows 11 first-level context menu package is intended for testing. See the [user guide](docs/USER_GUIDE.md) for supported configurations and troubleshooting.

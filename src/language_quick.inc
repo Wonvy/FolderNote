@@ -88,6 +88,7 @@
 {L"无法更新快速定位启动项", L"Could not update the Quick Folders startup entry"},
 {L"选项已保存，但无法启用快速定位启动项", L"Settings were saved. The Quick Folders startup entry could not be enabled"},
 {L"选项已保存，但无法启动文件夹后台组件", L"Settings were saved. The Quick Folders background process could not be started"},
+{L"设置已保存，但旧的文件夹后台组件未能退出。请以管理员身份打开 FolderNote 设置并再次保存，或注销后重新登录。", L"Settings were saved, but the previous folder background process could not exit. Open FolderNote settings as administrator and save again, or sign out and sign back in."},
 {L"GitHub 发布信息格式无效。", L"GitHub returned invalid release information."},
 {L"更新下载地址无效。", L"The update download address is invalid."},
 {L"无法准备 GitHub 连接", L"Could not initialize a connection to GitHub"},

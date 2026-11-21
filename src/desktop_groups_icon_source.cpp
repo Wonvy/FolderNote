@@ -2,6 +2,7 @@
 #include "desktop_groups_model.h"
 #include <shlobj.h>
 #include <wrl/client.h>
+#include <algorithm>
 #include <memory>
 #include <utility>
 
@@ -18,6 +19,67 @@ std::wstring displayPath(IShellItem *item, SIGDN form) {
   return path.get();
 }
 
+}
+
+HBITMAP loadDesktopThumbnail(const std::wstring &path, int pixels) {
+  if (pixels <= 0) return nullptr;
+  ComPtr<IShellItemImageFactory> factory;
+  if (FAILED(SHCreateItemFromParsingName(path.c_str(), nullptr, IID_PPV_ARGS(&factory)))) return nullptr;
+  using Bitmap = std::unique_ptr<std::remove_pointer_t<HBITMAP>, decltype(&DeleteObject)>;
+  HBITMAP image = nullptr;
+  auto result = factory->GetImage({pixels, pixels}, SIIGBF_THUMBNAILONLY | SIIGBF_RESIZETOFIT | SIIGBF_SCALEUP, &image);
+  Bitmap source(image, DeleteObject);
+  if (FAILED(result)) {
+    source.reset();
+    image = nullptr;
+    result = factory->GetImage({pixels, pixels}, SIIGBF_ICONONLY | SIIGBF_RESIZETOFIT | SIIGBF_SCALEUP, &image);
+    source.reset(image);
+  }
+  BITMAP dimensions{};
+  if (FAILED(result) || !source || !GetObjectW(source.get(), sizeof(dimensions), &dimensions) ||
+      dimensions.bmWidth <= 0 || dimensions.bmHeight <= 0) return nullptr;
+  if (dimensions.bmWidth == pixels && dimensions.bmHeight == pixels) return source.release();
+
+  // Image lists require square slots, but the photograph itself must keep its
+  // aspect ratio. Pad with transparency instead of cropping or stretching it.
+  const auto longest = std::max(dimensions.bmWidth, dimensions.bmHeight);
+  const int width = std::clamp(MulDiv(dimensions.bmWidth, pixels, longest), 1, pixels);
+  const int height = std::clamp(MulDiv(dimensions.bmHeight, pixels, longest), 1, pixels);
+  BITMAPINFO format{};
+  format.bmiHeader = {sizeof(BITMAPINFOHEADER), pixels, -pixels, 1, 32, BI_RGB};
+  void *data = nullptr;
+  Bitmap canvas(CreateDIBSection(nullptr, &format, DIB_RGB_COLORS, &data, nullptr, 0), DeleteObject);
+  if (!canvas || !data) return nullptr;
+  std::fill_n(static_cast<DWORD *>(data), static_cast<size_t>(pixels) * pixels, 0);
+  using DC = std::unique_ptr<std::remove_pointer_t<HDC>, decltype(&DeleteDC)>;
+  const DC from(CreateCompatibleDC(nullptr), DeleteDC), to(CreateCompatibleDC(nullptr), DeleteDC);
+  if (!from || !to) return nullptr;
+  const auto oldSource = SelectObject(from.get(), source.get());
+  const auto oldTarget = SelectObject(to.get(), canvas.get());
+  const BLENDFUNCTION blend{AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
+  const bool copied = AlphaBlend(to.get(), (pixels - width) / 2, (pixels - height) / 2, width, height,
+                                from.get(), 0, 0, dimensions.bmWidth, dimensions.bmHeight, blend) != FALSE;
+  SelectObject(from.get(), oldSource);
+  SelectObject(to.get(), oldTarget);
+  return copied ? canvas.release() : nullptr;
+}
+
+int setDesktopThumbnail(HIMAGELIST images, int index, HBITMAP bitmap) {
+  BITMAP dimensions{};
+  int width = 0, height = 0;
+  if (!images || !bitmap || !ImageList_GetIconSize(images, &width, &height) || width <= 0 || height <= 0 ||
+      !GetObjectW(bitmap, sizeof(dimensions), &dimensions) || dimensions.bmWidth != width || dimensions.bmHeight != height)
+    return -1;
+  // A null mask on replacement retains the placeholder icon's old mask. In
+  // particular a padded jumbo icon can clip a full-size thumbnail to a tiny
+  // rectangle. Reset the mask; the 32-bit bitmap supplies its own alpha.
+  const auto stride = ((static_cast<size_t>(width) + 15) / 16) * 2;
+  std::vector<BYTE> opaque(stride * height, 0);
+  const std::unique_ptr<std::remove_pointer_t<HBITMAP>, decltype(&DeleteObject)> mask(
+      CreateBitmap(width, height, 1, 1, opaque.data()), DeleteObject);
+  if (!mask) return -1;
+  return index < 0 ? ImageList_Add(images, bitmap, mask.get()) :
+      ImageList_Replace(images, index, bitmap, mask.get()) ? index : -1;
 }
 
 std::vector<std::wstring> desktopShellDropItems(IDataObject *data) {
