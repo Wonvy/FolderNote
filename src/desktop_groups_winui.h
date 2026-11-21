@@ -75,6 +75,7 @@ public:
   void pagination(int page, int pages, std::function<void(int)> navigate);
   void appearance(bool dark, bool highContrast, COLORREF tint, BYTE opacity, bool glass);
   bool acrylicActive() const;
+  bool usesDesktopGlass() const;
   void header(const std::vector<std::wstring> &titles, std::size_t active, bool collapsed,
               bool actionsVisible, bool highlighted, int radius,
               COLORREF text, COLORREF muted, COLORREF border, COLORREF accent,

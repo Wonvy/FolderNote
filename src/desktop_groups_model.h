@@ -12,6 +12,7 @@ inline constexpr std::size_t groupNameLimit = 120;
 inline constexpr int defaultIconSize = 32;
 inline constexpr std::array iconSizes{24, defaultIconSize, 48, 64, 96};
 inline constexpr int maxItemSpacing = 24;
+inline constexpr int defaultBlurStrength = 25;
 
 struct Tab {
   std::wstring name;
@@ -56,6 +57,7 @@ struct Group {
   DisplayMode displayMode = DisplayMode::Scroll;
   int itemSpacing = 0;
   std::optional<bool> glass;
+  int blurStrength = defaultBlurStrength;
   bool autoCollapse = false;
   std::wstring folder;
   // The first tab can carry a tint from another box without changing this box's appearance.

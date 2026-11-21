@@ -172,7 +172,7 @@ static void retiredTransferGestures(HWND shell, HWND surface) {
 }
 static void desktopTests(HWND dialog) {
   const auto instance = GetModuleHandleW(nullptr);
-  for (auto name : {L"Progman", L"WorkerW"}) {
+  for (auto name : {L"Progman", L"WorkerW", L"FolderNote.DesktopGroups.Panel"}) {
     WNDCLASSW cls{}; cls.hInstance = instance; cls.lpfnWndProc = DefWindowProcW; cls.lpszClassName = name;
     check(RegisterClassW(&cls) != 0, "register isolated desktop host class");
   }
@@ -188,6 +188,16 @@ static void desktopTests(HWND dialog) {
   HWND shellView = view(shell), workerView = view(worker), ordinary = host(L"STATIC");
   simulatedShell = shell;
   retiredTransferGestures(shell, shellView);
+  const auto box = CreateWindowW(L"FolderNote.DesktopGroups.Panel", L"", WS_CHILD,
+      0, 0, 100, 100, shellView, nullptr, instance, nullptr);
+  const auto content = CreateWindowW(L"STATIC", L"", WS_CHILD,
+      0, 0, 100, 100, box, nullptr, instance, nullptr);
+  check(box && content, "create desktop-hosted box input fixture");
+  simulatedForeground = shell; underPointer = content; quick::eligible = shell;
+  const auto beforeBoxClick = launches.size();
+  check(mouse(WM_MBUTTONDOWN) == 73 && mouse(WM_MBUTTONUP) == 73, "desktop box keeps native middle input");
+  drain(); check(launches.size() == beforeBoxClick, "desktop box does not open desktop middle menu");
+  DestroyWindow(box);
   check(quick::isDesktop(shell) && quick::isDesktop(worker), "recognize both shell and WorkerW desktop hosts");
   check(!quick::isDesktop(wallpaper) && !quick::isDesktop(ordinary) && !quick::isDesktop(shellView),
         "wallpaper-only hosts, applications and non-root children are excluded");
@@ -260,7 +270,7 @@ static void desktopTests(HWND dialog) {
   check(launches.size() == before, "destroyed desktop cannot launch a queued request");
   simulatedForeground = underPointer = simulatedShell = nullptr; quick::eligible = nullptr; quick::middle = {};
   for (HWND window : {worker, wallpaper, ordinary}) DestroyWindow(window);
-  for (auto name : {L"Progman", L"WorkerW"}) UnregisterClassW(name, instance);
+  for (auto name : {L"Progman", L"WorkerW", L"FolderNote.DesktopGroups.Panel"}) UnregisterClassW(name, instance);
   enable(true);
 }
 static void legacyDialogTests() {

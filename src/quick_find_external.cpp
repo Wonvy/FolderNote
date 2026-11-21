@@ -356,6 +356,10 @@ bool keyboard(WPARAM message, const KBDLLHOOKSTRUCT &key) {
   GUITHREADINFO info{sizeof(info)};
   if (!thread || !GetGUIThreadInfo(thread, &info) || !fileSurface(info.hwndFocus) ||
       (info.flags & (GUI_INMENUMODE | GUI_INMOVESIZE))) { cancel(); return false; }
+  // A desktop-hosted box has the Shell as its root but owns its own input.
+  // Do not consume its native-list typing in the external locator as well.
+  DWORD focusProcess = 0; GetWindowThreadProcessId(info.hwndFocus, &focusProcess);
+  if (focusProcess != process) { cancel(); return false; }
   {
     std::lock_guard lock(mutex);
     if (pending.size() >= 128) { ++epoch; pending.clear(); }

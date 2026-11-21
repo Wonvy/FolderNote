@@ -462,7 +462,8 @@ void exercise(const fn::fs::path &root) {
   std::ofstream(oldLayout, std::ios::binary) << oldJson;
   const auto old = loadLayout(oldLayout);
   check(old.groups[0].iconSize == defaultIconSize && old.groups[0].displayMode == DisplayMode::Scroll &&
-        old.groups[0].itemSpacing == 0 && old.looseItems.empty(), "load older JSON with defaults");
+        old.groups[0].itemSpacing == 0 && old.groups[0].blurStrength == defaultBlurStrength &&
+        old.looseItems.empty(), "load older JSON with defaults");
 
   auto badJson = json;
   badJson.replace(iconSizeOffset, iconSizeLine.size(), "      \"iconSize\": 50,\n");
@@ -554,11 +555,33 @@ void exercise(const fn::fs::path &root) {
   check(!loaded[0].autoCollapse && !loaded[1].autoCollapse, "layouts default to manual collapse");
   changed[0].glass = true;
   changed[1].glass = false;
+  changed[0].blurStrength = 0;
+  changed[1].blurStrength = 100;
   changed[0].autoCollapse = true;
   save(changed, layout);
   const auto glass = load(layout);
   check(glass[0].glass == true && glass[1].glass == false, "persist per-box glass overrides in either direction");
+  check(glass[0].blurStrength == 0 && glass[1].blurStrength == 100, "persist zero and maximum blur independently");
   check(glass[0].autoCollapse && !glass[1].autoCollapse, "persist automatic collapse independently for each box");
+  const auto validGlassJson = readFile(layout);
+  for (const int strength : {-1, 101}) {
+    auto invalid = changed;
+    invalid[0].blurStrength = strength;
+    rejected = false;
+    try { save(invalid, layout); }
+    catch (const fn::Error &) { rejected = true; }
+    check(rejected && readFile(layout) == validGlassJson, "reject invalid blur without overwriting saved settings");
+    auto invalidJson = validGlassJson;
+    const auto field = invalidJson.find("\"blurStrength\": 0");
+    check(field != invalidJson.npos, "explicit zero blur is serialized");
+    invalidJson.replace(field, std::string_view("\"blurStrength\": 0").size(), "\"blurStrength\": " + std::to_string(strength));
+    const auto invalidFile = root / L"invalid-blur.json";
+    std::ofstream(invalidFile, std::ios::binary) << invalidJson;
+    rejected = false;
+    try { load(invalidFile); }
+    catch (const fn::Error &) { rejected = true; }
+    check(rejected && readFile(invalidFile) == invalidJson, "reject out-of-range blur on load without rewriting it");
+  }
   changed[1].glass.reset();
   save(changed, layout);
   check(!load(layout)[1].glass, "clearing a glass override restores inheritance");
@@ -610,6 +633,7 @@ void exercise(const fn::fs::path &root) {
   stack[0].displayMode = DisplayMode::Pages;
   stack[0].itemSpacing = maxItemSpacing;
   stack[0].glass = false;
+  stack[0].blurStrength = 73;
   stack[0].autoCollapse = true;
   const RECT detachedBounds{-500, 40, -110, 370};
   check(!detachTab(empty, 0, 1, detachedBounds) && !detachTab(stack, 1, 1, detachedBounds) &&
@@ -625,7 +649,7 @@ void exercise(const fn::fs::path &root) {
         stack.back().name == L"常用" && stack.back().paths == std::vector<std::wstring>{documentPath} &&
         stack.back().tabs.empty() && stack.back().view == View::List && stack.back().sort == Sort::Modified &&
         stack.back().iconSize == 64 && stack.back().displayMode == DisplayMode::Pages &&
-        stack.back().itemSpacing == maxItemSpacing && stack.back().glass == false && stack.back().autoCollapse &&
+        stack.back().itemSpacing == maxItemSpacing && stack.back().glass == false && stack.back().blurStrength == 73 && stack.back().autoCollapse &&
         !stack.back().collapsed,
         "detach manual tab and retain display preferences");
   const auto stackFile = root / L"stack.json";

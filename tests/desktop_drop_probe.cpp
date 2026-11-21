@@ -2,6 +2,8 @@
 // native rim or the real WinUI box content. Does not move any user files.
 #include "../src/desktop_groups_winui.h"
 #include "../src/desktop_groups_preview.h"
+#include "../src/desktop_groups_zorder.h"
+#include "../src/desktop_groups_glass.h"
 #include "../src/quick_find.h"
 #include "../src/quick_find_popup.h"
 #include <windowsx.h>
@@ -92,10 +94,11 @@ LRESULT CALLBACK proc(HWND window, UINT message, WPARAM w, LPARAM l) {
 }
 int main(int argc, char **argv) {
   const auto mode = argc > 1 ? std::string_view(argv[1]) : std::string_view{};
-  const bool verify = mode == "--verify" || mode == "--verify-parent-only";
+  const bool desktopHost = mode == "--verify-desktop";
+  const bool verify = mode == "--verify" || mode == "--verify-parent-only" || desktopHost;
   const bool parentOnly = mode == "--parent-only" || mode == "--verify-parent-only";
   const bool preview = mode == "--preview" || mode == "--preview-list";
-  const bool findTest = mode == "--verify-find";
+  const bool findTest = mode == "--verify-find" || desktopHost;
   int result = 0;
   SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
   if (FAILED(OleInitialize(nullptr))) return 1;
@@ -109,13 +112,18 @@ int main(int argc, char **argv) {
     cls.lpszClassName = L"FolderNote.DropProbe"; cls.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     cls.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
     RegisterClassW(&cls);
-    HWND window = CreateWindowExW(preview ? WS_EX_NOACTIVATE : 0, cls.lpszClassName, L"FolderNote Drop Probe",
-        WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, 100, 100, 900, 600, nullptr, nullptr, cls.hInstance, nullptr);
+    const auto desktop = desktopHost ? desktop_groups::desktopWindowHost() : nullptr;
+    if (desktopHost && !desktop) { log("Shell desktop unavailable"); return 77; }
+    desktop_groups::DesktopDpiScope hostDpi(desktop);
+    HWND window = CreateWindowExW(preview || desktopHost ? WS_EX_NOACTIVATE : 0, cls.lpszClassName, L"FolderNote Drop Probe",
+        (desktopHost ? WS_POPUP : WS_OVERLAPPEDWINDOW) | WS_CLIPCHILDREN,
+        100, 100, 900, 600, nullptr, nullptr, cls.hInstance, nullptr);
     HWND host = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN,
         300, 30, 550, 470, window, nullptr, cls.hInstance, nullptr);
     statusWindow = CreateWindowExW(0, L"STATIC", L"Successful drops: 0", WS_CHILD | WS_VISIBLE,
         25, 300, 260, 60, window, nullptr, cls.hInstance, nullptr);
     auto target = Microsoft::WRL::Make<Target>();
+    desktop_groups::DesktopGlass glass;
     std::cout << "Register native hr=" << std::hex << RegisterDragDrop(host, target.Get()) << std::dec << std::endl;
     {
       desktop_groups::winui::Events events;
@@ -148,8 +156,11 @@ int main(int argc, char **argv) {
       desktop_groups::winui::Surface surface(host, std::move(events), parentOnly ? nullptr : target.Get());
       findSurface = &surface;
       if (!surface.available()) { log("Surface unavailable"); return 3; }
+      if (desktopHost && !desktop_groups::attachDesktopWindow(window, desktop)) {
+        log("Desktop attachment failed"); return 10;
+      }
       surface.place({10, 10, 540, 460});
-      surface.appearance(false, false, RGB(235, 240, 245), 255, false);
+      surface.appearance(false, false, RGB(235, 240, 245), desktopHost ? 128 : 255, desktopHost);
       surface.header({L"WinUI drop target"}, 0, false, false, false, 8,
           RGB(0,0,0), RGB(80,80,80), RGB(120,120,120), RGB(0,120,200), 36,
           desktop_groups::TitleStyle::Text, nullptr);
@@ -173,10 +184,26 @@ int main(int argc, char **argv) {
             Sleep(10);
           }
         };
-        pump(150); surface.focus(); pump(100);
+        pump(150);
+        if (desktopHost) {
+          for (int i = 0; i < 100 && !surface.acrylicActive(); ++i) pump(25);
+          if (!surface.acrylicActive()) { log("FAIL: desktop glass background did not load"); result = 12; }
+          RECT bounds{}; GetWindowRect(host, &bounds);
+          const desktop_groups::GlassArea areas[]{{bounds, 8}};
+          if (!glass.update(desktop, desktop_groups::wallpaperBackdrop(), areas) || !glass.handle()) result = 12;
+          if (glass.handle()) {
+            const HWND layers[]{window, glass.handle()};
+            desktop_groups::lowerDesktopWindows(desktop, layers);
+          }
+        }
+        desktop_groups::focusDesktopWindow(window, host);
+        surface.focus(); pump(100);
         PostMessageW(GetFocus(), WM_CHAR, L's', 1); pump(100);
         PostMessageW(GetFocus(), WM_CHAR, L'j', 1); pump(100);
         if (found != -1 || characters != L"sj" || query.query() != L"sj") {
+          std::cout << "query=" << std::string(query.query().begin(), query.query().end())
+                    << " focus=" << GetFocus() << " foreground=" << GetForegroundWindow()
+                    << " root=" << GetAncestor(window, GA_ROOT) << '\n';
           log("FAIL: WinUI characters do not reach incremental find"); result = 8;
         }
         const auto press = [&](UINT key) {
@@ -197,8 +224,24 @@ int main(int argc, char **argv) {
         }
         press(VK_RETURN);
         if (found != 1 || opened) { log("FAIL: second candidate confirmation"); result = 9; }
+        if (desktopHost) {
+          if (GetForegroundWindow() != GetAncestor(window, GA_ROOT)) {
+            // Foreground lock/user activity is an unmet interactive precondition,
+            // not a title-editor failure. Still verify OLE and destruction below.
+            log("SKIP: desktop title editing needs foreground desktop; another app owns focus");
+            if (!result) result = 77;
+          } else {
+            bool committed = false;
+            if (!surface.beginTitleRename([&](std::wstring value) { committed = !value.empty(); })) {
+              log("FAIL: desktop-hosted title editor cannot acquire focus"); result = 11;
+            }
+            pump(50); press(VK_ESCAPE);
+            if (committed) { log("FAIL: canceled title edit committed"); result = 11; }
+          }
+        }
         if (!result) log("PASS: actual WinUI character routing, selection, scrolling and query reset");
-      } else if (verify) {
+      }
+      if (verify) {
         const auto island = FindWindowExW(host, nullptr, L"Microsoft.UI.Content.DesktopChildSiteBridge", nullptr);
         const auto registration = island ? RegisterDragDrop(island, target.Get()) : E_FAIL;
         if (registration == S_OK) RevokeDragDrop(island);
@@ -219,7 +262,7 @@ int main(int argc, char **argv) {
             if (effect != DROPEFFECT_COPY || drops != 1) result = 6;
           }
         }
-      } else {
+      } else if (!findTest) {
         ShowWindow(window, SW_SHOWNORMAL);
         MSG message{};
         while (GetMessageW(&message, nullptr, 0, 0) > 0) {
@@ -227,6 +270,8 @@ int main(int argc, char **argv) {
           TranslateMessage(&message); DispatchMessageW(&message);
         }
       }
+      // Explorer can destroy the desktop before the Surface owner notices.
+      if (desktopHost) { RevokeDragDrop(host); DestroyWindow(window); }
     }
     RevokeDragDrop(host);
     DestroyWindow(window);

@@ -45,6 +45,7 @@
 {L"由 Windows 管理桌面图标。\n拖入盒子的桌面文件和文件夹会移到 FolderNote Boxes。", L"Windows manages the desktop icons.\nFiles and folders dropped into a box move to FolderNote Boxes."},
 {L"管理桌面盒子", L"Manage desktop boxes"},
 {L"毛玻璃效果", L"Frosted glass"},
+{L"模糊强度", L"Blur strength"},
 {L"自动折叠隐藏", L"Auto-collapse"},
 {L"桌面盒子效果预览", L"Desktop box appearance preview"},
 {L"盒子样式", L"Box appearance"},

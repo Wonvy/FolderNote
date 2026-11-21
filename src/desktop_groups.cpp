@@ -11,6 +11,8 @@
 #include "desktop_groups_process.h"
 #include "desktop_groups_preview.h"
 #include "desktop_groups_zorder.h"
+#include "desktop_groups_wallpaper.h"
+#include "desktop_groups_glass.h"
 #include "desktop_groups_render.h"
 #include "desktop_groups_storage.h"
 #ifdef FOLDERNOTE_WINUI
@@ -59,22 +61,13 @@ constexpr auto runName = L"FolderNote.DesktopGroups";
 constexpr UINT manageMessage = WM_APP + 1, rejectedMessage = WM_APP + 3;
 constexpr UINT dragMessage = WM_APP + 4, refreshMessage = WM_APP + 5;
 constexpr UINT createMessage = WM_APP + 6;
-constexpr UINT layerMessage = WM_APP + 7;
-void CALLBACK desktopLayerChanged(HWINEVENTHOOK, DWORD event, HWND target, LONG object, LONG child, DWORD, DWORD) {
-  if (event != EVENT_SYSTEM_FOREGROUND) {
-    if (object != OBJID_WINDOW || child != CHILDID_SELF) return;
-    wchar_t name[64]{};
-    GetClassNameW(target, name, ARRAYSIZE(name));
-    if (wcscmp(name, L"SeerWindowClass") && wcscmp(name, L"SeerViewerWindowClass")) return;
-  }
-  if (const auto receiver = FindWindowW(receiverClass, nullptr)) PostMessageW(receiver, layerMessage, 0, 0);
-}
 constexpr UINT dropBoxTabMessage = WM_APP + 41;
 constexpr UINT dragTimer = 2;
 constexpr UINT headerTimer = 3;
 constexpr UINT_PTR boxMoveTimer = 1;
 constexpr UINT_PTR tabDragTimer = 2;
 constexpr UINT_PTR collapseHoldTimer = 3;
+constexpr UINT_PTR blurPreviewTimer = 4;
 constexpr ULONGLONG collapseHoldDelay = 350;
 constexpr UINT_PTR hoverTabTimer = 1;
 constexpr UINT syncScrollMessage = WM_APP + 40;
@@ -530,10 +523,13 @@ struct Panel {
   HICON titleIcon = nullptr;
   HICON headerIcon();
   std::optional<int> opacityPreview;
+  std::optional<int> blurPreview;
+  int renderedBlur = defaultBlurStrength;
   std::optional<int> spacingPreview;
   std::optional<COLORREF> colorPreview;
   std::optional<COLORREF> mergeTint;
   int backgroundOpacity() const;
+  int backgroundBlur() const;
   bool backgroundGlass() const;
   COLORREF backgroundColor() const;
   void applyBackground();
@@ -681,13 +677,15 @@ public:
   ULONGLONG lastDragScroll = 0;
   std::vector<std::wstring> dragItems;
   ULONGLONG lastFolderRefresh = 0;
-  HWINEVENTHOOK foregroundHook = nullptr, previewHook = nullptr;
+  HWND host = nullptr;
+  bool rebuilding = false;
+  std::map<int, std::unique_ptr<DesktopGlass>> glass;
+  void updateGlass(HWND raisedPanel = nullptr);
+  bool ensureHost();
 
   explicit Desktop(HINSTANCE module) : instance(module), groups(load()) {}
   ~Desktop() {
     quitting = true;
-    if (foregroundHook) UnhookWinEvent(foregroundHook);
-    if (previewHook) UnhookWinEvent(previewHook);
     if (dragPreview) DestroyWindow(dragPreview);
     if (dragIcon) DestroyIcon(dragIcon);
     panels.clear();
@@ -697,7 +695,7 @@ public:
   void updateShadows();
   void highlight(HWND target);
   void setAppearance(const Appearance &value);
-  void lower(HWND raisedPanel = nullptr) const;
+  void lower(HWND raisedPanel = nullptr);
   Panel *mergeTargetAt(POINT point, const Panel &source) const;
   Panel *panelAt(POINT point) const;
   Panel *panelForWindow(HWND handle) const;
@@ -890,6 +888,7 @@ void Panel::applyTheme(const ui::Palette &colors) {
 int Panel::backgroundOpacity() const {
   return opacityPreview.value_or(desktop.groups[index].opacity.value_or(desktop.style.opacity));
 }
+int Panel::backgroundBlur() const { return blurPreview.value_or(desktop.groups[index].blurStrength); }
 
 bool Panel::backgroundGlass() const {
   return desktop.groups[index].glass.value_or(desktop.style.glass);
@@ -907,6 +906,7 @@ void Panel::applyBackground() {
     const auto &colors = desktop.theme.colors;
     const auto opacity = static_cast<BYTE>(MulDiv(backgroundOpacity(), 255, 100));
     surface->appearance(colors.dark, colors.highContrast, backgroundColor(), opacity, backgroundGlass());
+    desktop.updateGlass();
     return;
   }
 #endif
@@ -1054,9 +1054,7 @@ void Panel::beginTitleRename() {
   SendMessageW(titleEdit, WM_SETFONT, reinterpret_cast<WPARAM>(titleFont), FALSE);
   SendMessageW(titleEdit, EM_SETLIMITTEXT, groupNameLimit, 0);
   SetWindowPos(titleEdit, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
-  SetForegroundWindow(window);
-  SetActiveWindow(window);
-  SetFocus(titleEdit);
+  focusDesktopWindow(window, titleEdit);
   SendMessageW(titleEdit, EM_SETSEL, 0, -1);
 }
 
@@ -1253,7 +1251,7 @@ void Panel::endTabDrag(POINT screen) {
   const auto target = tabDrag->target;
   const auto slot = tabDrag->slot;
   const bool detach = tabDrag->preview && tabDrag->canDetach;
-  const bool click = !tabDrag->preview && GetAncestor(WindowFromPoint(screen), GA_ROOT) == window;
+  const bool click = !tabDrag->preview && insideDesktopWindow(window, WindowFromPoint(screen));
   cancelTabDrag();
   if (detach || target) {
     pendingTabDrop = TabDrop{tab, bounds, target, slot};
@@ -1416,7 +1414,7 @@ LRESULT CALLBACK tabInput(HWND control, UINT message, WPARAM w, LPARAM l, UINT_P
     const POINT point{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
     if (const auto tab = tabAt(point)) {
       clearHover();
-      SetForegroundWindow(panel.window);
+      SetForegroundWindow(GetAncestor(panel.window, GA_ROOT));
       SetFocus(control);
       SetCapture(control);
       if (GetCapture() != control) {
@@ -1476,7 +1474,7 @@ LRESULT CALLBACK iconInput(HWND control, UINT message, WPARAM w, LPARAM l, UINT_
   auto &panel = *reinterpret_cast<Panel *>(data);
   if (panel.findInput(message, w)) return 0;
   if (message == WM_LBUTTONDOWN) {
-    SetForegroundWindow(panel.window);
+    SetForegroundWindow(GetAncestor(panel.window, GA_ROOT));
     SetFocus(control);
   }
   if (message == WM_KEYDOWN && w == VK_SPACE &&
@@ -1766,12 +1764,12 @@ void Panel::tickDock(POINT cursor, ULONGLONG now) {
     return;
   }
   const auto captured = GetCapture();
-  if (desktop.menuOpen || desktop.editing || (captured && GetAncestor(captured, GA_ROOT) == window)) {
+  if (desktop.menuOpen || desktop.editing || (captured && insideDesktopWindow(window, captured))) {
     dockHideAt = 0;
     return;
   }
-  const auto hit = GetAncestor(WindowFromPoint(cursor), GA_ROOT);
-  if (hit == window) {
+  const auto hit = WindowFromPoint(cursor);
+  if (insideDesktopWindow(window, hit)) {
     dockHideAt = 0;
     showDockedBox(true);
   } else if (!dockHidden) {
@@ -1932,7 +1930,7 @@ void Panel::tickAutoCollapse(bool pointerInside, ULONGLONG now) {
     return;
   }
   const auto captured = GetCapture();
-  if (captured && GetAncestor(captured, GA_ROOT) == window) {
+  if (captured && insideDesktopWindow(window, captured)) {
     autoCollapseAt = 0;
     return;
   }
@@ -1971,9 +1969,7 @@ void Panel::setCollapsed() {
 }
 
 void Panel::place(RECT bounds) {
-  SetWindowPos(window, nullptr, bounds.left, bounds.top,
-               bounds.right - bounds.left, bounds.bottom - bounds.top,
-               SWP_NOZORDER | SWP_NOACTIVATE);
+  placeDesktopWindow(window, bounds);
   if (windowPositionReady) updateShadow();
 }
 
@@ -2223,8 +2219,7 @@ void Panel::updateGestureFrame() {
   }
   desktop.highlight(merge ? merge->window : nullptr);
   if (current.left == gestureTarget.left && current.top == gestureTarget.top) return;
-  if (!SetWindowPos(window, nullptr, gestureTarget.left, gestureTarget.top, 0, 0,
-                    SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | (hasSurface() ? SWP_NOCOPYBITS : 0))) return;
+  if (!placeDesktopWindow(window, gestureTarget, SWP_NOSIZE | (hasSurface() ? SWP_NOCOPYBITS : 0))) return;
   updateShadow();
 }
 
@@ -2804,6 +2799,27 @@ void Panel::contextMenu(POINT point, bool title) {
     }
     if (hasSurface() && !desktop.theme.colors.highContrast) {
       menuItem(*menu, ToggleBoxGlass, L"毛玻璃效果", Symbol::Visibility, backgroundGlass());
+      if (backgroundGlass()) {
+        quick::popup::Item blur;
+        blur.title = lang::text(L"模糊强度");
+        blur.slider = quick::popup::Slider{0, 100, backgroundBlur(),
+          [this](int value) {
+            blurPreview = value;
+            SetTimer(window, blurPreviewTimer, 33, nullptr);
+            desktop.lower();
+          },
+          [this](int value) {
+            if (desktop.quitting) return false;
+            auto changed = desktop.groups;
+            changed[index].blurStrength = value;
+            const bool saved = desktop.commit(std::move(changed), window, false);
+            blurPreview.reset();
+            KillTimer(window, blurPreviewTimer);
+            desktop.lower();
+            return saved;
+          }};
+        menu->items.push_back(std::move(blur));
+      }
       quick::popup::Item item;
       item.title = lang::text(L"背景不透明度");
       item.slider = quick::popup::Slider{0, 100, backgroundOpacity(),
@@ -2870,6 +2886,8 @@ void Panel::contextMenu(POINT point, bool title) {
   desktop.menuOpen = true;
   const auto clearPreview = [&] {
     desktop.menuOpen = false;
+    KillTimer(window, blurPreviewTimer);
+    if (std::exchange(blurPreview, std::nullopt)) desktop.lower();
     if (std::exchange(spacingPreview, std::nullopt)) resize();
     if (opacityPreview || colorPreview) {
       opacityPreview.reset();
@@ -3045,6 +3063,11 @@ LRESULT CALLBACK Panel::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
         }
         return 0;
       }
+      if (w == blurPreviewTimer) {
+        if (panel->blurPreview && desktop.menuOpen) desktop.lower();
+        else KillTimer(window, blurPreviewTimer);
+        return 0;
+      }
       if (w == boxMoveTimer) {
         if (GetTickCount64() - panel->lastCompositionFrame >= 32) panel->updateGestureFrame();
         return 0;
@@ -3165,9 +3188,13 @@ LRESULT CALLBACK Panel::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
     case WM_ENTERSIZEMOVE:
       panel->movingOrSizing = true;
       return 0;
+    case WM_MOVE:
+      if (panel->windowPositionReady) desktop.updateGlass();
+      return 0;
     case WM_SIZE:
       if (w != SIZE_MINIMIZED) panel->updateShape();
       panel->resize();
+      if (panel->windowPositionReady) desktop.updateGlass();
       return 0;
     case WM_GETMINMAXINFO: {
       auto &info = *reinterpret_cast<MINMAXINFO *>(l);
@@ -3177,17 +3204,18 @@ LRESULT CALLBACK Panel::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
                              : std::max(MulDiv(112, dpi, 96), panel->headerHeight() + MulDiv(44, dpi, 96))};
       return 0;
     }
-    case WM_DPICHANGED: {
-      auto font = ui::makeFont(HIWORD(w));
-      auto titleFont = ui::makeFont(HIWORD(w), 14, FW_SEMIBOLD);
+    case WM_DPICHANGED:
+    case WM_DPICHANGED_AFTERPARENT: {
+      const auto dpi = GetDpiForWindow(window);
+      auto font = ui::makeFont(dpi);
+      auto titleFont = ui::makeFont(dpi, 14, FW_SEMIBOLD);
       SendMessageW(panel->list, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
       if (panel->font) DeleteObject(panel->font);
       panel->font = font;
       SendMessageW(panel->toggle, WM_SETFONT, reinterpret_cast<WPARAM>(titleFont), TRUE);
       if (panel->titleFont) DeleteObject(panel->titleFont);
       panel->titleFont = titleFont;
-      auto rect = reinterpret_cast<RECT *>(l);
-      panel->place(*rect);
+      if (message == WM_DPICHANGED) panel->place(*reinterpret_cast<RECT *>(l));
       if (panel->collapsed()) panel->setCollapsed();
       panel->updateShape();
       panel->refresh(desktop.groups[panel->index]);
@@ -3422,12 +3450,15 @@ void Panel::openSurface() {
 #endif
 
 bool Desktop::openPanel(size_t index) {
+  const bool wasRebuilding = std::exchange(rebuilding, true);
+  struct Restore { bool &value; bool previous; ~Restore() { value = previous; } } restore{rebuilding, wasRebuilding};
   auto panel = std::make_unique<Panel>(*this, index);
   const auto bounds = visibleBounds(groups[index].bounds);
-  // The hidden receiver owns each box so Explorer keeps it out of the taskbar.
+  if (!IsWindow(host)) return false;
+  DesktopDpiScope dpiScope(host);
   const auto create = [&](DWORD extendedStyle) {
     return CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | extendedStyle, panelClass, groups[index].name.c_str(),
-                           WS_POPUP | WS_CLIPCHILDREN, bounds.left, bounds.top,
+                           WS_POPUP | WS_CLIPCHILDREN | WS_CLIPSIBLINGS, bounds.left, bounds.top,
                            bounds.right - bounds.left, bounds.bottom - bounds.top,
                            window, nullptr, instance, panel.get());
   };
@@ -3448,6 +3479,7 @@ bool Desktop::openPanel(size_t index) {
 #endif
   if (!handle) handle = create(0);
   if (!handle) return false;
+  if (!attachDesktopWindow(handle, host)) return false;
   constexpr COLORREF noBorder = 0xfffffffe;
   DwmSetWindowAttribute(handle, DWMWA_BORDER_COLOR, &noBorder, sizeof(noBorder));
   // The client paints the only outline in both renderers.
@@ -3480,14 +3512,15 @@ void Panel::updateShadow() {
   const int width = box.right - box.left + 2 * spread, height = box.bottom - box.top + 2 * spread;
   const int diameter = cornerDiameter();
   if (!shadow) {
+    DesktopDpiScope dpiScope(desktop.host);
     shadow = CreateWindowExW(WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
-                            L"STATIC", nullptr, WS_POPUP, 0, 0, 0, 0, nullptr, nullptr, desktop.instance, nullptr);
+                            L"STATIC", nullptr, WS_CHILD | WS_CLIPSIBLINGS, 0, 0, 0, 0, desktop.host, nullptr, desktop.instance, nullptr);
     if (!shadow) return;
   }
   POINT origin{box.left - spread, box.top - spread + offset};
   if (shadowSize.cx == width && shadowSize.cy == height && shadowDiameter == diameter && shadowDpi == dpi &&
       renderedShadowOpacity == style.shadowOpacity && renderedShadowOffset == offset && renderedShadowSpread == spread) {
-    SetWindowPos(shadow, nullptr, origin.x, origin.y, 0, 0, SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOSIZE);
+    placeDesktopWindow(shadow, {origin.x, origin.y, origin.x + width, origin.y + height}, SWP_NOSIZE);
     return;
   }
   SIZE size{width, height};
@@ -3501,7 +3534,8 @@ void Panel::updateShadow() {
   if (old && old != HGDI_ERROR && drawBoxShadow(static_cast<DWORD *>(data), width, height, spread, offset, diameter, alpha)) {
     POINT source{};
     BLENDFUNCTION blend{AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
-    if (UpdateLayeredWindow(shadow, nullptr, &origin, &size, dc, &source, 0, &blend, ULW_ALPHA)) {
+    auto position = desktopWindowPoint(shadow, origin);
+    if (UpdateLayeredWindow(shadow, nullptr, &position, &size, dc, &source, 0, &blend, ULW_ALPHA)) {
       shadowSize = size;
       shadowDiameter = diameter;
       shadowDpi = dpi;
@@ -3536,7 +3570,7 @@ void Desktop::highlight(HWND target) {
 Panel *Desktop::mergeTargetAt(POINT point, const Panel &source) const {
   const auto hit = WindowFromPoint(point);
   if (!hit || (!panelAt(point) && !desktopDropAt(point))) return nullptr;
-  for (auto child = GetTopWindow(nullptr); child; child = GetWindow(child, GW_HWNDNEXT)) {
+  for (auto child = GetTopWindow(host); child; child = GetWindow(child, GW_HWNDNEXT)) {
     if (child == source.window || !IsWindowVisible(child)) continue;
     const auto panel = std::find_if(panels.begin(), panels.end(), [child](const auto &candidate) {
       return candidate->window == child;
@@ -3554,12 +3588,12 @@ Panel *Desktop::mergeTargetAt(POINT point, const Panel &source) const {
 }
 
 Panel *Desktop::panelAt(POINT point) const {
-  return panelForWindow(GetAncestor(WindowFromPoint(point), GA_ROOT));
+  return panelForWindow(WindowFromPoint(point));
 }
 
 Panel *Desktop::panelForWindow(HWND handle) const {
   if (!handle) return nullptr;
-  const auto found = std::find_if(panels.begin(), panels.end(), [handle](const auto &panel) { return panel->window == handle; });
+  const auto found = std::find_if(panels.begin(), panels.end(), [handle](const auto &panel) { return insideDesktopWindow(panel->window, handle); });
   return found == panels.end() ? nullptr : found->get();
 }
 
@@ -3692,35 +3726,73 @@ void Desktop::movePanelTab(Panel &source, size_t tab, Panel &target, size_t slot
   target.showTab(next);
 }
 
-void Desktop::lower(HWND raisedPanel) const {
-  if (panels.empty()) return;
-  if (std::any_of(panels.begin(), panels.end(), [](const auto &panel) { return panel->movingOrSizing; })) return;
-  const auto active = GetForegroundWindow();
-  DWORD pid = 0;
-  GetWindowThreadProcessId(active, &pid);
-  if (pid == GetCurrentProcessId() && active != window && (menuOpen || editing || dragging)) return;
-
-  // Keep the panels immediately above the desktop icon host, behind regular applications.
-  HWND host = GetShellWindow();
-  DWORD shellPid = 0;
-  GetWindowThreadProcessId(host, &shellPid);
-  wchar_t activeClass[32]{};
-  GetClassNameW(active, activeClass, ARRAYSIZE(activeClass));
-  const bool showingDesktop = shellPid && pid == shellPid && wcscmp(activeClass, L"WorkerW") == 0;
-  if (showingDesktop) {
-    // Show Desktop raises a separate wallpaper window, which does not host the icon list.
-    host = active;
-  } else {
-    for (auto candidate = GetTopWindow(nullptr); candidate; candidate = GetWindow(candidate, GW_HWNDNEXT)) {
-      if (IsWindowVisible(candidate) && candidate != host && quick::isDesktop(candidate)) {
-        host = candidate;
-        break;
-      }
-    }
+bool Desktop::ensureHost() {
+  if (rebuilding || quitting) return false;
+  const auto next = desktopWindowHost();
+  if (next && next == host && panels.size() == groups.size() &&
+      std::all_of(panels.begin(), panels.end(), [&](const auto &panel) {
+        return IsWindow(panel->window) && GetParent(panel->window) == host;
+      })) return true;
+  // Modal callbacks may retain a Panel pointer. Rebuild only after they finish;
+  // recovery never changes the stored layout or the files in the boxes.
+  if (editing || menuOpen || dragging || std::any_of(panels.begin(), panels.end(),
+      [](const auto &panel) { return panel->movingOrSizing && IsWindow(panel->window); })) return false;
+  rebuilding = true;
+  struct Reset { bool &value; ~Reset() { value = false; } } reset{rebuilding};
+  panels.clear();
+  glass.clear();
+  host = next;
+  if (!host) return false;
+  for (size_t i = 0; i < groups.size(); ++i) {
+    if (!openPanel(i)) { panels.clear(); return false; }
   }
-  if (!host) return;
+  return true;
+}
+
+void Desktop::updateGlass(HWND raisedPanel) {
+  if (rebuilding || quitting || !IsWindow(host)) return;
+  std::vector<GlassArea> areas;
+  std::map<int, std::shared_ptr<const WallpaperFrame>> frames;
+#ifdef FOLDERNOTE_WINUI
+  // Follow the sibling order that lower() will apply, including the newly
+  // raised box, so overlapping boxes retain their own blur on the first frame.
+  std::vector<Panel *> ordered;
+  for (auto child = GetTopWindow(host); child; child = GetWindow(child, GW_HWNDNEXT)) {
+    const auto found = std::find_if(panels.begin(), panels.end(), [child](const auto &p) { return p->window == child; });
+    if (found != panels.end()) ordered.push_back(found->get());
+  }
+  const auto raised = std::find_if(ordered.begin(), ordered.end(), [raisedPanel](auto p) { return p->window == raisedPanel; });
+  if (raised != ordered.end()) std::rotate(ordered.begin(), raised, raised + 1);
+  for (auto p : ordered) {
+    auto &panel = *p;
+    RECT bounds{};
+    if (panel.dockHidden || !GetWindowRect(panel.window, &bounds)) continue;
+    int strength = -1;
+    if (panel.hasSurface() && panel.surface->usesDesktopGlass() && panel.backgroundBlur() > 0) {
+      const int wanted = panel.backgroundBlur();
+      auto image = wallpaperBackdrop(wanted);
+      if (image) panel.renderedBlur = wanted;
+      strength = panel.renderedBlur;
+      if (!image) image = wallpaperBackdrop(strength);
+      auto &frame = frames[strength];
+      if (image) frame = std::move(image);
+    }
+    areas.push_back({bounds, panel.cornerDiameter(), strength});
+  }
+#endif
+  std::erase_if(glass, [&](const auto &layer) { return !frames.contains(layer.first); });
+  for (auto &[strength, image] : frames) {
+    auto &layer = glass[strength];
+    if (!layer) layer = std::make_unique<DesktopGlass>();
+    layer->update(host, std::move(image), areas, strength);
+  }
+}
+
+void Desktop::lower(HWND raisedPanel) {
+  updateGlass(raisedPanel);
+  if (!IsWindow(host) || panels.empty()) return;
   std::vector<HWND> boxes;
-  for (auto candidate = GetTopWindow(nullptr); candidate; candidate = GetWindow(candidate, GW_HWNDNEXT)) {
+  for (auto candidate = GetTopWindow(host); candidate; candidate = GetWindow(candidate, GW_HWNDNEXT)) {
     if (std::any_of(panels.begin(), panels.end(), [candidate](const auto &panel) { return panel->window == candidate; }))
       boxes.push_back(candidate);
   }
@@ -3728,7 +3800,9 @@ void Desktop::lower(HWND raisedPanel) const {
     std::rotate(boxes.begin(), raised, raised + 1);
   for (const auto &panel : panels)
     if (panel->shadow && panel->shadowSize.cx) boxes.push_back(panel->shadow);
-  lowerDesktopWindows(host, boxes, desktopPreviewWindow(), showingDesktop || quick::isDesktop(active));
+  for (const auto &[strength, layer] : glass)
+    if (layer->handle()) boxes.push_back(layer->handle());
+  lowerDesktopWindows(host, boxes);
 }
 void Desktop::manage() {
   if (menuOpen || editing || dragging) return;
@@ -4435,7 +4509,7 @@ LRESULT CALLBACK Desktop::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
   if (!desktop) return DefWindowProcW(window, message, w, l);
   try {
     if (message == desktop->taskbarCreated) {
-      desktop->lower();
+      if (desktop->ensureHost()) desktop->lower();
       return 0;
     }
     if (const UINT preview = appearanceMessage(); preview && message == preview) {
@@ -4453,6 +4527,7 @@ LRESULT CALLBACK Desktop::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
       return 0;
     }
     if (message == ui::themeChangedMessage() || message == WM_THEMECHANGED || message == WM_SETTINGCHANGE) {
+      invalidateWallpaperBackdrop();
       desktop->theme.reset(ui::configuredTheme());
       if (!desktop->previewingAppearance) desktop->style = configuredAppearance();
       for (const auto &panel : desktop->panels) {
@@ -4462,19 +4537,19 @@ LRESULT CALLBACK Desktop::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
       desktop->updateShadows();
     }
     switch (message) {
-    case layerMessage:
-      desktop->lower();
-      return 0;
     case WM_TIMER:
+      if (desktop->rebuilding) return 0;
       if (w == headerTimer) {
+        if (!IsWindow(desktop->host)) return 0;
         POINT cursor{};
         if (GetCursorPos(&cursor)) {
           const auto now = GetTickCount64();
-          const auto underPointer = GetAncestor(WindowFromPoint(cursor), GA_ROOT);
+          const auto underPointer = WindowFromPoint(cursor);
           for (const auto &panel : desktop->panels) {
+            if (!IsWindow(panel->window)) continue;
             panel->tickDock(cursor, now);
             if (!panel->dockHidden) {
-              panel->tickAutoCollapse(underPointer == panel->window, now);
+              panel->tickAutoCollapse(insideDesktopWindow(panel->window, underPointer), now);
               panel->updateHeaderActions(cursor);
             }
           }
@@ -4489,6 +4564,7 @@ LRESULT CALLBACK Desktop::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
       }
       if (!enabled()) PostMessageW(window, WM_CLOSE, 0, 0);
       else {
+        if (!desktop->ensureHost()) return 0;
         desktop->lower();
         if (std::any_of(desktop->panels.begin(), desktop->panels.end(),
                         [](const auto &panel) { return panel->movingOrSizing; })) return 0;
@@ -4504,6 +4580,8 @@ LRESULT CALLBACK Desktop::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
       }
       return 0;
     case WM_DISPLAYCHANGE:
+      if (desktop->rebuilding) return 0;
+      invalidateWallpaperBackdrop();
       for (const auto &panel : desktop->panels)
         if (panel->gestureEdge) panel->finishGesture(false);
       for (const auto &panel : desktop->panels) {
@@ -4514,12 +4592,14 @@ LRESULT CALLBACK Desktop::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
       }
       return 0;
     case refreshMessage:
+      if (desktop->rebuilding) return 0;
       for (size_t i = 0; i < desktop->panels.size(); ++i) desktop->panels[i]->refresh(desktop->groups[i]);
       return 0;
     case manageMessage:
-      if (!desktop->quitting && IsWindowEnabled(window)) desktop->manage();
+      if (!desktop->quitting && IsWindowEnabled(window) && desktop->ensureHost()) desktop->manage();
       return 0;
     case createMessage: {
+      if (!desktop->ensureHost()) return 0;
       POINT point{static_cast<LONG>(static_cast<INT_PTR>(w)), static_cast<LONG>(l)};
       desktop->createBox(point, window);
       return 0;
@@ -4678,17 +4758,10 @@ int run(HINSTANCE instance, bool manage, bool create, bool delegated) {
 #endif
         if (!CreateWindowExW(WS_EX_TOOLWINDOW, receiverClass, L"", WS_POPUP, 0, 0, 0, 0,
                              nullptr, nullptr, instance, &desktop)) throw 0;
-        // React to Show Desktop and preview visibility immediately; the timer
-        // remains a fallback if Windows cannot install either notification.
-        constexpr auto eventFlags = WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS;
-        desktop.foregroundHook = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND,
-            nullptr, desktopLayerChanged, 0, 0, eventFlags);
-        desktop.previewHook = SetWinEventHook(EVENT_OBJECT_SHOW, EVENT_OBJECT_HIDE,
-            nullptr, desktopLayerChanged, 0, 0, eventFlags);
-        // Migration from versions that hid the Explorer icon view. User changes to icon visibility are left alone.
+        // The Shell owns clipping and global stacking. Recover child windows
+        // only when Explorer recreates its desktop view.
         restoreDesktopIcons();
-        for (size_t i = 0; i < desktop.groups.size(); ++i)
-          if (!desktop.openPanel(i)) throw 0;
+        desktop.ensureHost();
         if (!SetTimer(desktop.window, 1, 400, nullptr)) throw 0;
         if (!SetTimer(desktop.window, headerTimer, 70, nullptr)) throw 0;
         if (!SetPropW(desktop.window, readyProperty, reinterpret_cast<HANDLE>(1))) throw 0;

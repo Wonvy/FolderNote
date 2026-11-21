@@ -47,8 +47,7 @@ bool previewDesktopItem(const std::wstring &path) {
       SMTO_ABORTIFHUNG | SMTO_BLOCK | SMTO_ERRORONEXIT, 300, &reply) != 0;
   if (delivered) {
     lastInvoke = now;
-    // The box may be above Show Desktop's wallpaper. Activate the preview so
-    // the desktop stops being foreground and the box returns behind apps.
+    // Give the requested preview keyboard focus and leave Show Desktop mode.
     // Do not show it ourselves: a second invoke intentionally hides it.
     if (const auto viewer = desktopPreviewWindow()) SetForegroundWindow(viewer);
   }

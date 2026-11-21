@@ -73,6 +73,7 @@ void validateGroups(const std::vector<Group> &groups, PathSet &paths, const wcha
   for (const auto &group : groups) {
     if (!validName(group.name) || std::find(iconSizes.begin(), iconSizes.end(), group.iconSize) == iconSizes.end() ||
         (group.opacity && (*group.opacity < 0 || *group.opacity > 100)) ||
+        group.blurStrength < 0 || group.blurStrength > 100 ||
         (group.tint && *group.tint > 0x00ffffff) || !validDetachedTint(group.primaryDetachedTint) ||
         group.titleHeight < 28 || group.titleHeight > 80 ||
         group.titleStyle < TitleStyle::Text || group.titleStyle > TitleStyle::Hidden ||
@@ -326,6 +327,7 @@ Layout parseJson(std::string_view utf8) {
     if (hasField(entry, L"itemSpacing")) group.itemSpacing = numberField(entry.Get(), L"itemSpacing");
     if (hasField(entry, L"iconSize")) group.iconSize = numberField(entry.Get(), L"iconSize");
     if (hasField(entry, L"opacity")) group.opacity = numberField(entry.Get(), L"opacity");
+    if (hasField(entry, L"blurStrength")) group.blurStrength = numberField(entry.Get(), L"blurStrength");
     if (hasField(entry, L"glass")) {
       boolean glass = false;
       checkJson(entry->GetNamedBoolean(HStringReference(L"glass").Get(), &glass));
@@ -428,6 +430,7 @@ std::string formatJson(const Layout &layout) {
     content += L",\n      \"iconSize\": " + std::to_wstring(group.iconSize);
     if (group.itemSpacing > 0) content += L",\n      \"itemSpacing\": " + std::to_wstring(group.itemSpacing);
     if (group.opacity) content += L",\n      \"opacity\": " + std::to_wstring(*group.opacity);
+    if (group.blurStrength != defaultBlurStrength) content += L",\n      \"blurStrength\": " + std::to_wstring(group.blurStrength);
     if (group.glass) {
       content += L",\n      \"glass\": ";
       content += *group.glass ? L"true" : L"false";
@@ -717,6 +720,7 @@ bool detachTab(std::vector<Group> &groups, size_t group, size_t tabIndex, RECT b
   detached.iconSize = from.iconSize;
   detached.opacity = from.opacity;
   detached.glass = from.glass;
+  detached.blurStrength = from.blurStrength;
   detached.autoCollapse = from.autoCollapse;
   detached.titleHeight = from.titleHeight;
   detached.titleStyle = from.titleStyle;

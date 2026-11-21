@@ -51,11 +51,12 @@ bool classIs(HWND window, const wchar_t *name) {
 bool desktopClass(HWND window) {
   return classIs(window, L"Progman") || classIs(window, L"WorkerW");
 }
-bool folderTabsSurface(HWND window, HWND frame) {
-  // The in-process tab band owns its middle-button gestures (tab close).
+bool localInputSurface(HWND window, HWND frame) {
+  // Tab bands and desktop boxes own their input, even under a Shell root.
   // Check only class names/parents here; never call Shell or UIA in the hook.
   for (HWND current = window; current && current != frame; current = GetParent(current))
-    if (classIs(current, L"FolderNote.ExplorerTabs.Band.v1")) return true;
+    if (classIs(current, L"FolderNote.ExplorerTabs.Band.v1") ||
+        classIs(current, L"FolderNote.DesktopGroups.Panel")) return true;
   return false;
 }
 DWORD integrity(DWORD pid) {
@@ -105,7 +106,7 @@ LRESULT CALLBACK mouseHook(int code, WPARAM message, LPARAM parameter) {
     const auto *mouse = reinterpret_cast<MSLLHOOKSTRUCT *>(parameter);
     if (message == WM_MBUTTONUP && middle.suppressUp) { middle = {}; return 1; }
     const HWND under = WindowFromPoint(mouse->pt), root = GetAncestor(under, GA_ROOT);
-    if (folderTabsSurface(under, root)) {
+    if (localInputSurface(under, root)) {
       // Old loaded bands close on bare UP. Do not deliver an orphan release
       // after a gesture started in the file list, including MOVE into the band.
       const bool fromFileList = middle.target != nullptr;

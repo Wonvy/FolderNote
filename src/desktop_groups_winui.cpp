@@ -1,6 +1,7 @@
 #include "desktop_groups_winui.h"
 #include "desktop_box_icons.h"
 #include "desktop_groups_render.h"
+#include "desktop_groups_wallpaper.h"
 #include "core.h"
 #include "language.h"
 #include <MddBootstrap.h>
@@ -28,6 +29,7 @@
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Graphics.Imaging.h>
 #include <winrt/Windows.Storage.Streams.h>
+#include <winrt/Windows.UI.ViewManagement.h>
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -328,6 +330,7 @@ struct Surface::State {
   bool selecting = false, toggleSelection = false, extendSelection = false;
   ::winrt::com_ptr<BoxAcrylic> acrylic;
   bool acrylicAttached = false;
+  bool wallpaperGlass = false;
   struct HeaderControl {
     controls::Border box{nullptr};
     controls::TextBlock label{nullptr};
@@ -426,7 +429,17 @@ struct Surface::State {
   }
 
   static LRESULT CALLBACK islandInput(HWND window, UINT message, WPARAM w, LPARAM l, UINT_PTR, DWORD_PTR data) {
-    const auto &state = *reinterpret_cast<const State *>(data);
+    auto &state = *reinterpret_cast<State *>(data);
+    // The Shell may destroy our desktop ancestor before the Surface owner.
+    // Release OLE's reference while the HWND still exists.
+    if (message == WM_DESTROY && state.dropRegistered) {
+      RevokeDragDrop(window);
+      state.dropRegistered = false;
+    }
+    if (message == WM_NCDESTROY) {
+      RemoveWindowSubclass(window, islandInput, 1);
+      state.islandWindow = nullptr;
+    }
     if (state.events.findInput && (message == WM_KILLFOCUS || message == WM_LBUTTONDOWN || message == WM_POINTERDOWN)) {
       // XAML child-to-child LostFocus also fires when a match is selected.
       // Reset only for an actual window focus change or a new pointer gesture.
@@ -1782,6 +1795,20 @@ void Surface::appearance(bool dark, bool highContrast, COLORREF tint, BYTE opaci
                                            : dark ? ux::ElementTheme::Dark : ux::ElementTheme::Light);
     // Below Acrylic's tint floor, blend the chosen color directly over the desktop.
     constexpr int minimumAcrylicOpacity = 64;
+    DWORD rootProcess = 0;
+    GetWindowThreadProcessId(GetAncestor(state->parent, GA_ROOT), &rootProcess);
+    bool effects = true;
+    try { effects = ::winrt::Windows::UI::ViewManagement::UISettings{}.AdvancedEffectsEnabled(); } catch (...) {}
+    state->wallpaperGlass = glass && !highContrast && effects && opacity >= minimumAcrylicOpacity &&
+        rootProcess && rootProcess != GetCurrentProcessId();
+    if (state->wallpaperGlass) {
+      if (state->acrylicAttached) {
+        state->island.SystemBackdrop(nullptr);
+        state->acrylicAttached = false;
+      }
+      state->backgroundTint.Color(windowsColor(tint, opacity));
+      return;
+    }
     if (opacity >= minimumAcrylicOpacity && glass && !highContrast && backdrops::DesktopAcrylicController::IsSupported()) {
       if (!state->acrylic) state->acrylic = ::winrt::make_self<BoxAcrylic>();
       state->acrylic->appearance(dark, tint);
@@ -1806,9 +1833,12 @@ void Surface::appearance(bool dark, bool highContrast, COLORREF tint, BYTE opaci
 }
 
 bool Surface::acrylicActive() const {
+  if (usesDesktopGlass()) return wallpaperBackdrop() != nullptr;
   if (!available() || !state->acrylicAttached || !state->acrylic || !state->acrylic->controller) return false;
   try { return state->acrylic->controller.State() == backdrops::SystemBackdropState::Active; } catch (...) { return false; }
 }
+
+bool Surface::usesDesktopGlass() const { return available() && state->wallpaperGlass; }
 
 void Surface::header(const std::vector<std::wstring> &titles, std::size_t active, bool collapsed,
                      bool actionsVisible, bool highlighted, int radius, COLORREF text, COLORREF muted,
@@ -1892,10 +1922,10 @@ bool Surface::beginTitleRename(std::function<void(std::wstring)> commit) {
     if (!state->tabs.empty()) state->tabs.front().box.Visibility(ux::Visibility::Collapsed);
     state->titleEditor.Visibility(ux::Visibility::Visible);
     state->titleBar.UpdateLayout();
-    SetForegroundWindow(state->parent);
+    const auto root = GetAncestor(state->parent, GA_ROOT);
+    SetForegroundWindow(root);
     const auto foreground = GetForegroundWindow();
-    if (foreground == state->parent || GetWindowThreadProcessId(foreground, nullptr) == GetCurrentThreadId()) {
-      SetActiveWindow(state->parent);
+    if (foreground == root || GetWindowThreadProcessId(foreground, nullptr) == GetCurrentThreadId()) {
       SetFocus(state->islandWindow);
       if (state->titleEditor.Focus(ux::FocusState::Programmatic) && state->finishTitleRename) {
         state->titleEditor.SelectAll();
