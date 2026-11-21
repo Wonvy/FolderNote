@@ -51,6 +51,20 @@ int main() {
       session.key(VK_RETURN); check(session.done && session.selected == 41);
     }
     {
+      Session session(instance, ui::ThemeMode::Dark); session.create(model(), {50, 50}, false);
+      session.character(L'x'); session.character(L'm');
+      check(session.panels[0]->selected == -1 && !session.done);
+      session.key(VK_RETURN);
+      check(session.panels[0]->selected == 1 && !session.done && !session.selected);
+      for (auto character : std::wstring(L"lsjl")) session.character(character);
+      session.key(VK_ESCAPE); check(!session.done); // Dismiss candidates before closing the menu.
+      for (auto character : std::wstring(L"lsjl")) session.character(character);
+      session.key(VK_RETURN);
+      check(session.panels[0]->selected == 2 && session.panels.size() == 1 && !session.done);
+      session.key(VK_RETURN); check(session.panels.size() == 2 && !session.done);
+      session.key(VK_RETURN); check(session.done && session.selected == 42);
+    }
+    {
       Session session(instance, ui::ThemeMode::Dark); auto &panel = session.create(model(), {50, 50}, false);
       RECT item{}; SendMessageW(panel.list, LB_GETITEMRECT, 1, reinterpret_cast<LPARAM>(&item));
       POINT point{item.left + 30, (item.top + item.bottom) / 2}; ClientToScreen(panel.list, &point);

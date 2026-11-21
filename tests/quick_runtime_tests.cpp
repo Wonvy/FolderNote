@@ -101,6 +101,10 @@ static void helperLifetimeTests() {
   };
   enable(false); routing(0, 0);
   check(!quick::helperEnabled(), "disabled features do not require the helper");
+  quick_find::external::saveEnabled(true);
+  check(quick::helperEnabled(), "pinyin locator independently keeps the helper active");
+  quick_find::external::saveEnabled(false);
+  check(!quick::helperEnabled(), "turning off the final feature releases the helper");
   enable(true);
   check(quick::helperEnabled(), "middle menu alone keeps the helper active");
   enable(false); routing(1, 1);

@@ -3,6 +3,7 @@
 #include "custom_explorer_entries.h"
 #include "desktop_folder_links.h"
 #include "explorer_entries.h"
+#include "quick_find_controls.h"
 #include "language.h"
 #include "quick_popup.h"
 #include "removed_entries.h"
@@ -302,6 +303,13 @@ struct Page {
     }, true);
     SetWindowPos(scroll.window(), HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     SetWindowSubclass(list, listProc, 1, reinterpret_cast<DWORD_PTR>(this));
+    quick_find::attach(list, [this](int row) {
+      if (row < 0 || size_t(row) >= rows.size()) return;
+      const auto path = std::visit([](const auto &entry) { return entry.target; }, rows[row].row);
+      const auto attributes = GetFileAttributesW(path.c_str());
+      if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY))
+        ShellExecuteW(window, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    });
     add(0, L"STATIC", L"", SS_LEFT | SS_NOPREFIX | SS_ENDELLIPSIS, StatusLine);
     auto metadata = add(0, L"STATIC", L"", SS_LEFT | SS_NOPREFIX | SS_ENDELLIPSIS, StatusMetadata);
     ui::muted(metadata);

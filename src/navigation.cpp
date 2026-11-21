@@ -3,6 +3,7 @@
 #include "window_position.h"
 #include "resource.h"
 #include "quick_folders.h"
+#include "quick_find_external.h"
 #include "theme_scroll.h"
 #include "app_version.h"
 #include "update.h"
@@ -351,6 +352,7 @@ static std::wstring languagePath(HWND owner, bool importing) {
   return path;
 }
 static constexpr int updateButton = 42, automaticUpdateCheck = 70, automaticUpdateDescription = 71, updateStatusLabel = 72;
+static constexpr int pinyinFindCheck = 73, pinyinFindDescription = 74;
 static constexpr UINT_PTR updateTimer = 42;
 static constexpr auto automaticUpdateValue = L"AutomaticUpdate";
 static constexpr auto lastAutomaticCheckValue = L"LastAutomaticUpdateCheck";
@@ -755,16 +757,18 @@ static void layoutSettings() {
     MoveWindow(control, scale(sidebar + 24 + x), scale(y), scale(w), scale(h), TRUE);
     ShowWindow(control, activePage == SettingsPage::Preferences ? SW_SHOWNA : SW_HIDE);
   };
-  preference(46, 0, 104, 210, 22);
-  preference(languageChoice, 0, 132, 210, 130);
-  preference(languageExport, 220, 132, 174, 32);
-  preference(languageImport, 404, 132, 174, 32);
-  preference(32, 0, 196, 210, 22);
-  preference(17, 0, 224, 210, 130);
+  preference(46, 0, 84, 210, 22);
+  preference(languageChoice, 0, 110, 210, 130);
+  preference(languageExport, 0, 150, 174, 32);
+  preference(languageImport, 184, 150, 174, 32);
+  preference(32, 300, 84, 210, 22);
+  preference(17, 300, 110, 210, 130);
   const int preferencesWidth = std::max(0, MulDiv(width, 96, dpi) - sidebar - 48);
-  preference(automaticUpdateCheck, 0, 278, std::min(210, preferencesWidth), 26);
-  preference(automaticUpdateDescription, 0, 309, preferencesWidth, 42);
-  constexpr int statusTop = 356;
+  preference(pinyinFindCheck, 0, 194, preferencesWidth, 26);
+  preference(pinyinFindDescription, 0, 224, preferencesWidth, 42);
+  preference(automaticUpdateCheck, 0, 275, std::min(210, preferencesWidth), 26);
+  preference(automaticUpdateDescription, 0, 305, preferencesWidth, 42);
+  constexpr int statusTop = 352;
   const int statusHeight = std::clamp(MulDiv(height, 96, dpi) - 72 - statusTop, 0, 62);
   preference(updateStatusLabel, 0, statusTop, preferencesWidth, statusHeight);
   const int boxLeft = scale(sidebar + 24);
@@ -1029,6 +1033,10 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
       SendMessageW(updateTip, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&tool));
     }
     ui::muted(add(h, L"STATIC", lang::text(L"外观主题"), 0, 32));
+    const auto pinyinFind = add(h, L"BUTTON", lang::text(L"中文首字母快速定位"), BS_AUTOCHECKBOX | WS_TABSTOP, pinyinFindCheck);
+    SendMessageW(pinyinFind, BM_SETCHECK, quick_find::external::enabled() ? BST_CHECKED : BST_UNCHECKED, 0);
+    ui::muted(add(h, L"STATIC", lang::text(L"在资源管理器和系统文件选择窗口的文件列表中，输入名称首字母即可定位。盒子和软件内列表始终支持。"),
+                  SS_NOPREFIX, pinyinFindDescription));
     const auto automaticUpdate = add(h, L"BUTTON", lang::text(L"自动更新"), BS_AUTOCHECKBOX | WS_TABSTOP,
                                      automaticUpdateCheck);
     SendMessageW(automaticUpdate, BM_SETCHECK, automaticUpdatesEnabled() ? BST_CHECKED : BST_UNCHECKED, 0);
@@ -1237,6 +1245,14 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
       showPage(SettingsPage(button - pageButtons.begin()));
     } else if (LOWORD(w) == 13 && HIWORD(w) == BN_CLICKED) {
       try { copyDiagnostics(h); } catch (const fn::Error &e) { MessageBoxW(h, e.message.c_str(), L"FolderNote", MB_OK | MB_ICONERROR); }
+    } else if (LOWORD(w) == pinyinFindCheck && HIWORD(w) == BN_CLICKED) {
+      try {
+        quick_find::external::saveEnabled(SendDlgItemMessageW(h, pinyinFindCheck, BM_GETCHECK, 0, 0) == BST_CHECKED);
+        quick::syncHelper(fn::modulePath().native());
+      } catch (...) {
+        SendDlgItemMessageW(h, pinyinFindCheck, BM_SETCHECK, quick_find::external::enabled() ? BST_CHECKED : BST_UNCHECKED, 0);
+        MessageBoxW(h, lang::text(L"无法启用快速定位，请重新打开设置后重试。"), L"FolderNote", MB_OK | MB_ICONERROR);
+      }
     } else if (LOWORD(w) == automaticUpdateCheck && HIWORD(w) == BN_CLICKED && *app::updateRepository &&
                (!updateWork.valid() || workingAutomatically())) {
       const DWORD enabled = SendDlgItemMessageW(h, automaticUpdateCheck, BM_GETCHECK, 0, 0) == BST_CHECKED;

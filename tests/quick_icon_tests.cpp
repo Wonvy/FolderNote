@@ -57,6 +57,34 @@ int main() {
     auto personalized = read(Source::file(custom.native()), 16);
     check(normal && personalized, "load actual folder icons");
     check(pixels(normal->handle) != pixels(personalized->handle), "desktop.ini icon must differ from generic folder");
+    const auto childIcon = read(Source::child(root.native(), custom.filename().native()), 16);
+    check(childIcon && pixels(childIcon->handle) == pixels(personalized->handle), "candidate folder preserves its native custom icon");
+    {
+      Microsoft::WRL::ComPtr<IShellLinkW> link;
+      Microsoft::WRL::ComPtr<IPersistFile> persist;
+      const auto shortcut = root / L"候选图标.lnk";
+      check(SUCCEEDED(CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&link))), "create isolated shortcut");
+      link->SetPath(plain.c_str()); link->SetIconLocation(iconFile.c_str(), 0);
+      check(SUCCEEDED(link.As(&persist)) && SUCCEEDED(persist->Save(shortcut.c_str(), TRUE)), "save shortcut with native icon");
+      persist.Reset(); link.Reset();
+      SHFILEINFOW info{};
+      check(SHGetFileInfoW(shortcut.c_str(), 0, &info, sizeof(info), SHGFI_DISPLAYNAME) != 0, "read Shell display name");
+      Cache cache(nullptr, 0, 16);
+      const auto awaitIcon = [&](const Source &source) {
+        Image result;
+        const auto deadline = GetTickCount64() + 5000;
+        do {
+          result = cache.get(source);
+          MSG message{};
+          while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) { TranslateMessage(&message); DispatchMessageW(&message); }
+          if (!result) Sleep(10);
+        } while (!result && GetTickCount64() < deadline);
+        return result;
+      };
+      auto direct = awaitIcon(Source::file(shortcut.native()));
+      auto displayed = awaitIcon(Source::child(root.native(), info.szDisplayName));
+      check(direct && displayed && pixels(direct->handle) == pixels(displayed->handle), "hidden-extension candidate resolves actual shortcut icon");
+    }
     Microsoft::WRL::ComPtr<IShellItem> item;
     Microsoft::WRL::ComPtr<IExtractIconW> extractor;
     check(SUCCEEDED(SHCreateItemFromParsingName(custom.c_str(), nullptr, IID_PPV_ARGS(&item))), "bind custom shell item");
@@ -68,6 +96,7 @@ int main() {
     // Shell may resample/composite ICO data differently from LoadImage. Verify
     // the actual icon provider's source and distinguish it from a generic folder.
     check(read(Source::system(SIID_SETTINGS), 16) != nullptr, "Windows settings icon");
+    check(read(Source::file(L"::{645FF040-5081-101B-9F08-00AA002F954E}"), 16) != nullptr, "native recycle-bin candidate icon");
     check(read(Source::folder(FOLDERID_Downloads), 24) != nullptr, "Windows downloads icon at scaled size");
     {
       Cache cache(nullptr, 0, 16);

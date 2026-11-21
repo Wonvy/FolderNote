@@ -2,7 +2,7 @@
 
 [简体中文](README.md) · [English](README.en.md)
 
-**Windows File Explorer tools · Version 1.9.6 · x64**
+**Windows File Explorer tools · Latest release 1.9.7 · x64**
 
 FolderNote adds desktop boxes, folder entry management, context menu management, folder notes, double-click navigation, a middle-click folder menu, and tabs for Windows 10. It uses a native Win32 settings window and requires no separate C++ runtime installation.
 
@@ -64,6 +64,8 @@ Select **Folder entries** and choose a location. Switch between list and icon vi
 6. Deleting a box moves its stored items back to your desktop. References from earlier versions still point to their original locations. After turning off desktop boxes or uninstalling FolderNote, you can find stored items by opening `FolderNote Boxes` in File Explorer.
 
 ## Install and get started
+
+The development build adds a Chinese-initial candidate popup: `sjsc` finds “设计素材” and `cq` finds “重庆”. The popup appears beside the pointer. Click a candidate, or select it with the arrow keys and press Enter: folders open, while files are only selected and revealed in the original list. Desktop boxes and FolderNote lists support it directly, including box pagination. Enable **Settings → Find items by Chinese initials** to extend it to File Explorer and standard Open, Save, and folder pickers. Matching is offline and supports traditional characters, multiple readings, and mixed Latin names.
 
 1. Download and run **FolderNote-Setup-x64.exe** from [Releases](https://github.com/Wonvy/FolderNote/releases/latest). No extraction is needed. Use **FolderNote-Setup-Win11-x64.exe** for the Windows 11 first-level context menu test edition. Both installers use the application icon and include all program components. The first installation may request administrator approval to register the navigation extension.
 2. Find **FolderNote** in the Start menu or open `FolderNote.exe`. Use the sidebar to switch between Features, Pins and history, Context Menu Manager, Folder entries, and Settings. The running version appears at the bottom left.

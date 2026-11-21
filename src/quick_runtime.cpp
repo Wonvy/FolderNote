@@ -2,6 +2,7 @@
 #include "language.h"
 #include "quick_legacy.h"
 #include "quick_dialog_history.h"
+#include "quick_find_external.h"
 #include "tabs_routing.h"
 #include "navigation.h"
 #include "core.h"
@@ -29,7 +30,7 @@ struct MiddleGesture {
   bool swallowed = false, dragged = false, suppressUp = false;
 } middle;
 bool helperEnabled() {
-  return navigation::quickEnabled() || tabs::routing::enabled();
+  return navigation::quickEnabled() || tabs::routing::enabled() || quick_find::external::enabled();
 }
 bool launchHelper(const std::wstring &exe, const desktop_groups::DesktopLaunchContext &context) {
   using desktop_groups::DesktopLaunchMode;
@@ -80,6 +81,13 @@ void updateTarget() {
   HWND window = GetForegroundWindow();
   eligible.store(eligibleTarget(window) ? window : nullptr);
   dialog::observeHistory(eligible.load() == window && isFileDialog(window) ? window : nullptr);
+  HWND search = nullptr;
+  if (quick_find::external::enabled() && (isExplorer(window) || isFileDialog(window))) {
+    DWORD process = 0; GetWindowThreadProcessId(window, &process);
+    const auto targetLevel = integrity(process), ownLevel = integrity(GetCurrentProcessId());
+    if (targetLevel != 0xffffffff && ownLevel != 0xffffffff && targetLevel <= ownLevel) search = window;
+  }
+  quick_find::external::target(search);
 }
 void CALLBACK foregroundEvent(HWINEVENTHOOK, DWORD event, HWND window, LONG, LONG, DWORD, DWORD) {
   if (event == EVENT_OBJECT_SHOW && (!window || GetAncestor(window, GA_ROOT) != GetForegroundWindow() ||
@@ -87,6 +95,7 @@ void CALLBACK foregroundEvent(HWINEVENTHOOK, DWORD event, HWND window, LONG, LON
   if (receiver) PostMessageW(receiver, foregroundMessage, 0, 0);
 }
 LRESULT CALLBACK mouseHook(int code, WPARAM message, LPARAM parameter) {
+  if (code == HC_ACTION) quick_find::external::mouse(message, *reinterpret_cast<const MSLLHOOKSTRUCT *>(parameter));
   if (code == HC_ACTION && (message == WM_MBUTTONDOWN || message == WM_MBUTTONDBLCLK ||
                             message == WM_MBUTTONUP || (message == WM_MOUSEMOVE && middle.target))) {
     const auto *mouse = reinterpret_cast<MSLLHOOKSTRUCT *>(parameter);
@@ -137,7 +146,14 @@ LRESULT CALLBACK mouseHook(int code, WPARAM message, LPARAM parameter) {
   }
   return CallNextHookEx(nullptr, code, message, parameter);
 }
-struct HookStart { HANDLE ready; HHOOK hook = nullptr; };
+LRESULT CALLBACK keyboardHook(int code, WPARAM message, LPARAM parameter) {
+  if (code == HC_ACTION) {
+    try { if (quick_find::external::keyboard(message, *reinterpret_cast<KBDLLHOOKSTRUCT *>(parameter))) return 1; } catch (...) {}
+  }
+  // Candidate navigation stays in the popup; ordinary application input passes through.
+  return CallNextHookEx(nullptr, code, message, parameter);
+}
+struct HookStart { HANDLE ready; HHOOK hook = nullptr, keyboard = nullptr; bool search = false; };
 bool acquireHelperMutex(HANDLE mutex, DWORD timeout = 5000) {
   const auto acquired = WaitForSingleObject(mutex, timeout);
   return acquired == WAIT_OBJECT_0 || acquired == WAIT_ABANDONED;
@@ -146,10 +162,12 @@ DWORD WINAPI hookThread(void *argument) {
   auto *state = static_cast<HookStart *>(argument);
   MSG msg; PeekMessageW(&msg, nullptr, WM_USER, WM_USER, PM_NOREMOVE);
   state->hook = SetWindowsHookExW(WH_MOUSE_LL, mouseHook, GetModuleHandleW(nullptr), 0);
+  if (state->search) state->keyboard = SetWindowsHookExW(WH_KEYBOARD_LL, keyboardHook, GetModuleHandleW(nullptr), 0);
   SetEvent(state->ready);
   if (!state->hook) return 1;
   while (GetMessageW(&msg, nullptr, 0, 0) > 0) { TranslateMessage(&msg); DispatchMessageW(&msg); }
   UnhookWindowsHookEx(state->hook);
+  if (state->keyboard) UnhookWindowsHookEx(state->keyboard);
   return 0;
 }
 LRESULT CALLBACK helperProc(HWND window, UINT message, WPARAM w, LPARAM l) {
@@ -317,21 +335,25 @@ int helper(HINSTANCE instance, bool delegated) {
   receiver = CreateWindowExW(0, helperClass, L"", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, instance, nullptr);
   if (!receiver) { ReleaseMutex(mutex); CloseHandle(mutex); return 1; }
   const bool quickMode = navigation::quickEnabled(), routeMode = tabs::routing::enabled();
+  const bool searchMode = quick_find::external::enabled();
+  const bool searchReady = !searchMode || quick_find::external::start();
+  const bool observe = quickMode || searchMode;
   const bool router = routeMode && tabs::routing::start(receiver);
-  auto event = quickMode ? SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, nullptr, foregroundEvent, 0, 0, WINEVENT_OUTOFCONTEXT) : nullptr;
-  auto shown = quickMode ? SetWinEventHook(EVENT_OBJECT_SHOW, EVENT_OBJECT_SHOW, nullptr, foregroundEvent, 0, 0, WINEVENT_OUTOFCONTEXT) : nullptr;
-  if (quickMode) { updateTarget(); SetTimer(receiver, historyTimer, 250, nullptr); }
-  HookStart hook{quickMode ? CreateEventW(nullptr, TRUE, FALSE, nullptr) : nullptr};
+  auto event = observe ? SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, nullptr, foregroundEvent, 0, 0, WINEVENT_OUTOFCONTEXT) : nullptr;
+  auto shown = observe ? SetWinEventHook(EVENT_OBJECT_SHOW, EVENT_OBJECT_SHOW, nullptr, foregroundEvent, 0, 0, WINEVENT_OUTOFCONTEXT) : nullptr;
+  if (observe) { updateTarget(); SetTimer(receiver, historyTimer, 250, nullptr); }
+  HookStart hook{observe ? CreateEventW(nullptr, TRUE, FALSE, nullptr) : nullptr, nullptr, nullptr, searchMode};
   DWORD threadId = 0;
   HANDLE thread = hook.ready ? CreateThread(nullptr, 0, hookThread, &hook, 0, &threadId) : nullptr;
   if (thread) WaitForSingleObject(hook.ready, INFINITE);
-  const bool ready = (!quickMode || (thread && hook.hook)) && (!routeMode || router) &&
+  const bool ready = (!observe || (thread && hook.hook)) && searchReady && (!searchMode || hook.keyboard) && (!routeMode || router) &&
                      SetPropW(receiver, readyProperty, reinterpret_cast<HANDLE>(1));
   if (ready) {
     MSG message;
     while (GetMessageW(&message, nullptr, 0, 0) > 0) { TranslateMessage(&message); DispatchMessageW(&message); }
   }
   eligible = nullptr;
+  quick_find::external::stop();
   tabs::routing::stop();
   if (thread) { PostThreadMessageW(threadId, WM_QUIT, 0, 0); WaitForSingleObject(thread, INFINITE); CloseHandle(thread); }
   if (hook.ready) CloseHandle(hook.ready);

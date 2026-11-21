@@ -38,6 +38,10 @@ ctest --test-dir build -C Release --output-on-failure -R "^(ExplorerTabsTests|Na
 
 构建本身不会注册资源管理器扩展，也不会替换已安装的程序。
 
+中文首字母定位由 `quick_find` 共用匹配器、`quick_find_controls` 内部列表适配和 `quick_find_external` 系统文件列表适配组成。离线字库及许可证随程序编译；更新字库时运行 `py -3 tools/generate_pinyin_initials.py`，脚本使用固定的上游提交，并记录输入数据的 SHA-256。
+
+`QuickFindTests` 检查匹配、输入会话和原生列表；`QuickFindExternalTests`、`QuickFindSaveDialogTests`、`QuickFindFolderDialogTests` 会短暂打开只含自动生成测试文件的系统选择窗口，检查虚拟列表定位和输入框隔离。它们需要交互式 Windows 桌面并串行运行。启用 WinUI 时，`DesktopFindTests` 还检查盒子视图的实际键盘事件、滚动和选择。
+
 ## 目录与组件
 
 | 路径 | 内容 |

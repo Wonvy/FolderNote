@@ -4,6 +4,7 @@
 #include "window_position.h"
 #include "quick_icons.h"
 #include "theme_scroll.h"
+#include "quick_find_controls.h"
 #include <shlobj.h>
 #include <wrl/client.h>
 #include <windowsx.h>
@@ -88,6 +89,13 @@ struct Manager {
     return result;
   }
   void prepareList(HWND window, HWND parent) {
+    quick_find::attach(window, [this, window](int row) {
+      const auto &paths = window == pins ? data.pins : data.history;
+      if (row < 0 || size_t(row) >= paths.size()) return;
+      const auto attributes = GetFileAttributesW(paths[row].c_str());
+      if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY))
+        ShellExecuteW(window, L"open", paths[row].c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    });
     SendMessageW(window, LB_SETITEMHEIGHT, 0, px(30));
     SetWindowSubclass(window, listProc, 0x464e, reinterpret_cast<DWORD_PTR>(this));
     scroll(window).create(window, 1, theme, [this, window](int top) {

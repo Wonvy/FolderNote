@@ -23,6 +23,7 @@ struct Events {
   std::function<void(int)> open;
   std::function<bool(int)> preview;
   std::function<bool()> previewAvailable;
+  std::function<bool(UINT, WPARAM)> findInput;
   std::function<void(POINT)> context;
   std::function<void(int)> zoom;
   std::function<void(int)> beginDrag;
@@ -93,6 +94,7 @@ public:
   bool scrollAt(POINT screen);
   void refreshImage(int row, HICON image);
   void select(const std::vector<int> &rows);
+  void reveal(int row);
 
 private:
   struct State;

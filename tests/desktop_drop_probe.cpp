@@ -2,6 +2,8 @@
 // native rim or the real WinUI box content. Does not move any user files.
 #include "../src/desktop_groups_winui.h"
 #include "../src/desktop_groups_preview.h"
+#include "../src/quick_find.h"
+#include "../src/quick_find_popup.h"
 #include <windowsx.h>
 #include <shellapi.h>
 #include <shlobj.h>
@@ -93,6 +95,7 @@ int main(int argc, char **argv) {
   const bool verify = mode == "--verify" || mode == "--verify-parent-only";
   const bool parentOnly = mode == "--parent-only" || mode == "--verify-parent-only";
   const bool preview = mode == "--preview" || mode == "--preview-list";
+  const bool findTest = mode == "--verify-find";
   int result = 0;
   SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
   if (FAILED(OleInitialize(nullptr))) return 1;
@@ -116,6 +119,24 @@ int main(int argc, char **argv) {
     std::cout << "Register native hr=" << std::hex << RegisterDragDrop(host, target.Get()) << std::dec << std::endl;
     {
       desktop_groups::winui::Events events;
+      quick_find::Popup query;
+      std::vector<std::wstring> findNames{L"设计素材", L"重庆项目"};
+      desktop_groups::winui::Surface *findSurface = nullptr;
+      int found = -1, opened = 0;
+      std::wstring characters;
+      if (findTest) events.findInput = [&](UINT message, WPARAM key) {
+        if (message == WM_KILLFOCUS) query.close();
+        if (message == WM_KEYDOWN && query.key(static_cast<UINT>(key))) return true;
+        if (message != WM_CHAR || !quick_find::inputCharacter(static_cast<wchar_t>(key))) return false;
+        characters += static_cast<wchar_t>(key);
+        if (!query.active()) query.begin(host, findNames, [&](int row) {
+          found = row;
+          if (findSurface) { findSurface->select({found}); findSurface->reveal(found); }
+        });
+        query.character(static_cast<wchar_t>(key));
+        return true;
+      };
+      if (findTest) events.open = [&](int) { ++opened; };
       if (preview) events.previewAvailable = [] { return desktop_groups::desktopPreviewAvailable(); };
       if (preview) events.preview = [&](int row) {
         const bool handled = row >= 0 && row <= 1 && desktop_groups::previewDesktopItem(
@@ -125,6 +146,7 @@ int main(int argc, char **argv) {
         return handled;
       };
       desktop_groups::winui::Surface surface(host, std::move(events), parentOnly ? nullptr : target.Get());
+      findSurface = &surface;
       if (!surface.available()) { log("Surface unavailable"); return 3; }
       surface.place({10, 10, 540, 460});
       surface.appearance(false, false, RGB(235, 240, 245), 255, false);
@@ -133,11 +155,50 @@ int main(int argc, char **argv) {
           desktop_groups::TitleStyle::Text, nullptr);
       std::vector<desktop_groups::winui::Item> items{{preview ? L"sample.txt" : L"Existing item", (root / L"sample.txt").native(), nullptr}};
       if (preview) items.push_back({L"sample folder", (root / L"sample folder").native(), nullptr});
+      if (findTest) items = {{L"设计素材", L"", nullptr}, {L"重庆项目", L"", nullptr}};
       surface.rows(items,
                    mode == "--preview-list", 32);
       if (preview) surface.select({0});
       surface.show(true);
-      if (verify) {
+      if (findTest) {
+        ShowWindow(window, SW_SHOWNORMAL);
+        const auto pump = [&](DWORD duration) {
+          const auto end = GetTickCount64() + duration;
+          while (GetTickCount64() < end) {
+            MSG message{};
+            while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+              if (runtime.preTranslate(message)) continue;
+              TranslateMessage(&message); DispatchMessageW(&message);
+            }
+            Sleep(10);
+          }
+        };
+        pump(150); surface.focus(); pump(100);
+        PostMessageW(GetFocus(), WM_CHAR, L's', 1); pump(100);
+        PostMessageW(GetFocus(), WM_CHAR, L'j', 1); pump(100);
+        if (found != -1 || characters != L"sj" || query.query() != L"sj") {
+          log("FAIL: WinUI characters do not reach incremental find"); result = 8;
+        }
+        const auto press = [&](UINT key) {
+          const auto scanCode = static_cast<LPARAM>(MapVirtualKeyW(key, MAPVK_VK_TO_VSC)) << 16;
+          PostMessageW(GetFocus(), WM_KEYDOWN, key, scanCode | 1); pump(50);
+          PostMessageW(GetFocus(), WM_KEYUP, key, scanCode | 0xc0000001); pump(50);
+        };
+        press(VK_RETURN);
+        if (found != 0 || opened) { log("FAIL: candidate confirmation must locate without opening"); result = 8; }
+        PostMessageW(GetFocus(), WM_CHAR, L'x', 1); pump(50);
+        press(VK_ESCAPE);
+        PostMessageW(GetFocus(), WM_CHAR, L'c', 1); pump(100);
+        PostMessageW(GetFocus(), WM_CHAR, L'q', 1); pump(100);
+        if (found != 0 || query.query() != L"cq") {
+          std::cout << "found=" << found << " query=" << std::string(query.query().begin(), query.query().end())
+                    << " characters=" << std::string(characters.begin(), characters.end()) << '\n';
+          log("FAIL: WinUI find reset and polyphony"); result = 9;
+        }
+        press(VK_RETURN);
+        if (found != 1 || opened) { log("FAIL: second candidate confirmation"); result = 9; }
+        if (!result) log("PASS: actual WinUI character routing, selection, scrolling and query reset");
+      } else if (verify) {
         const auto island = FindWindowExW(host, nullptr, L"Microsoft.UI.Content.DesktopChildSiteBridge", nullptr);
         const auto registration = island ? RegisterDragDrop(island, target.Get()) : E_FAIL;
         if (registration == S_OK) RevokeDragDrop(island);

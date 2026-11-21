@@ -1,4 +1,7 @@
 #include "desktop_groups.h"
+#include "quick_find.h"
+#include "quick_find_controls.h"
+#include "quick_find_popup.h"
 #include "desktop_box_icons.h"
 #include "desktop_groups_color_picker.h"
 #include "desktop_groups_icon_source.h"
@@ -480,6 +483,9 @@ struct Panel {
   size_t activeTab = 0;
   std::vector<std::wstring> displayed;
   std::vector<std::wstring> orderedItems;
+  quick_find::Popup findPopup;
+  std::vector<std::wstring> findNames;
+  bool findInput(UINT message, WPARAM key);
   int currentPage = 0, pageCount = 0, pageCapacity = 0, pageWheelRemainder = 0;
   bool pageLayoutPending = false;
   int pageSize(const Group &group) const;
@@ -1468,6 +1474,7 @@ LRESULT CALLBACK tabInput(HWND control, UINT message, WPARAM w, LPARAM l, UINT_P
 
 LRESULT CALLBACK iconInput(HWND control, UINT message, WPARAM w, LPARAM l, UINT_PTR, DWORD_PTR data) {
   auto &panel = *reinterpret_cast<Panel *>(data);
+  if (panel.findInput(message, w)) return 0;
   if (message == WM_LBUTTONDOWN) {
     SetForegroundWindow(panel.window);
     SetFocus(control);
@@ -2321,8 +2328,44 @@ void Panel::refresh(const Group &group) {
     });
     for (size_t i = 0; i < keys.size(); ++i) items[i] = std::move(keys[i].path);
   }
+  if (orderedItems != items) {
+    findPopup.close();
+    findNames.clear();
+    for (const auto &path : items) findNames.emplace_back(fn::fs::path(path).filename().wstring());
+  }
   orderedItems = std::move(items);
   renderPage(group);
+}
+
+bool Panel::findInput(UINT message, WPARAM key) {
+  if (message == WM_LBUTTONDOWN || message == WM_KILLFOCUS) { findPopup.close(); return false; }
+  if (quick_find::shortcutModifiers() || desktop.editing || desktop.dragging || desktop.menuOpen || collapsed()) {
+    findPopup.close(); return false;
+  }
+  if (message == WM_KEYDOWN && findPopup.key(static_cast<UINT>(key))) return true;
+  if (message == WM_CHAR && key == L'\b') return true;
+  if (message != WM_CHAR || !quick_find::inputCharacter(static_cast<wchar_t>(key))) return false;
+  if (!findPopup.active()) {
+    std::vector<quick_find::CandidateIcon> icons;
+    for (const auto &path : orderedItems) icons.emplace_back(quick::icons::Source::file(path));
+    findPopup.begin(window, findNames, [this](int match) {
+    if (match < 0 || size_t(match) >= orderedItems.size()) return;
+    if (pageCount && pageCapacity && match / pageCapacity != currentPage) goToPage(match / pageCapacity);
+    const int row = match - (pageCount ? currentPage * pageCapacity : 0);
+    ListView_SetItemState(list, -1, 0, LVIS_SELECTED | LVIS_FOCUSED);
+    ListView_SetItemState(list, row, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+    ListView_EnsureVisible(list, row, FALSE);
+#ifdef FOLDERNOTE_WINUI
+    if (hasSurface()) { surface->select({row}); surface->reveal(row); }
+#endif
+    queueScrollSync();
+    const auto attributes = GetFileAttributesW(orderedItems[match].c_str());
+    if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY))
+      PostMessageW(window, WM_COMMAND, OpenItem, 0);
+    }, std::move(icons));
+  }
+  findPopup.character(static_cast<wchar_t>(key));
+  return true;
 }
 
 int Panel::pageSize(const Group &group) const {
@@ -3345,6 +3388,7 @@ void Panel::openSurface() {
   };
   events.preview = [this](int row) { return preview(row); };
   events.previewAvailable = [] { return desktopPreviewAvailable(); };
+  events.findInput = [this](UINT message, WPARAM key) { return findInput(message, key); };
   events.context = [this](POINT point) { contextMenu(point); };
   events.zoom = [this](int delta) { zoom(delta); };
   events.wheel = [this](int delta) { return pageWheel(delta); };

@@ -1,6 +1,8 @@
 #include "context_manager.h"
 #include "context_commands.h"
 #include "context_inventory.h"
+#include "quick_find.h"
+#include "quick_find_controls.h"
 #include "context_order.h"
 #include "core.h"
 #include "language.h"
@@ -994,6 +996,11 @@ struct Manager : Window {
     button(commandLabel, L"自定义命令");
     create(originals, L"LISTBOX", L"", listStyle | LBS_OWNERDRAWVARIABLE);
     create(commands, L"LISTBOX", L"", listStyle | LBS_OWNERDRAWFIXED);
+    for (int id : {category, originals, commands}) quick_find::attach(control(id), {}, [this, id](int row) {
+      const auto &icons = id == originals ? existingIcons : customIcons;
+      return id != category && row >= 0 && size_t(row) < icons.size() ?
+          quick_find::CandidateIcon::copy(icons[row]) : quick_find::CandidateIcon{};
+    });
     label(nameColumn, L"名称"); label(statusColumn, L"状态");
     ui::muted(control(nameColumn)); ui::muted(control(statusColumn));
     create(menuSearch, L"EDIT", L"", WS_TABSTOP | ES_AUTOHSCROLL);
@@ -1432,8 +1439,7 @@ struct Manager : Window {
   void filter(int originalRow = -1, int customRow = -1) {
     searchText = windowText(control(menuSearch));
     auto matches = [&](const std::wstring &name) {
-      return searchText.empty() || FindNLSStringEx(LOCALE_NAME_INVARIANT, FIND_FROMSTART | NORM_IGNORECASE,
-          name.c_str(), -1, searchText.c_str(), -1, nullptr, nullptr, nullptr, 0) >= 0;
+      return quick_find::matches(name, searchText);
     };
     SendDlgItemMessageW(window, originals, LB_RESETCONTENT, 0, 0);
     SendDlgItemMessageW(window, commands, LB_RESETCONTENT, 0, 0);

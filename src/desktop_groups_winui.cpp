@@ -427,6 +427,11 @@ struct Surface::State {
 
   static LRESULT CALLBACK islandInput(HWND window, UINT message, WPARAM w, LPARAM l, UINT_PTR, DWORD_PTR data) {
     const auto &state = *reinterpret_cast<const State *>(data);
+    if (state.events.findInput && (message == WM_KILLFOCUS || message == WM_LBUTTONDOWN || message == WM_POINTERDOWN)) {
+      // XAML child-to-child LostFocus also fires when a match is selected.
+      // Reset only for an actual window focus change or a new pointer gesture.
+      state.events.findInput(message == WM_KILLFOCUS ? WM_KILLFOCUS : WM_LBUTTONDOWN, 0);
+    }
     if (message == WM_NCHITTEST) {
       const auto hit = SendMessageW(state.parent, WM_NCHITTEST, 0, l);
       if (hit == titleHeightHit || (hit >= HTLEFT && hit <= HTBOTTOMRIGHT)) return HTCLIENT;
@@ -1438,6 +1443,9 @@ struct Surface::State {
       args.Handled(true);
     });
     itemsView.PreviewKeyDown([this](auto const &, ux::Input::KeyRoutedEventArgs const &args) {
+      if (events.findInput && events.findInput(WM_KEYDOWN, static_cast<WPARAM>(args.Key()))) {
+        args.Handled(true); return;
+      }
       if (args.Key() != ::winrt::Windows::System::VirtualKey::Space || !events.preview || view.SelectedIndex() < 0 ||
           ((GetKeyState(VK_CONTROL) | GetKeyState(VK_SHIFT) | GetKeyState(VK_MENU) |
             GetKeyState(VK_LWIN) | GetKeyState(VK_RWIN)) & 0x8000)) return;
@@ -1454,7 +1462,12 @@ struct Surface::State {
           !((GetKeyState(VK_CONTROL) | GetKeyState(VK_SHIFT) | GetKeyState(VK_MENU) |
              GetKeyState(VK_LWIN) | GetKeyState(VK_RWIN)) & 0x8000)) events.preview(view.SelectedIndex());
     });
-    itemsView.LostFocus([this](auto const &, auto const &) { previewSpaceDown = false; });
+    itemsView.CharacterReceived([this](auto const &, ux::Input::CharacterReceivedRoutedEventArgs const &args) {
+      if (events.findInput && events.findInput(WM_CHAR, args.Character())) args.Handled(true);
+    });
+    itemsView.LostFocus([this](auto const &, auto const &) {
+      previewSpaceDown = false;
+    });
     itemsView.KeyDown([this](auto const &, ux::Input::KeyRoutedEventArgs const &args) {
       if (args.Key() == ::winrt::Windows::System::VirtualKey::Enter && events.open && view.SelectedIndex() >= 0) {
         events.open(view.SelectedIndex());
@@ -2030,6 +2043,11 @@ void Surface::select(const std::vector<int> &rows) {
     }
   } catch (...) {}
   state->synchronizing = false;
+}
+
+void Surface::reveal(int row) {
+  if (!available() || row < 0 || static_cast<size_t>(row) >= state->items.size()) return;
+  try { state->view.ScrollIntoView(state->view.Items().GetAt(row)); } catch (...) {}
 }
 
 }

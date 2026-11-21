@@ -1,5 +1,8 @@
 #include "quick_icons.h"
 #include <shlobj.h>
+#include <shlwapi.h>
+#include <wrl/client.h>
+#include <filesystem>
 #include <algorithm>
 #include <condition_variable>
 #include <deque>
@@ -14,6 +17,84 @@ Image adopt(HICON icon) {
 }
 }
 Image read(const Source &source, int size) {
+  if (source.kind == Source::Kind::File && source.path.size() > 4 &&
+      !_wcsicmp(source.path.c_str() + source.path.size() - 4, L".lnk")) {
+    // SHGetFileInfo may resolve a shortcut target through a slow Shell handler.
+    // Read its explicit icon without resolving/launching it, then use its target.
+    static thread_local int depth = 0;
+    if (depth >= 4) return {};
+    struct Level { int &depth; Level(int &value) : depth(value) { ++depth; } ~Level() { --depth; } } level(depth);
+    Microsoft::WRL::ComPtr<IShellLinkW> link;
+    Microsoft::WRL::ComPtr<IPersistFile> persist;
+    if (FAILED(CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&link))) ||
+        FAILED(link.As(&persist)) || FAILED(persist->Load(source.path.c_str(), STGM_READ))) return {};
+    wchar_t iconPath[32768]{}; int index = 0;
+    if (SUCCEEDED(link->GetIconLocation(iconPath, ARRAYSIZE(iconPath), &index)) && *iconPath) {
+      wchar_t expanded[32768]{};
+      const auto length = ExpandEnvironmentStringsW(iconPath, expanded, ARRAYSIZE(expanded));
+      if (length && length <= ARRAYSIZE(expanded)) {
+        HICON iconLarge = nullptr, iconSmall = nullptr;
+        ExtractIconExW(expanded, index, &iconLarge, &iconSmall, 1);
+        const auto result = size > 16 ? (iconLarge ? iconLarge : iconSmall) : (iconSmall ? iconSmall : iconLarge);
+        if (iconLarge && iconLarge != result) DestroyIcon(iconLarge);
+        if (iconSmall && iconSmall != result) DestroyIcon(iconSmall);
+        if (result) return adopt(result);
+      }
+    }
+    wchar_t target[32768]{};
+    if (SUCCEEDED(link->GetPath(target, ARRAYSIZE(target), nullptr, SLGP_RAWPATH)) && *target)
+      return read(Source::file(target), size);
+    PIDLIST_ABSOLUTE id = nullptr;
+    SHFILEINFOW info{};
+    if (SUCCEEDED(link->GetIDList(&id)) && id) {
+      const auto loaded = SHGetFileInfoW(reinterpret_cast<LPCWSTR>(id), 0, &info, sizeof(info),
+          SHGFI_PIDL | SHGFI_ICON | (size > 16 ? SHGFI_LARGEICON : SHGFI_SMALLICON));
+      CoTaskMemFree(id);
+      if (loaded && info.hIcon) return adopt(info.hIcon);
+      if (info.hIcon) DestroyIcon(info.hIcon);
+    }
+    return {};
+  }
+  if (source.kind == Source::Kind::Child) {
+    if (source.path.empty() || source.displayName.empty()) return {};
+    if (auto exact = read(Source::file((std::filesystem::path(source.path) / source.displayName).native()), size)) return exact;
+    Microsoft::WRL::ComPtr<IShellFolder> desktop, parent;
+    Microsoft::WRL::ComPtr<IEnumIDList> children;
+    PIDLIST_ABSOLUTE parentId = nullptr;
+    if (FAILED(SHParseDisplayName(source.path.c_str(), nullptr, &parentId, 0, nullptr)) || !parentId) return {};
+    struct ReleaseId { PIDLIST_ABSOLUTE value; ~ReleaseId() { CoTaskMemFree(value); } } releaseId{parentId};
+    if (FAILED(SHGetDesktopFolder(&desktop)) || !desktop ||
+        FAILED(desktop->BindToObject(parentId, nullptr, IID_PPV_ARGS(&parent))) || !parent ||
+        FAILED(parent->EnumObjects(nullptr, SHCONTF_FOLDERS | SHCONTF_NONFOLDERS | SHCONTF_INCLUDEHIDDEN, &children)) || !children) return {};
+    const auto deadline = GetTickCount64() + 8000;
+    for (int i = 0; i < 20000 && GetTickCount64() < deadline; ++i) {
+      PITEMID_CHILD child = nullptr;
+      if (children->Next(1, &child, nullptr) != S_OK || !child) break;
+      STRRET display{}; PWSTR label = nullptr;
+      bool match = SUCCEEDED(parent->GetDisplayNameOf(child, SHGDN_INFOLDER, &display)) &&
+          SUCCEEDED(StrRetToStrW(&display, child, &label)) && label &&
+          CompareStringOrdinal(label, -1, source.displayName.c_str(), -1, TRUE) == CSTR_EQUAL;
+      CoTaskMemFree(label);
+      PIDLIST_ABSOLUTE absolute = match ? ILCombine(parentId, child) : nullptr;
+      CoTaskMemFree(child);
+      if (absolute) {
+        PWSTR filePath = nullptr;
+        if (SUCCEEDED(SHGetNameFromIDList(absolute, SIGDN_FILESYSPATH, &filePath)) && filePath) {
+          const auto actual = Source::file(filePath);
+          CoTaskMemFree(filePath); CoTaskMemFree(absolute);
+          return read(actual, size);
+        }
+        SHFILEINFOW info{};
+        const auto loaded = SHGetFileInfoW(reinterpret_cast<LPCWSTR>(absolute), 0, &info, sizeof(info),
+            SHGFI_PIDL | SHGFI_ICON | (size > 16 ? SHGFI_LARGEICON : SHGFI_SMALLICON));
+        CoTaskMemFree(absolute);
+        if (loaded && info.hIcon) return adopt(info.hIcon);
+        if (info.hIcon) DestroyIcon(info.hIcon);
+        return {};
+      }
+    }
+    return {};
+  }
   if (source.kind == Source::Kind::Stock) {
     SHSTOCKICONINFO info{sizeof(info)};
     if (SUCCEEDED(SHGetStockIconInfo(source.stock, SHGSI_ICON | (size > 16 ? SHGSI_LARGEICON : SHGSI_SMALLICON), &info)) && info.hIcon)
@@ -27,7 +108,8 @@ Image read(const Source &source, int size) {
   if (source.kind == Source::Kind::Known) {
     if (SUCCEEDED(SHGetKnownFolderIDList(source.known, KF_FLAG_DONT_VERIFY, nullptr, &id)))
       result = SHGetFileInfoW(reinterpret_cast<LPCWSTR>(id), 0, &info, sizeof(info), flags | SHGFI_PIDL);
-  } else if (source.path.size() >= MAX_PATH) {
+  } else if (source.path.size() >= MAX_PATH || source.path.starts_with(L"::{") ||
+             !_wcsnicmp(source.path.c_str(), L"shell:", 6)) {
     if (SUCCEEDED(SHParseDisplayName(source.path.c_str(), nullptr, &id, 0, nullptr)))
       result = SHGetFileInfoW(reinterpret_cast<LPCWSTR>(id), 0, &info, sizeof(info), flags | SHGFI_PIDL);
   } else {
@@ -48,6 +130,7 @@ struct OrdinalLess {
 };
 std::wstring keyFor(const Source &source) {
   if (source.kind == Source::Kind::File) return L"file:" + source.path;
+  if (source.kind == Source::Kind::Child) return L"child:" + source.path + L"\\" + source.displayName;
   if (source.kind == Source::Kind::Stock) return L"stock:" + std::to_wstring(source.stock);
   wchar_t id[40]{}; StringFromGUID2(source.known, id, ARRAYSIZE(id)); return std::wstring(L"known:") + id;
 }

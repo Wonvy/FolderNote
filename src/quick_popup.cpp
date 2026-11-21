@@ -2,6 +2,8 @@
 #include "language.h"
 #include "window_position.h"
 #include "core.h"
+#include "quick_find.h"
+#include "quick_find_popup.h"
 #include "quick_icons.h"
 #include <shlobj.h>
 #include <windowsx.h>
@@ -18,6 +20,7 @@ namespace {
 constexpr wchar_t panelClass[] = L"FolderNote.QuickFolders.Popup.v2";
 constexpr UINT checkFocus = WM_APP + 71, contextKey = WM_APP + 72, dismiss = WM_APP + 73, iconsReady = WM_APP + 74;
 constexpr UINT sliderOutsideMove = WM_APP + 75, sliderOutsideRelease = WM_APP + 76;
+constexpr UINT contextCharacter = WM_APP + 77;
 constexpr UINT_PTR hoverTimer = 1, loadingTimer = 2, tipTimer = 3;
 wchar_t sliderUnit(const Slider &slider) { return slider.hue ? L'\u00b0' : L'%'; }
 
@@ -72,6 +75,7 @@ struct Panel {
   std::shared_ptr<Branch> branch;
   size_t level = 0;
   int selected = -1, selectedAction = -1;
+  quick_find::Popup find;
   int px(int value) const;
 };
 struct Session {
@@ -147,7 +151,7 @@ struct Session {
     if (!window) return false;
     if (window == tooltip) return true;
     return std::any_of(panels.begin(), panels.end(), [&](const auto &panel) {
-      return window == panel->window || IsChild(panel->window, window);
+      return window == panel->window || IsChild(panel->window, window) || panel->find.contains(window);
     });
   }
   bool context(HWND window) const {
@@ -165,7 +169,7 @@ struct Session {
     hideTip();
     if (root()) { KillTimer(root(), hoverTimer); KillTimer(root(), loadingTimer); }
     if (family(GetCapture())) ReleaseCapture();
-    for (auto &panel : panels) ShowWindow(panel->window, SW_HIDE);
+    for (auto &panel : panels) { panel->find.close(); ShowWindow(panel->window, SW_HIDE); }
     // A WinEvent/sent-message callback may run inside GetMessage, which keeps
     // waiting after the callback returns. Wake it so the loop can observe done
     // and release the singleton, hooks and transient process immediately.
@@ -440,12 +444,43 @@ struct Session {
     }
     trim(active + 1);
   }
+  void character(wchar_t character) {
+    if (done || panels.empty() || sliderDrag) return;
+    auto &panel = *panels[active];
+    hideTip(); KillTimer(root(), hoverTimer);
+    if (!panel.find.active()) {
+      std::vector<std::wstring> names;
+      std::vector<quick_find::CandidateIcon> icons;
+      for (const auto &item : panel.branch->items) {
+        names.emplace_back(item.row == Row::Action && actionable(item) ? item.title : L"");
+        icons.emplace_back(item.iconPath.empty() ? quick::icons::Source::system(
+            item.symbol == Symbol::Settings ? SIID_SETTINGS : item.symbol == Symbol::Trash ? SIID_RECYCLER : SIID_FOLDER) :
+            quick::icons::Source::file(item.iconPath));
+      }
+      panel.find.begin(panel.window, names, [this, level = active, names](int row) {
+        if (done || level >= panels.size()) return;
+        auto &target = *panels[level];
+        if (row >= 0 && size_t(row) < target.branch->items.size() && target.branch->items[row].title == names[row]) {
+          active = level; select(target, row);
+          const auto path = target.branch->items[row].iconPath;
+          const auto attributes = path.empty() ? INVALID_FILE_ATTRIBUTES : GetFileAttributesW(path.c_str());
+          if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY)) {
+            ShellExecuteW(target.window, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+            finish();
+          }
+        }
+      }, std::move(icons));
+    }
+    panel.find.character(character);
+  }
   void key(WPARAM key) {
     if (done || panels.empty()) return;
     if (sliderDrag && key != VK_ESCAPE) return;
     hideTip();
     KillTimer(root(), hoverTimer);
     auto &panel = *panels[active];
+    if (panel.find.key(static_cast<UINT>(key))) return;
+    panel.find.close();
     if (panel.selected >= 0 && (key == VK_LEFT || key == VK_RIGHT)) {
       if (const auto &slider = panel.branch->items[panel.selected].slider) {
         const int initial = slider->value;
@@ -645,9 +680,15 @@ LRESULT CALLBACK contextKeyboard(int code, WPARAM message, LPARAM data) {
     if (!watched->context(foreground)) PostMessageW(watched->root(), dismiss, 0, 0);
     else if (!watched->family(foreground)) {
       auto *key = reinterpret_cast<KBDLLHOOKSTRUCT *>(data);
-      bool modified = (key->flags & LLKHF_ALTDOWN) ||
-          ((GetAsyncKeyState(VK_CONTROL) | GetAsyncKeyState(VK_SHIFT) | GetAsyncKeyState(VK_LWIN) | GetAsyncKeyState(VK_RWIN)) & 0x8000);
-      if (!modified && navigationKey(key->vkCode)) {
+      bool shortcut = (key->flags & LLKHF_ALTDOWN) ||
+          ((GetAsyncKeyState(VK_CONTROL) | GetAsyncKeyState(VK_LWIN) | GetAsyncKeyState(VK_RWIN)) & 0x8000);
+      const bool modified = shortcut || (GetAsyncKeyState(VK_SHIFT) & 0x8000);
+      const bool letter = (key->vkCode >= 'A' && key->vkCode <= 'Z') || (key->vkCode >= '0' && key->vkCode <= '9');
+      if (!shortcut && letter) {
+        if (message == WM_KEYDOWN) PostMessageW(watched->root(), contextCharacter, key->vkCode, 0);
+        return 1;
+      }
+      if (!modified && (navigationKey(key->vkCode) || key->vkCode == VK_BACK)) {
         if (message == WM_KEYDOWN) PostMessageW(watched->root(), contextKey, key->vkCode, 0);
         return 1; // Menu navigation must not also navigate or dismiss its anchor.
       }
@@ -680,7 +721,8 @@ LRESULT CALLBACK listProc(HWND window, UINT message, WPARAM w, LPARAM l, UINT_PT
     TRACKMOUSEEVENT track{sizeof(track), TME_LEAVE, window, 0}; TrackMouseEvent(&track);
   }
   if (message == WM_MOUSELEAVE) session.hideTip();
-  if (message == WM_KEYDOWN) { session.key(w); return 0; }
+  if (message == WM_CHAR && quick_find::inputCharacter(static_cast<wchar_t>(w))) { session.character(static_cast<wchar_t>(w)); return 0; }
+  if (message == WM_KEYDOWN) { if (navigationKey(static_cast<DWORD>(w)) || w == VK_BACK) session.key(w); return 0; }
   if (message == WM_SYSKEYDOWN) session.finish();
   // Route the list's events through the popup controller.
   if (message == WM_MOUSEMOVE || message == WM_LBUTTONDOWN || message == WM_LBUTTONUP ||
@@ -756,7 +798,9 @@ LRESULT CALLBACK panelProc(HWND window, UINT message, WPARAM w, LPARAM l) {
       if (session.armed && !session.releasingSliderCapture && !session.family(reinterpret_cast<HWND>(l))) session.finish();
       return 0;
     case WM_CANCELMODE: case WM_CLOSE: session.finish(); return 0;
-    case WM_KEYDOWN: session.key(w); return 0;
+    case WM_CHAR: if (quick_find::inputCharacter(static_cast<wchar_t>(w))) session.character(static_cast<wchar_t>(w)); return 0;
+    case contextCharacter: session.character(static_cast<wchar_t>(w)); return 0;
+    case WM_KEYDOWN: if (navigationKey(static_cast<DWORD>(w)) || w == VK_BACK) session.key(w); return 0;
     case WM_SYSKEYDOWN: session.finish(); return 0;
     case WM_MOUSEMOVE: {
       POINT point{GET_X_LPARAM(l), GET_Y_LPARAM(l)}; ClientToScreen(window, &point); session.mouse(point); return 0;

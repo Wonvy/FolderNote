@@ -36,7 +36,10 @@ int main() {
       check(GetForegroundWindow() == foreground, "stacking never changes keyboard focus");
     };
 
-    place(host, HWND_BOTTOM); place(preview, HWND_TOP); place(app, HWND_TOP);
+    // Keep the fixture desktop next to the fixture preview. HWND_BOTTOM can
+    // place it below the real shell's specially managed desktop band, which
+    // is outside this test's ownership and changes after system dialogs close.
+    place(preview, HWND_TOP); place(app, HWND_TOP); place(host, preview);
     for (auto box : boxes) place(box, HWND_TOPMOST);
     check(desktop_groups::lowerDesktopWindows(host, boxes, preview), "repair previously pinned boxes");
     normal();
@@ -69,7 +72,7 @@ int main() {
     normal();
     check(above(preview, boxes[0]), "pinning Seer does not pin boxes");
 
-    ShowWindow(preview, SW_HIDE); place(host, HWND_NOTOPMOST); place(host, HWND_BOTTOM);
+    ShowWindow(preview, SW_HIDE); place(host, HWND_NOTOPMOST); place(host, app);
     check(desktop_groups::lowerDesktopWindows(host, boxes), "restore ordinary desktop stacking after closing preview");
     normal();
     check(above(app, boxes[0]) && above(boxes[2], host), "closing preview preserves normal desktop placement");
