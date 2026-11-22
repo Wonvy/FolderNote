@@ -150,8 +150,13 @@ Result visualChild(const ux::DependencyObject &root) {
   return nullptr;
 }
 
-constexpr double contentLeftPadding = 10, contentRightPadding = 12, contentTopPadding = 10;
-constexpr double viewLeftPadding = 12, pageFooterHeight = 24;
+constexpr double contentLeftPadding = 2, contentRightPadding = 6, contentTopPadding = 4;
+constexpr double viewLeftPadding = 4, pageFooterHeight = 22;
+constexpr int listRowIconSize = 16, listRowHeight = 24, listPagedRowBase = 26;
+
+double contentBottomPadding(int cornerRadius) {
+  return static_cast<double>(std::max(6, cornerRadius - 2));
+}
 
 struct PageMetrics {
   int width = 1, height = 1, iconSize = 1, columns = 1, rows = 1;
@@ -164,39 +169,101 @@ PageMetrics measurePage(HWND parent, bool listMode, int iconSize, int headerHeig
   const double dipPerPixel = 96.0 / dpi;
   const auto width = viewport.right * dipPerPixel - contentLeftPadding - contentRightPadding - viewLeftPadding;
   const auto height = viewport.bottom * dipPerPixel - headerHeight - contentTopPadding -
-      std::max(10, cornerRadius) - (showDots ? pageFooterHeight : 0);
+      contentBottomPadding(cornerRadius) - (showDots ? pageFooterHeight : 0);
   PageMetrics metrics;
-  metrics.width = std::max(1, std::min(static_cast<int>(width), std::max(84, iconSize + 34) + spacing));
-  metrics.height = std::max(1, std::min(static_cast<int>(height), (listMode ? 40 : iconSize + 54) + spacing));
-  metrics.iconSize = std::max(1, std::min({listMode ? 18 : iconSize, metrics.width - 12,
-                                          metrics.height - (listMode ? 8 : 49)}));
+  metrics.width = std::max(1, std::min(static_cast<int>(width), std::max(72, iconSize + 26) + spacing));
+  metrics.height = std::max(1, std::min(static_cast<int>(height), (listMode ? listPagedRowBase : iconSize + 50) + spacing));
+  metrics.iconSize = std::max(1, std::min({listMode ? listRowIconSize : iconSize, metrics.width - 10,
+                                          metrics.height - (listMode ? 6 : 44)}));
   metrics.columns = listMode ? 1 : std::max(1, static_cast<int>(width / metrics.width));
   metrics.rows = std::max(1, static_cast<int>(height / metrics.height));
   return metrics;
 }
 
+ux::Media::Geometry makePieGeometry(double diameter, double progress) {
+  const float cx = static_cast<float>(diameter * 0.5);
+  const float cy = cx;
+  const float r = static_cast<float>(std::max(2.0, cx - (diameter <= 16.0 ? 2.3 : 3.0)));
+  const double clamped = std::clamp(progress, 0.04, 1.0);
+  if (clamped >= 0.995) {
+    ux::Media::EllipseGeometry full;
+    full.Center({cx, cy});
+    full.RadiusX(r);
+    full.RadiusY(r);
+    return full;
+  }
+  constexpr double twoPi = 6.28318530717958647692;
+  const double angle = clamped * twoPi;
+  const float endX = cx + static_cast<float>(r * std::sin(angle));
+  const float endY = cy - static_cast<float>(r * std::cos(angle));
+
+  ux::Media::PathFigure figure;
+  figure.StartPoint({cx, cy});
+  figure.IsClosed(true);
+  figure.IsFilled(true);
+
+  ux::Media::LineSegment startLine;
+  startLine.Point({cx, cy - r});
+  figure.Segments().Append(startLine);
+
+  ux::Media::ArcSegment arc;
+  arc.Point({endX, endY});
+  arc.Size({r, r});
+  arc.SweepDirection(ux::Media::SweepDirection::Clockwise);
+  arc.IsLargeArc(clamped > 0.5);
+  figure.Segments().Append(arc);
+
+  ux::Media::PathGeometry geometry;
+  geometry.Figures().Append(figure);
+  return geometry;
+}
+
 ux::DataTemplate itemTemplate(bool listMode, int iconSize, int pageHeight = 0) {
-  const auto size = std::to_wstring(pageHeight || !listMode ? iconSize : 18);
-  const auto image = L"<Image x:Name='FileImage' Width='" + size + L"' Height='" + size +
-      L"' Stretch='Uniform' VerticalAlignment='Center'/>";
-  const auto label = listMode ?
-      L"<TextBlock x:Name='FileName' Grid.Column='1' Margin='10,0,0,0' VerticalAlignment='Center' TextTrimming='CharacterEllipsis'/>" :
-      L"<TextBlock x:Name='FileName' Margin='0,5,0,0' TextAlignment='Center' TextWrapping='Wrap' MaxLines='2' TextTrimming='CharacterEllipsis'/>";
-  if (pageHeight) {
-    const auto layoutHeight = std::to_wstring(std::max(1, pageHeight - 8));
-    const auto layout = listMode ?
-        L"<Grid Height='" + layoutHeight + L"'><Grid.ColumnDefinitions><ColumnDefinition Width='Auto'/><ColumnDefinition Width='*'/></Grid.ColumnDefinitions>" +
-            image + label + L"</Grid>" :
-        L"<StackPanel Width='" + std::to_wstring(std::max(1, iconSize + 22)) +
-            L"' MaxHeight='" + layoutHeight + L"' VerticalAlignment='Top' Padding='0,3'>" + image + label + L"</StackPanel>";
+  const int resolvedIcon = pageHeight || !listMode ? iconSize : listRowIconSize;
+  const auto size = std::to_wstring(resolvedIcon);
+  if (listMode) {
+    const auto image = L"<Image x:Name='FileImage' Width='" + size + L"' Height='" + size +
+        L"' Stretch='Uniform' VerticalAlignment='Center'/>";
+    const auto label = L"<TextBlock x:Name='FileName' Grid.Column='1' Margin='6,0,4,0' FontSize='12' "
+        L"VerticalAlignment='Center' MaxLines='1' TextWrapping='NoWrap' TextTrimming='CharacterEllipsis'/>";
+    const auto badge = L"<Grid x:Name='TransferOverlay' Grid.Column='2' Width='14' Height='14' Margin='4,0,2,0' "
+        L"VerticalAlignment='Center' Visibility='Collapsed' IsHitTestVisible='False'>"
+        L"<Ellipse Fill='#A8101216' Stroke='#78FFFFFF' StrokeThickness='1.2'/>"
+        L"<Path x:Name='TransferArc' Fill='#F2FFFFFF'/></Grid>";
+    const auto rowSizing = pageHeight
+        ? (L"Height='" + std::to_wstring(std::max(1, pageHeight - 2)) + L"'")
+        : (L"Height='" + std::to_wstring(listRowHeight) + L"'");
+    const auto layout = L"<Grid HorizontalAlignment='Stretch' " + rowSizing +
+        L" Padding='4,0'><Grid.ColumnDefinitions><ColumnDefinition Width='Auto'/>"
+        L"<ColumnDefinition Width='*'/><ColumnDefinition Width='Auto'/></Grid.ColumnDefinitions>" +
+        image + label + badge + L"</Grid>";
     return ux::Markup::XamlReader::Load(L"<DataTemplate xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation' "
         L"xmlns:x='http://schemas.microsoft.com/winfx/2006/xaml'>" + layout + L"</DataTemplate>").as<ux::DataTemplate>();
   }
-  const auto content = listMode ?
-      L"<Grid MinHeight='30' Padding='8,0'><Grid.ColumnDefinitions><ColumnDefinition Width='Auto'/><ColumnDefinition Width='*'/></Grid.ColumnDefinitions>" +
-          image + label + L"</Grid>" :
-      L"<StackPanel Width='" + std::to_wstring(std::max(76, iconSize + 26)) +
-          L"' Padding='4,3' Spacing='0'>" + image + label + L"</StackPanel>";
+
+  const int cardWidth = pageHeight ? std::max(1, resolvedIcon + 22) : std::max(68, resolvedIcon + 22);
+  const int cardHeight = pageHeight ? std::max(1, pageHeight - 4) : (resolvedIcon + 46);
+  const int textBudget = cardHeight - 4 - resolvedIcon - 4;
+  const bool twoLines = textBudget >= 36;
+  const int badgePx = std::clamp(resolvedIcon * 58 / 100, 18, 28);
+  const auto bSize = std::to_wstring(badgePx);
+  const auto image = L"<Grid Grid.Row='0' Width='" + size + L"' Height='" + size +
+      L"' HorizontalAlignment='Center' VerticalAlignment='Center'>"
+      L"<Image x:Name='FileImage' Width='" + size + L"' Height='" + size + L"' Stretch='Uniform'/>"
+      L"<Grid x:Name='TransferOverlay' Width='" + bSize + L"' Height='" + bSize +
+      L"' HorizontalAlignment='Center' VerticalAlignment='Center' Visibility='Collapsed' IsHitTestVisible='False'>"
+      L"<Ellipse Fill='#B0101216' Stroke='#80FFFFFF' StrokeThickness='1.4'/>"
+      L"<Path x:Name='TransferArc' Fill='#F5FFFFFF'/></Grid></Grid>";
+  const auto label = twoLines
+      ? std::wstring(L"<TextBlock x:Name='FileName' Grid.Row='1' Margin='0,4,0,0' FontSize='13' "
+                     L"LineHeight='18' LineStackingStrategy='BlockLineHeight' TextAlignment='Center' "
+                     L"VerticalAlignment='Top' TextWrapping='Wrap' MaxLines='2' TextTrimming='CharacterEllipsis'/>")
+      : std::wstring(L"<TextBlock x:Name='FileName' Grid.Row='1' Margin='0,3,0,0' FontSize='13' "
+                     L"TextAlignment='Center' VerticalAlignment='Top' TextWrapping='NoWrap' "
+                     L"MaxLines='1' TextTrimming='CharacterEllipsis'/>");
+  const auto content = L"<Grid Width='" + std::to_wstring(cardWidth) + L"' Height='" + std::to_wstring(cardHeight) +
+      L"' Padding='2,2'><Grid.RowDefinitions><RowDefinition Height='Auto'/>"
+      L"<RowDefinition Height='*'/></Grid.RowDefinitions>" + image + label + L"</Grid>";
   return ux::Markup::XamlReader::Load(L"<DataTemplate xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation' "
       L"xmlns:x='http://schemas.microsoft.com/winfx/2006/xaml'>" + content + L"</DataTemplate>").as<ux::DataTemplate>();
 }
@@ -348,9 +415,8 @@ struct Surface::State {
   std::vector<PageDot> dots;
   PageMetrics gridPageMetrics;
   int listPageHeight = 0;
-  int templateIconSize = -1;
-  int templatePageHeight = 0, spacing = 0;
-  controls::ItemsPanelTemplate defaultGridPanel{nullptr};
+  int listIconSize = -1, listTemplatePageHeight = -1;
+  int gridIconSize = -1, gridTemplatePageHeight = -1, spacing = 0;
   controls::ItemsPanelTemplate fixedGridPanel{nullptr};
   ux::Media::Animation::TransitionCollection reflowTransitions{nullptr};
   ux::Media::Animation::Storyboard zoomAnimation{nullptr};
@@ -377,8 +443,6 @@ struct Surface::State {
     double width = 0;
   };
   std::array<HeaderControl, 3> buttons;
-  HeaderControl backButton;
-  bool canNavigateBack = false;
   ux::Input::Pointer collapsePointer{nullptr};
   bool collapseMoveVisible = false;
   std::vector<HeaderControl> tabs;
@@ -401,9 +465,15 @@ struct Surface::State {
   struct Row {
     std::wstring name;
     std::wstring path;
-    ux::Media::ImageSource image{nullptr};
+    ux::Media::ImageSource listImage{nullptr};
+    ux::Media::ImageSource gridImage{nullptr};
   };
   std::vector<Row> items;
+  std::map<std::wstring, ux::Media::ImageSource> listImageCache;
+  std::map<std::wstring, ux::Media::ImageSource> gridImageCache;
+  int gridImageCacheSize = 0;
+  uint32_t listBoundCount = 0, gridBoundCount = 0;
+  std::vector<std::pair<std::wstring, TransferVisual>> transfers;
   struct CachedTip {
     std::wstring text;
     ULONGLONG at = 0;
@@ -441,8 +511,7 @@ struct Surface::State {
     };
     if (std::any_of(tabs.begin(), tabs.end(), hit)) return true;
     return y < headerHeight - headerPadding &&
-           ((canNavigateBack && hit(backButton)) ||
-            (actionsVisible && (hit(buttons[0]) || hit(buttons[1]))) || hit(buttons[2]));
+           ((actionsVisible && (hit(buttons[0]) || hit(buttons[1]))) || hit(buttons[2]));
   }
 
   LRESULT resizeHit(POINT point) const {
@@ -741,7 +810,7 @@ struct Surface::State {
     titleIcon.VerticalAlignment(ux::VerticalAlignment::Center);
     titleContent.Children().Append(titleIcon);
     titleContent.Children().Append(title);
-    controls::Canvas::SetLeft(titleContent, 14);
+    controls::Canvas::SetLeft(titleContent, 10);
     titleBar.Children().Append(titleContent);
     makeTitleEditor();
     tabHover = dispatch::DispatcherQueue::GetForCurrentThread().CreateTimer();
@@ -749,26 +818,6 @@ struct Surface::State {
     tabHover.IsRepeating(false);
     tabHover.Tick([this](auto const &, auto const &) {
       if (hoveredTab && !pressedTab && events.tab) events.tab(*hoveredTab);
-    });
-    backButton = makeHeaderControl(lang::text(L"返回上一级"));
-    backButton.label.Text(L"\uE72B");
-    backButton.label.FontFamily(ux::Media::FontFamily(L"Segoe MDL2 Assets"));
-    backButton.label.HorizontalAlignment(ux::HorizontalAlignment::Center);
-    backButton.box.Child(backButton.label);
-    backButton.box.Visibility(ux::Visibility::Collapsed);
-    backButton.box.PointerEntered([this](auto const &, auto const &) { paintHeaderButton(backButton, textColor); });
-    backButton.box.PointerExited([this](auto const &, auto const &) { paintHeaderButton(backButton, mutedColor); });
-    backButton.box.Tapped([this](auto const &, ux::Input::TappedRoutedEventArgs const &args) {
-      args.Handled(true);
-      if (events.navigateBack) events.navigateBack();
-    });
-    backButton.box.KeyDown([this](auto const &, ux::Input::KeyRoutedEventArgs const &args) {
-      const auto key = args.Key();
-      if ((key == ::winrt::Windows::System::VirtualKey::Enter || key == ::winrt::Windows::System::VirtualKey::Space) &&
-          events.navigateBack) {
-        args.Handled(true);
-        events.navigateBack();
-      }
     });
     const std::array labels{lang::text(L"图标"), lang::text(L"列表"), lang::text(L"折叠盒子")};
     for (int i = 0; i < static_cast<int>(buttons.size()); ++i) {
@@ -987,18 +1036,8 @@ struct Surface::State {
       place(buttons[i], std::max(0.0, width - headerPadding - buttonWidth * (buttons.size() - i)),
             buttonWidth, headerHeight - 2 * headerPadding);
     }
-    const double backReserve = canNavigateBack ? (buttonWidth + 2.0) : 0.0;
-    if (backButton.box) {
-      if (canNavigateBack) {
-        place(backButton, headerPadding, buttonWidth, headerHeight - 2 * headerPadding);
-        backButton.box.Visibility(ux::Visibility::Visible);
-      } else {
-        backButton.left = backButton.width = 0;
-        backButton.box.Visibility(ux::Visibility::Collapsed);
-      }
-    }
     if (!tabs.empty()) {
-      const double tabStart = headerPadding + backReserve;
+      const double tabStart = headerPadding;
       const double space = std::max(0.0, width - tabStart - headerPadding - buttonWidth * buttons.size() - 16);
       const double tabWidth = std::min(116.0, space / tabs.size());
       for (std::size_t i = 0; i < tabs.size(); ++i)
@@ -1006,7 +1045,7 @@ struct Surface::State {
       if (showsTitleIcon(titleStyle) && showsTitleText(titleStyle))
         tabs.front().label.MaxWidth(std::max(0.0, tabWidth - 40));
     }
-    const double titleLeft = canNavigateBack ? (headerPadding + backReserve + 4.0) : 14.0;
+    const double titleLeft = 10.0;
     controls::Canvas::SetLeft(titleContent, titleLeft);
     const double titleSpace = std::max(0.0, width - titleLeft - (actionsVisible ? 3 : 1) * buttonWidth - 10);
     const auto titleWidth = std::max(0.0, titleSpace - (showsTitleIcon(titleStyle) ? 25 : 0));
@@ -1021,7 +1060,7 @@ struct Surface::State {
       titleEditor.Width(editorWidth);
       const auto height = std::max(1.0, std::min(27.0, headerHeight - 16));
       titleEditor.Height(height);
-      controls::Canvas::SetLeft(titleEditor, tabs.empty() ? 12.0 : std::max(8.0, tabs.front().left));
+      controls::Canvas::SetLeft(titleEditor, tabs.empty() ? 8.0 : std::max(8.0, tabs.front().left));
       controls::Canvas::SetTop(titleEditor, (headerHeight - height) / 2);
     }
     positionTabInsertion();
@@ -1148,7 +1187,7 @@ struct Surface::State {
   }
 
   void positionBody() {
-    const auto bottom = static_cast<double>(std::max(10, cornerRadius));
+    const auto bottom = contentBottomPadding(cornerRadius);
     body.Margin({contentLeftPadding, headerHeight + contentTopPadding, contentRightPadding,
                  bottom + (pageCount > 1 ? pageFooterHeight : 0)});
     pageDots.Margin({0, 0, 0, bottom});
@@ -1170,22 +1209,35 @@ struct Surface::State {
   void styleItem(const controls::ContentControl &container, bool listMode) const {
     const int gap = listMode && listPageHeight ? std::min(spacing, (listPageHeight - 1) / 2) : spacing;
     const auto extra = gap / 2.0;
-    const auto baseline = listMode ? 0.0 : 4.0;
+    const auto baseline = listMode ? 0.0 : 2.0;
     const auto margin = ux::Thickness{extra, extra, extra + baseline, extra + baseline};
     if (const auto current = container.Margin(); current.Left != margin.Left || current.Top != margin.Top ||
         current.Right != margin.Right || current.Bottom != margin.Bottom) container.Margin(margin);
-    if (listMode && listPageHeight) {
-      const auto height = listPageHeight - gap;
+    if (const auto pad = container.Padding(); pad.Left != 0 || pad.Top != 0 || pad.Right != 0 || pad.Bottom != 0)
+      container.Padding({0, 0, 0, 0});
+    const auto hContent = listMode ? ux::HorizontalAlignment::Stretch : ux::HorizontalAlignment::Center;
+    if (container.HorizontalContentAlignment() != hContent) container.HorizontalContentAlignment(hContent);
+    const auto vContent = listMode ? ux::VerticalAlignment::Center : ux::VerticalAlignment::Top;
+    if (container.VerticalContentAlignment() != vContent) container.VerticalContentAlignment(vContent);
+    if (listMode && container.HorizontalAlignment() != ux::HorizontalAlignment::Stretch)
+      container.HorizontalAlignment(ux::HorizontalAlignment::Stretch);
+    if (listMode) {
       if (container.MinHeight() != 0) container.MinHeight(0);
-      if (container.Height() != height) container.Height(height);
-    } else if (listMode) {
-      container.ClearValue(ux::FrameworkElement::HeightProperty());
-      container.ClearValue(ux::FrameworkElement::MinHeightProperty());
+      if (listPageHeight) {
+        const auto height = listPageHeight - gap;
+        if (container.Height() != height) container.Height(height);
+      } else {
+        container.ClearValue(ux::FrameworkElement::HeightProperty());
+      }
     }
     auto presenter = visualChild<controls::Primitives::ListViewItemPresenter>(container);
     if (!presenter && container.ApplyTemplate())
       presenter = visualChild<controls::Primitives::ListViewItemPresenter>(container);
     if (!presenter) return;
+    if (presenter.HorizontalContentAlignment() != hContent) presenter.HorizontalContentAlignment(hContent);
+    if (presenter.VerticalContentAlignment() != vContent) presenter.VerticalContentAlignment(vContent);
+    if (const auto cm = presenter.ContentMargin(); cm.Left != 0 || cm.Top != 0 || cm.Right != 0 || cm.Bottom != 0)
+      presenter.ContentMargin({0, 0, 0, 0});
     using Presenter = controls::Primitives::ListViewItemPresenter;
     const std::array outlineProperties{
         Presenter::PointerOverBorderBrushProperty(), Presenter::SelectedBorderBrushProperty(),
@@ -1349,7 +1401,8 @@ struct Surface::State {
       if (activeToolTip && activeToolTip != currentTip) activeToolTip.IsOpen(false);
       activeToolTip = currentTip;
       const int row = view.IndexFromContainer(currentContainer);
-      if (row < 0 || static_cast<size_t>(row) >= items.size()) {
+      if (row < 0 || static_cast<size_t>(row) >= items.size() ||
+          (events.suppressToolTip && events.suppressToolTip(row))) {
         currentTip.IsOpen(false);
         return;
       }
@@ -1389,14 +1442,52 @@ struct Surface::State {
     controls::ToolTipService::SetToolTip(container, tip);
   }
 
-  void apply(controls::ContentControl const &container, int index) {
+  const TransferVisual *findTransfer(const std::wstring &path) const {
+    if (path.empty() || transfers.empty()) return nullptr;
+    for (const auto &[candidate, visual] : transfers) {
+      if (samePath(candidate, path)) return &visual;
+    }
+    return nullptr;
+  }
+
+  void applyTransfer(ux::FrameworkElement const &element, const std::wstring &path) const {
+    if (!element) return;
+    const auto *visual = findTransfer(path);
+    const double imgOpacity = !visual ? 1.0 : (visual->outgoing ? 0.42 : 0.54);
+    const double txtOpacity = !visual ? 1.0 : (visual->outgoing ? 0.52 : 0.72);
+    if (auto image = element.FindName(L"FileImage").try_as<ux::UIElement>()) {
+      if (image.Opacity() != imgOpacity) image.Opacity(imgOpacity);
+    }
+    if (auto text = element.FindName(L"FileName").try_as<controls::TextBlock>()) {
+      if (hiddenItemLabel != text && text.Opacity() != txtOpacity) text.Opacity(txtOpacity);
+    }
+    if (auto overlay = element.FindName(L"TransferOverlay").try_as<controls::Grid>()) {
+      if (!visual || visual->progress < 0.0) {
+        if (overlay.Visibility() != ux::Visibility::Collapsed) overlay.Visibility(ux::Visibility::Collapsed);
+      } else {
+        if (overlay.Visibility() != ux::Visibility::Visible) overlay.Visibility(ux::Visibility::Visible);
+        if (auto arc = element.FindName(L"TransferArc").try_as<ux::Shapes::Path>()) {
+          const double d = overlay.Width() > 0 ? overlay.Width() : 18.0;
+          arc.Data(makePieGeometry(d, visual->progress));
+        }
+      }
+    }
+  }
+
+  void apply(controls::ContentControl const &container, int index, bool listMode) {
     if (!container || index < 0 || static_cast<size_t>(index) >= items.size()) return;
     attachItemToolTip(container);
     auto element = container.ContentTemplateRoot().try_as<ux::FrameworkElement>();
     if (!element) return;
     const auto &item = items[index];
-    if (auto text = element.FindName(L"FileName").try_as<controls::TextBlock>()) text.Text(item.name);
-    if (auto image = element.FindName(L"FileImage").try_as<controls::Image>()) image.Source(item.image);
+    if (auto text = element.FindName(L"FileName").try_as<controls::TextBlock>()) {
+      if (text.Text() != item.name) text.Text(item.name);
+    }
+    if (auto image = element.FindName(L"FileImage").try_as<controls::Image>()) {
+      const auto &src = listMode ? item.listImage : item.gridImage;
+      if (image.Source() != src) image.Source(src);
+    }
+    applyTransfer(element, item.path);
   }
 
   std::vector<int> selectedRows() const {
@@ -1569,41 +1660,37 @@ struct Surface::State {
     if (!listView || !gridView) {
       listView = controls::ListView{}.as<controls::ListViewBase>();
       gridView = controls::GridView{}.as<controls::ListViewBase>();
-      for (const auto &itemsView : {listView, gridView}) {
-        configureView(itemsView);
-        body.Children().Append(itemsView);
-      }
-      defaultGridPanel = gridView.ItemsPanel();
+      configureView(listView, true);
+      body.Children().Append(listView);
+      configureView(gridView, false);
+      body.Children().Append(gridView);
     }
     if (viewChanged) {
       view = details ? listView : gridView;
       const auto hidden = details ? gridView : listView;
       hidden.Visibility(ux::Visibility::Collapsed);
-      hidden.ItemsSource(nullptr);
       view.Visibility(ux::Visibility::Visible);
     }
-    updatePageLayout(viewChanged);
+    updatePageLayout();
   }
 
-  void updatePageLayout(bool viewChanged = false) {
+  void updatePageLayout() {
     if (!view) return;
     const auto paged = pageCount > 0;
     const auto metrics = paged ? measurePage(parent, details, size, static_cast<int>(headerHeight), cornerRadius,
                                              spacing, pageCount > 1) : PageMetrics{};
     const auto iconSize = paged ? metrics.iconSize : size;
     const auto pageHeight = paged ? metrics.height : 0;
-    if (viewChanged || templateIconSize != iconSize || templatePageHeight != pageHeight) {
-      templateIconSize = iconSize;
-      templatePageHeight = pageHeight;
+    auto &cachedItemIcon = details ? listIconSize : gridIconSize;
+    auto &cachedItemPage = details ? listTemplatePageHeight : gridTemplatePageHeight;
+    if (cachedItemIcon != iconSize || cachedItemPage != pageHeight) {
+      cachedItemIcon = iconSize;
+      cachedItemPage = pageHeight;
       view.ItemTemplate(itemTemplate(details, iconSize, pageHeight));
     }
-    if (!paged && !spacing && fixedGridPanel) {
-      gridView.ItemsPanel(defaultGridPanel);
-      fixedGridPanel = nullptr;
-    }
-    if (!details && (paged || spacing)) {
-      gridPageMetrics = paged ? metrics : PageMetrics{std::max(84, size + 34) + spacing,
-                                                     size + 54 + spacing, iconSize, -1};
+    if (!details) {
+      gridPageMetrics = paged ? metrics : PageMetrics{std::max(72, size + 26) + spacing,
+                                                     size + 50 + spacing, iconSize, -1};
       if (!fixedGridPanel) {
         fixedGridPanel = ux::Markup::XamlReader::Load(
             L"<ItemsPanelTemplate xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation'>"
@@ -1626,22 +1713,23 @@ struct Surface::State {
     }
   }
 
-  void configureView(const controls::ListViewBase &itemsView) {
+  void configureView(const controls::ListViewBase &itemsView, bool isList) {
     itemsView.Background(ux::Media::SolidColorBrush{::winrt::Windows::UI::Color{0, 0, 0, 0}});
     // Leave room to start a selection when every list row is occupied.
     itemsView.Margin({viewLeftPadding, 0, 0, 0});
     itemsView.BorderThickness({0, 0, 0, 0});
+    itemsView.ItemContainerTransitions(ux::Media::Animation::TransitionCollection{});
     itemsView.SelectionMode(controls::ListViewSelectionMode::Extended);
     itemsView.IsMultiSelectCheckBoxEnabled(false);
     itemsView.CanDragItems(true);
     controls::ScrollViewer::SetHorizontalScrollMode(itemsView, controls::ScrollMode::Disabled);
     controls::ScrollViewer::SetHorizontalScrollBarVisibility(itemsView, controls::ScrollBarVisibility::Disabled);
     controls::ScrollViewer::SetVerticalScrollBarVisibility(itemsView, controls::ScrollBarVisibility::Auto);
-    itemsView.ContainerContentChanging([this](const controls::ListViewBase &sender, controls::ContainerContentChangingEventArgs const &args) {
-      if (sender != view || args.InRecycleQueue()) return;
+    itemsView.ContainerContentChanging([this, isList](const controls::ListViewBase &, controls::ContainerContentChangingEventArgs const &args) {
+      if (args.InRecycleQueue()) return;
       const auto container = args.ItemContainer();
-      styleItem(container, details);
-      apply(container, args.ItemIndex());
+      styleItem(container, isList);
+      apply(container, args.ItemIndex(), isList);
     });
     itemsView.LayoutUpdated([this](const auto &, const auto &) { configurePageGrid(); });
     itemsView.SelectionChanged([this](auto const &sender, auto const &) {
@@ -1652,11 +1740,7 @@ struct Surface::State {
       POINT point{};
       if (GetCursorPos(&point)) {
         const auto row = hit(point);
-        if (row >= 0) {
-          if (events.open) events.open(row);
-        } else if (events.blankDoubleClick) {
-          events.blankDoubleClick();
-        }
+        if (row >= 0 && events.open) events.open(row);
       }
       args.Handled(true);
     });
@@ -1673,7 +1757,6 @@ struct Surface::State {
       if (!win && events.shortcut &&
           ((ctrl && !alt && (vk == 'C' || vk == 'X' || vk == 'V')) ||
            (!ctrl && !alt && vk == VK_DELETE) ||
-           (!ctrl && !shift && !alt && vk == VK_BACK) ||
            (alt && !ctrl && !shift && vk == VK_RETURN))) {
         if (events.shortcut(vk, ctrl, shift, alt)) {
           args.Handled(true);
@@ -1811,6 +1894,7 @@ Surface::Surface(HWND parent, Events events, IDropTarget *dropTarget) : state(st
     }
     state->root.Children().Append(state->resizeGrip);
     state->root.RightTapped([state = state.get()](auto const &, ux::Input::RightTappedRoutedEventArgs const &args) {
+      state->tabHover.Stop();
       POINT point{};
       if (state->events.context && GetCursorPos(&point)) state->events.context(point);
       args.Handled(true);
@@ -1985,6 +2069,12 @@ bool Surface::onFrame(std::function<void()> callback) {
   }
 }
 
+bool Surface::hasCachedImage(const std::wstring &path, bool listMode, int logicalIconSize) const {
+  if (!available() || path.empty()) return false;
+  if (listMode) return state->listImageCache.contains(path);
+  return state->gridImageCacheSize == logicalIconSize && state->gridImageCache.contains(path);
+}
+
 void Surface::rows(const std::vector<Item> &items, bool listMode, int logicalIconSize, int spacing) {
   if (!available()) return;
   state->synchronizing = true;
@@ -1992,19 +2082,61 @@ void Surface::rows(const std::vector<Item> &items, bool listMode, int logicalIco
     state->endSelection(true);
     state->endItemRename(false);
     state->spacing = std::clamp(spacing, 0, 24);
-    state->makeView(listMode, logicalIconSize);
-    state->items.clear();
-    state->items.reserve(items.size());
-    std::vector<IInspectable> indices;
-    indices.reserve(items.size());
-    for (const auto &item : items) {
-      ux::Media::ImageSource image{nullptr};
-      try { image = imageSource(state->factory.get(), item.image); } catch (...) {}
-      indices.push_back(::winrt::box_value(static_cast<int>(state->items.size())));
-      state->items.push_back({item.name, item.path, image});
+    if (!listMode && state->gridImageCacheSize != logicalIconSize) {
+      state->gridImageCache.clear();
+      state->gridImageCacheSize = logicalIconSize;
     }
-    state->view.ItemsSource(::winrt::single_threaded_observable_vector<IInspectable>(std::move(indices)));
-    state->root.InvalidateMeasure();
+    if (state->listImageCache.size() > 512) state->listImageCache.clear();
+    if (state->gridImageCache.size() > 512) state->gridImageCache.clear();
+
+    state->makeView(listMode, logicalIconSize);
+    state->items.resize(items.size());
+    for (size_t i = 0; i < items.size(); ++i) {
+      const auto &incoming = items[i];
+      ux::Media::ImageSource listImg{nullptr};
+      ux::Media::ImageSource gridImg{nullptr};
+      if (const auto found = state->listImageCache.find(incoming.path); found != state->listImageCache.end()) {
+        listImg = found->second;
+      } else if (listMode && incoming.image) {
+        try { listImg = imageSource(state->factory.get(), incoming.image); } catch (...) {}
+        if (listImg && !incoming.path.empty()) state->listImageCache.insert_or_assign(incoming.path, listImg);
+      }
+      if (const auto found = state->gridImageCache.find(incoming.path); found != state->gridImageCache.end()) {
+        gridImg = found->second;
+      } else if (!listMode && incoming.image) {
+        try { gridImg = imageSource(state->factory.get(), incoming.image); } catch (...) {}
+        if (gridImg && !incoming.path.empty()) state->gridImageCache.insert_or_assign(incoming.path, gridImg);
+      }
+      state->items[i] = {incoming.name, incoming.path, listImg, gridImg};
+    }
+
+    const auto desiredCount = static_cast<uint32_t>(state->items.size());
+    auto &activeBound = listMode ? state->listBoundCount : state->gridBoundCount;
+    auto &hiddenBound = listMode ? state->gridBoundCount : state->listBoundCount;
+    const auto hiddenView = listMode ? state->gridView : state->listView;
+    if (hiddenView && hiddenView.ItemsSource() && hiddenBound != desiredCount) {
+      hiddenView.ItemsSource(nullptr);
+      hiddenBound = 0;
+    }
+    if (!state->view.ItemsSource() || activeBound != desiredCount) {
+      std::vector<IInspectable> indices;
+      indices.reserve(state->items.size());
+      for (size_t i = 0; i < state->items.size(); ++i) {
+        indices.push_back(::winrt::box_value(static_cast<int>(i)));
+      }
+      state->view.ItemsSource(::winrt::single_threaded_observable_vector<IInspectable>(std::move(indices)));
+      activeBound = desiredCount;
+    } else if (const auto panel = state->view.ItemsPanelRoot()) {
+      for (const auto &child : panel.Children()) {
+        const auto container = child.try_as<controls::ContentControl>();
+        if (!container) continue;
+        const int row = state->view.IndexFromContainer(container);
+        if (row >= 0) {
+          state->styleItem(container, listMode);
+          state->apply(container, row, listMode);
+        }
+      }
+    }
   } catch (const ::winrt::hresult_error &error) {
     logFailure(L"update surface", error);
   }
@@ -2112,8 +2244,7 @@ bool Surface::usesDesktopGlass() const { return available() && state->wallpaperG
 
 void Surface::header(const std::vector<std::wstring> &titles, std::size_t active, bool collapsed,
                      bool actionsVisible, bool highlighted, int radius, COLORREF text, COLORREF muted,
-                     COLORREF border, COLORREF accent, int height, TitleStyle style, HICON icon,
-                     bool canNavigateBack) {
+                     COLORREF border, COLORREF accent, int height, TitleStyle style, HICON icon) {
   if (!available()) return;
   try {
     if (collapsed) {
@@ -2121,7 +2252,6 @@ void Surface::header(const std::vector<std::wstring> &titles, std::size_t active
       state->endItemRename(false);
     }
     const bool changedTitles = state->titles != titles || state->titleStyle != style;
-    state->canNavigateBack = canNavigateBack;
     state->titleStyle = style;
     state->headerHeight = height;
     state->titleBar.Height(height);
@@ -2161,7 +2291,6 @@ void Surface::header(const std::vector<std::wstring> &titles, std::size_t active
     state->title.Foreground(solidBrush(text));
     state->showActions(actionsVisible);
     for (auto &button : state->buttons) state->paintHeaderButton(button, muted);
-    if (state->backButton.box) state->paintHeaderButton(state->backButton, muted);
     state->paintCollapseButton();
     state->paintTabs();
     state->paintOutline();
@@ -2169,6 +2298,11 @@ void Surface::header(const std::vector<std::wstring> &titles, std::size_t active
   } catch (const ::winrt::hresult_error &error) {
     logFailure(L"update box header", error);
   }
+}
+
+void Surface::closeToolTip() {
+  if (!available() || !state->activeToolTip) return;
+  try { state->activeToolTip.IsOpen(false); } catch (...) {}
 }
 
 void Surface::showActions(bool visible) {
@@ -2234,13 +2368,14 @@ bool Surface::beginItemRename(int row, const std::wstring &initialText, int sele
         {0, 0, static_cast<float>(container.ActualWidth()), static_cast<float>(container.ActualHeight())});
     const auto labelBounds = label ? label.TransformToVisual(state->body).TransformBounds(
         {0, 0, static_cast<float>(label.ActualWidth()), static_cast<float>(label.ActualHeight())}) : containerBounds;
+    state->itemEditor.FontSize(state->details ? 12 : 13);
     if (state->details) {
       state->itemEditor.TextWrapping(ux::TextWrapping::NoWrap);
       state->itemEditor.TextAlignment(ux::TextAlignment::Left);
       const double left = std::clamp(static_cast<double>(labelBounds.X) - 4.0, 0.0, std::max(0.0, bodyWidth - 60.0));
       const double width = std::max(60.0, std::min(static_cast<double>(containerBounds.X + containerBounds.Width) - left - 4.0,
                                                    bodyWidth - left));
-      const double height = std::clamp(std::max(26.0, static_cast<double>(labelBounds.Height) + 6.0), 24.0, 34.0);
+      const double height = std::clamp(std::max(22.0, static_cast<double>(labelBounds.Height) + 4.0), 22.0, 30.0);
       const double top = std::clamp(static_cast<double>(labelBounds.Y + labelBounds.Height / 2.0) - height / 2.0,
                                     0.0, std::max(0.0, bodyHeight - height));
       state->itemEditor.Width(width);
@@ -2437,7 +2572,7 @@ bool Surface::scrollAt(POINT screen) {
     RECT bounds{};
     if (!GetWindowRect(state->islandWindow, &bounds)) return false;
     bounds.top += MulDiv(static_cast<int>(state->headerHeight + contentTopPadding), dpi, 96);
-    bounds.bottom -= MulDiv(std::max(10, state->cornerRadius), dpi, 96);
+    bounds.bottom -= MulDiv(static_cast<int>(contentBottomPadding(state->cornerRadius)), dpi, 96);
     if (!PtInRect(&bounds, screen)) return false;
     const auto scroll = visualChild<controls::ScrollViewer>(state->view);
     if (!scroll) return false;
@@ -2454,8 +2589,29 @@ void Surface::refreshImage(int row, HICON image) {
   if (!available() || row < 0 || static_cast<size_t>(row) >= state->items.size()) return;
   try {
     if (auto source = imageSource(state->factory.get(), image)) {
-      state->items[row].image = source;
-      state->apply(state->view.ContainerFromIndex(row).try_as<controls::ContentControl>(), row);
+      state->items[row].gridImage = source;
+      if (!state->items[row].path.empty()) state->gridImageCache.insert_or_assign(state->items[row].path, source);
+      if (state->gridView) {
+        state->apply(state->gridView.ContainerFromIndex(row).try_as<controls::ContentControl>(), row, false);
+      }
+    }
+  } catch (...) {}
+}
+
+void Surface::setTransfers(const std::vector<std::pair<std::wstring, TransferVisual>> &transfers) {
+  if (!available()) return;
+  try {
+    state->transfers = transfers;
+    if (!state->view) return;
+    if (const auto panel = state->view.ItemsPanelRoot()) {
+      for (const auto &child : panel.Children()) {
+        const auto container = child.try_as<controls::ContentControl>();
+        if (!container) continue;
+        const int row = state->view.IndexFromContainer(container);
+        if (row >= 0 && static_cast<size_t>(row) < state->items.size()) {
+          state->applyTransfer(container.ContentTemplateRoot().try_as<ux::FrameworkElement>(), state->items[row].path);
+        }
+      }
     }
   } catch (...) {}
 }

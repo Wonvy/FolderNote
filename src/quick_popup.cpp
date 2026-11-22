@@ -21,7 +21,7 @@ constexpr wchar_t panelClass[] = L"FolderNote.QuickFolders.Popup.v2";
 constexpr UINT checkFocus = WM_APP + 71, contextKey = WM_APP + 72, dismiss = WM_APP + 73, iconsReady = WM_APP + 74;
 constexpr UINT sliderOutsideMove = WM_APP + 75, sliderOutsideRelease = WM_APP + 76;
 constexpr UINT contextCharacter = WM_APP + 77;
-constexpr UINT_PTR hoverTimer = 1, loadingTimer = 2, tipTimer = 3;
+constexpr UINT_PTR hoverTimer = 1, loadingTimer = 2, tipTimer = 3, hoverLeaveTimer = 4;
 wchar_t sliderUnit(const Slider &slider) { return slider.hue ? L'\u00b0' : L'%'; }
 
 COLORREF rainbowColor(int angle) {
@@ -89,6 +89,9 @@ struct Session {
   unsigned selected = 0;
   bool done = false, armed = false;
   HWND anchor = nullptr;
+  std::optional<RECT> hoverAnchor;
+  int hoverOutsideTicks = 0;
+  bool hoverDesktopContext = false;
   HWND tooltip = nullptr;
   std::wstring tipText;
   POINT tipPoint{};
@@ -154,8 +157,27 @@ struct Session {
       return window == panel->window || IsChild(panel->window, window) || panel->find.contains(window);
     });
   }
+  bool inHoverZone(POINT pt) const {
+    if (family(WindowFromPoint(pt))) return true;
+    const int pad = px(8);
+    if (hoverAnchor) {
+      RECT zone = *hoverAnchor;
+      InflateRect(&zone, pad, pad);
+      if (PtInRect(&zone, pt)) return true;
+    }
+    for (const auto &panel : panels) {
+      RECT bounds{};
+      if (IsWindowVisible(panel->window) && GetWindowRect(panel->window, &bounds)) {
+        InflateRect(&bounds, pad, pad);
+        if (PtInRect(&bounds, pt)) return true;
+      }
+    }
+    return false;
+  }
   bool context(HWND window) const {
-    return family(window) || (!activated && anchor && window == anchor && IsWindow(anchor));
+    if (family(window)) return true;
+    if (hoverAnchor && !activated) return !anchor || window == anchor;
+    return !activated && anchor && window == anchor && IsWindow(anchor);
   }
   void observeForeground(HWND window) {
     if (!armed || done) return;
@@ -167,7 +189,11 @@ struct Session {
     done = true; selected = command; armed = false;
     cancelSlider();
     hideTip();
-    if (root()) { KillTimer(root(), hoverTimer); KillTimer(root(), loadingTimer); }
+    if (root()) {
+      KillTimer(root(), hoverTimer);
+      KillTimer(root(), loadingTimer);
+      KillTimer(root(), hoverLeaveTimer);
+    }
     if (family(GetCapture())) ReleaseCapture();
     for (auto &panel : panels) { panel->find.close(); ShowWindow(panel->window, SW_HIDE); }
     // A WinEvent/sent-message callback may run inside GetMessage, which keeps
@@ -325,12 +351,18 @@ struct Session {
     GetMonitorInfoW(MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST), &monitor);
     RECT work = monitor.rcWork;
     int content = px(16); for (const auto &item : panel.branch->items) content += height(*panel.branch, item);
-    int width = std::min(px(panel.branch->compact ? 196 : 260), int(work.right - work.left));
+    int width = std::min(px(panel.branch->compact ? 208 : 260), int(work.right - work.left));
     const auto availableHeight = keepTop ? work.bottom - point.y : work.bottom - work.top - px(16);
     int heightPixels = std::min(content, static_cast<int>(availableHeight));
     heightPixels = std::max(px(45), heightPixels);
     int x = point.x, y = point.y;
-    if (child && x + width > work.right) x = parent.left - width + px(3);
+    if (!child && panel.level == 0 && hoverAnchor) {
+      x = hoverAnchor->right + px(2);
+      y = hoverAnchor->top - px(4);
+      if (x + width > work.right) x = hoverAnchor->left - width - px(2);
+    } else if (child && x + width > work.right) {
+      x = parent.left - width + px(3);
+    }
     x = std::clamp(x, int(work.left), std::max(int(work.left), int(work.right) - width));
     y = std::clamp(y, int(work.top), std::max(int(work.top), int(work.bottom) - heightPixels));
     SetWindowPos(panel.window, HWND_TOP, x, y, width, heightPixels, SWP_NOACTIVATE);
@@ -609,10 +641,10 @@ struct Session {
         auto image = imageFor(item); HICON icon = image ? image->handle : folder;
         if (icon) DrawIconEx(dc, x, y, icon, px(16), px(16), 0, nullptr, DI_NORMAL);
       }
-      if (item.children) {
-        SelectObject(dc, symbols); RECT arrow{rect.right - px(20), rect.top, rect.right - px(4), rect.bottom};
-        ui::text(dc, L"\xE76C", arrow, p.muted, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-      }
+    }
+    if (item.row == Row::Action && item.children && item.symbol != Symbol::More) {
+      SelectObject(dc, symbols); RECT arrow{rect.right - px(20), rect.top, rect.right - px(4), rect.bottom};
+      ui::text(dc, L"\xE76C", arrow, p.muted, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
     }
     if (item.checked) {
       auto mark = rect;
@@ -680,6 +712,19 @@ LRESULT CALLBACK contextKeyboard(int code, WPARAM message, LPARAM data) {
     if (!watched->context(foreground)) PostMessageW(watched->root(), dismiss, 0, 0);
     else if (!watched->family(foreground)) {
       auto *key = reinterpret_cast<KBDLLHOOKSTRUCT *>(data);
+      if (watched->hoverAnchor && !watched->hoverDesktopContext) {
+        if (key->vkCode == VK_ESCAPE) {
+          if (message == WM_KEYDOWN) PostMessageW(watched->root(), dismiss, 0, 0);
+          return 1;
+        }
+        const bool isModifier = key->vkCode == VK_SHIFT || key->vkCode == VK_LSHIFT || key->vkCode == VK_RSHIFT ||
+                                key->vkCode == VK_CONTROL || key->vkCode == VK_LCONTROL || key->vkCode == VK_RCONTROL ||
+                                key->vkCode == VK_MENU || key->vkCode == VK_LMENU || key->vkCode == VK_RMENU;
+        if (!isModifier && (message == WM_KEYDOWN || message == WM_SYSKEYDOWN)) {
+          PostMessageW(watched->root(), dismiss, 0, 0);
+        }
+        return CallNextHookEx(nullptr, code, message, data);
+      }
       bool shortcut = (key->flags & LLKHF_ALTDOWN) ||
           ((GetAsyncKeyState(VK_CONTROL) | GetAsyncKeyState(VK_LWIN) | GetAsyncKeyState(VK_RWIN)) & 0x8000);
       const bool modified = shortcut || (GetAsyncKeyState(VK_SHIFT) & 0x8000);
@@ -853,6 +898,18 @@ LRESULT CALLBACK panelProc(HWND window, UINT message, WPARAM w, LPARAM l) {
           else session.expand(session.pendingLevel, session.pendingRow);
         }
       } else if (w == tipTimer) session.showTip();
+      else if (w == hoverLeaveTimer) {
+        if (!session.hoverAnchor || session.sliderDrag) {
+          session.hoverOutsideTicks = 0;
+        } else {
+          POINT pt{};
+          if (GetCursorPos(&pt) && !session.inHoverZone(pt)) {
+            if (++session.hoverOutsideTicks >= 4) session.finish();
+          } else {
+            session.hoverOutsideTicks = 0;
+          }
+        }
+      }
       else if (w == loadingTimer) {
         bool pending = false;
         for (auto &item : session.panels) if (item->branch->poll) {
@@ -911,16 +968,28 @@ void registerPanel(HINSTANCE instance) {
   RegisterClassW(&cls);
 }
 }
-unsigned show(HINSTANCE instance, POINT point, std::shared_ptr<Branch> root, ui::ThemeMode theme, HWND anchor) {
+unsigned show(HINSTANCE instance, POINT point, std::shared_ptr<Branch> root, ui::ThemeMode theme, HWND anchor,
+              std::optional<RECT> hoverAnchorBounds) {
   registerPanel(instance);
-  Session session(instance, theme); auto &panel = session.create(std::move(root), point, false);
+  Session session(instance, theme);
+  session.hoverAnchor = hoverAnchorBounds;
+  if (hoverAnchorBounds) {
+    wchar_t cls[64]{};
+    const HWND fgRoot = GetAncestor(GetForegroundWindow(), GA_ROOT);
+    if (fgRoot && GetClassNameW(fgRoot, cls, ARRAYSIZE(cls))) {
+      session.hoverDesktopContext = !wcscmp(cls, L"Progman") || !wcscmp(cls, L"WorkerW") ||
+                                    wcsstr(cls, L"FolderNote.DesktopGroups") != nullptr;
+    }
+  }
+  auto &panel = session.create(std::move(root), point, false);
   session.anchor = anchor;
   ContextWatch watch(session);
   if (!watch.ready()) throw fn::Error{lang::text(L"无法启动快速菜单的窗口交互，请关闭后重新开启中键快速定位。")};
-  if (!IsWindow(anchor) || GetForegroundWindow() != anchor) return 0;
+  if (!hoverAnchorBounds && (!IsWindow(anchor) || GetForegroundWindow() != anchor)) return 0;
   // Show first, without requesting or requiring a foreground handoff. A real
   // click can activate the menu normally; arrows/Esc also work before that.
   session.armed = true;
+  if (hoverAnchorBounds) SetTimer(panel.window, hoverLeaveTimer, 60, nullptr);
   SetWindowPos(panel.window, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
   MSG message{};
   while (!session.done) {

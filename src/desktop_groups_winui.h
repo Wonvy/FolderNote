@@ -18,13 +18,17 @@ struct Item {
   HICON image = nullptr;
 };
 
+struct TransferVisual {
+  double progress = 0.0; // < 0: lifted drag ghost only; 0..1: macOS pie-ring progress
+  bool outgoing = false;
+};
+
 struct Events {
   std::function<void(std::vector<int>)> selection;
   std::function<void(int)> open;
   std::function<void(int)> rename;
   std::function<bool(UINT, bool, bool, bool)> shortcut;
-  std::function<void()> blankDoubleClick;
-  std::function<void()> navigateBack;
+  std::function<bool(int)> suppressToolTip;
   std::function<bool(int)> preview;
   std::function<bool()> previewAvailable;
   std::function<void()> previewFocus;
@@ -76,6 +80,7 @@ public:
   void animateReflow(bool resizing);
   void animateZoom(bool zoomIn);
   bool onFrame(std::function<void()> callback);
+  bool hasCachedImage(const std::wstring &path, bool listMode, int logicalIconSize) const;
   void rows(const std::vector<Item> &items, bool listMode, int logicalIconSize, int spacing = 0);
   void itemSpacing(int spacing);
   int pageCapacity(bool listMode, int logicalIconSize, int titleHeight, int cornerRadius, int spacing, bool showDots) const;
@@ -86,7 +91,8 @@ public:
   void header(const std::vector<std::wstring> &titles, std::size_t active, bool collapsed,
               bool actionsVisible, bool highlighted, int radius,
               COLORREF text, COLORREF muted, COLORREF border, COLORREF accent,
-              int height, TitleStyle style, HICON icon, bool canNavigateBack = false);
+              int height, TitleStyle style, HICON icon);
+  void closeToolTip();
   void showActions(bool visible);
   void showCollapseMove(bool visible);
   bool beginTitleRename(std::function<void(std::wstring)> commit);
@@ -106,6 +112,7 @@ public:
   bool imageBounds(int row, RECT &screen) const;
   bool scrollAt(POINT screen);
   void refreshImage(int row, HICON image);
+  void setTransfers(const std::vector<std::pair<std::wstring, TransferVisual>> &transfers);
   void select(const std::vector<int> &rows);
   void reveal(int row);
 

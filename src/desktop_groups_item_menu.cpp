@@ -4,6 +4,7 @@
 #include <memory>
 #include <shellapi.h>
 #include <shlobj.h>
+#include <vector>
 #include <wrl/client.h>
 
 namespace desktop_groups {
@@ -49,52 +50,91 @@ struct MenuMessages {
 };
 }
 
-bool showItemMenu(HWND owner, const std::wstring &path, POINT point, bool canRemove, bool &remove, bool &rename) {
-  remove = false;
-  rename = false;
-  if (!IsWindow(owner) || path.empty()) return false;
+ItemMenuResult showItemMenu(HWND owner, std::span<const std::wstring> paths, POINT point, bool canRemove) {
+  ItemMenuResult outcome;
+  if (!IsWindow(owner) || paths.empty() || paths.front().empty()) return outcome;
 
-  PIDLIST_ABSOLUTE parsed = nullptr;
-  const auto status = SHParseDisplayName(path.c_str(), nullptr, &parsed, 0, nullptr);
-  const std::unique_ptr<ITEMIDLIST, FreePidl> selection(parsed);
-  if (FAILED(status) || !selection) return false;
+  using OwnedPidl = std::unique_ptr<ITEMIDLIST, FreePidl>;
+  std::vector<OwnedPidl> parsedList;
+  parsedList.reserve(paths.size());
+  for (const auto &p : paths) {
+    if (p.empty()) continue;
+    PIDLIST_ABSOLUTE id = nullptr;
+    if (SUCCEEDED(SHParseDisplayName(p.c_str(), nullptr, &id, 0, nullptr)) && id) {
+      parsedList.emplace_back(id);
+    }
+  }
+  if (parsedList.empty()) return outcome;
 
   ComPtr<IShellFolder> folder;
   ComPtr<IContextMenu> shell;
-  PCUITEMID_CHILD child = nullptr;
-  if (FAILED(SHBindToParent(parsed, IID_PPV_ARGS(&folder), &child)) || !child ||
-      FAILED(folder->GetUIObjectOf(owner, 1, &child, IID_IContextMenu, nullptr,
-                                   reinterpret_cast<void **>(shell.GetAddressOf()))) || !shell) return false;
+  if (parsedList.size() > 1) {
+    OwnedPidl firstParent(ILCloneFull(parsedList.front().get()));
+    if (firstParent) {
+      ILRemoveLastID(firstParent.get());
+      bool sameParent = true;
+      std::vector<PCUITEMID_CHILD> children;
+      children.reserve(parsedList.size());
+      for (const auto &item : parsedList) {
+        OwnedPidl candidateParent(ILCloneFull(item.get()));
+        if (!candidateParent) { sameParent = false; break; }
+        ILRemoveLastID(candidateParent.get());
+        if (!ILIsEqual(firstParent.get(), candidateParent.get())) { sameParent = false; break; }
+        children.push_back(ILFindLastID(item.get()));
+      }
+      if (sameParent && !children.empty()) {
+        PCUITEMID_CHILD unusedChild = nullptr;
+        if (SUCCEEDED(SHBindToParent(parsedList.front().get(), IID_PPV_ARGS(&folder), &unusedChild)) && folder) {
+          folder->GetUIObjectOf(owner, static_cast<UINT>(children.size()), children.data(), IID_IContextMenu,
+                                nullptr, reinterpret_cast<void **>(shell.GetAddressOf()));
+        }
+      }
+    }
+  }
+  if (!shell) {
+    folder.Reset();
+    PCUITEMID_CHILD child = nullptr;
+    if (FAILED(SHBindToParent(parsedList.front().get(), IID_PPV_ARGS(&folder), &child)) || !child ||
+        FAILED(folder->GetUIObjectOf(owner, 1, &child, IID_IContextMenu, nullptr,
+                                     reinterpret_cast<void **>(shell.GetAddressOf()))) || !shell)
+      return outcome;
+  }
 
   Menu menu;
   const bool extended = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
-  if (!menu.handle || FAILED(shell->QueryContextMenu(menu.handle, 0, firstShellCommand, lastShellCommand,
-                                                   CMF_NORMAL | CMF_CANRENAME | (extended ? CMF_EXTENDEDVERBS : 0)))) return false;
+  const UINT queryFlags = CMF_NORMAL | (parsedList.size() == 1 ? CMF_CANRENAME : 0) | (extended ? CMF_EXTENDEDVERBS : 0);
+  if (!menu.handle || FAILED(shell->QueryContextMenu(menu.handle, 0, firstShellCommand, lastShellCommand, queryFlags)))
+    return outcome;
   const auto count = GetMenuItemCount(menu.handle);
-  if (count < 0 || (!count && !canRemove)) return false;
+  if (count < 0 || (!count && !canRemove)) return outcome;
   if (canRemove && ((count && !AppendMenuW(menu.handle, MF_SEPARATOR, 0, nullptr)) ||
-                    !AppendMenuW(menu.handle, MF_STRING, removeCommand, lang::text(L"从分组移除")))) return false;
+                    !AppendMenuW(menu.handle, MF_STRING, removeCommand, lang::text(L"从分组移除")))) return outcome;
 
   MenuMessages messages;
   if (FAILED(shell.As(&messages.menu3))) shell.As(&messages.menu2);
   const auto subclassId = reinterpret_cast<UINT_PTR>(&messages);
-  if (!SetWindowSubclass(owner, MenuMessages::dispatch, subclassId, reinterpret_cast<DWORD_PTR>(&messages))) return false;
+  if (!SetWindowSubclass(owner, MenuMessages::dispatch, subclassId, reinterpret_cast<DWORD_PTR>(&messages))) return outcome;
   SetForegroundWindow(owner);
   const auto command = TrackPopupMenuEx(menu.handle, TPM_RETURNCMD | TPM_RIGHTBUTTON, point.x, point.y, owner, nullptr);
   RemoveWindowSubclass(owner, MenuMessages::dispatch, subclassId);
   PostMessageW(owner, WM_NULL, 0, 0);
-  remove = command == removeCommand;
+  outcome.shown = true;
+  outcome.remove = command == removeCommand;
   if (command >= firstShellCommand && command <= lastShellCommand && IsWindow(owner)) {
     const UINT offset = command - firstShellCommand;
     wchar_t verbW[64]{};
     char verbA[64]{};
-    const bool isRename =
-        (SUCCEEDED(shell->GetCommandString(offset, GCS_VERBW, nullptr, reinterpret_cast<char *>(verbW), ARRAYSIZE(verbW))) &&
-         _wcsicmp(verbW, L"rename") == 0) ||
-        (SUCCEEDED(shell->GetCommandString(offset, GCS_VERBA, nullptr, verbA, ARRAYSIZE(verbA))) &&
-         _stricmp(verbA, "rename") == 0);
-    if (isRename) {
-      rename = true;
+    const bool gotW = SUCCEEDED(shell->GetCommandString(offset, GCS_VERBW, nullptr,
+                                                        reinterpret_cast<char *>(verbW), ARRAYSIZE(verbW)));
+    const bool gotA = SUCCEEDED(shell->GetCommandString(offset, GCS_VERBA, nullptr, verbA, ARRAYSIZE(verbA)));
+    const auto matchesVerb = [&](const wchar_t *wide, const char *narrow) {
+      return (gotW && _wcsicmp(verbW, wide) == 0) || (gotA && _stricmp(verbA, narrow) == 0);
+    };
+    if (matchesVerb(L"rename", "rename")) {
+      outcome.rename = true;
+    } else if (matchesVerb(L"delete", "delete")) {
+      outcome.deleteItem = true;
+      outcome.permanentDelete = extended || (GetKeyState(VK_SHIFT) & 0x8000) != 0;
     } else {
       CMINVOKECOMMANDINFOEX invoke{sizeof(invoke)};
       invoke.fMask = CMIC_MASK_UNICODE | CMIC_MASK_PTINVOKE;
@@ -103,9 +143,10 @@ bool showItemMenu(HWND owner, const std::wstring &path, POINT point, bool canRem
       invoke.lpVerbW = MAKEINTRESOURCEW(offset);
       invoke.nShow = SW_SHOWNORMAL;
       invoke.ptInvoke = point;
-      shell->InvokeCommand(reinterpret_cast<CMINVOKECOMMANDINFO *>(&invoke));
+      if (SUCCEEDED(shell->InvokeCommand(reinterpret_cast<CMINVOKECOMMANDINFO *>(&invoke))))
+        outcome.invokedShellCommand = true;
     }
   }
-  return true;
+  return outcome;
 }
 }

@@ -1,6 +1,6 @@
 # Windows 11 首层菜单测试版
 
-**适用版本：1.9.11 · Windows 11 x64 · 未签名测试版**
+**适用版本：1.9.12 · Windows 11 x64 · 未签名测试版**
 
 [返回项目首页](../README.md) · [下载独立安装包](https://github.com/Wonvy/FolderNote/releases/latest/download/FolderNote-Setup-Win11-x64.exe) · [完整功能说明](../docs/USER_GUIDE.md)
 
@@ -35,7 +35,7 @@
 
 ## 验证与发布范围
 
-1.9.11 已完成 GitHub Actions 构建、自动测试和打包。公开发布的 Win11 独立安装包已通过版本、SHA-256、内置文件和软件图标校验。主要实机验证环境仍为 Windows 10 22H2；上述检查不能视作 Windows 11 各版本安装、菜单显示及全部交互的实机验收。
+1.9.12 已完成 GitHub Actions 构建、自动测试和打包。公开发布的 Win11 独立安装包已通过版本、SHA-256、内置文件和软件图标校验。主要实机验证环境仍为 Windows 10 22H2；上述检查不能视作 Windows 11 各版本安装、菜单显示及全部交互的实机验收。
 
 当前为未签名的个人测试包。安装使用 Windows 11 的未签名包安装能力，不导入证书、不启用开发者模式、不修改安全策略；正式分发前需要单独完成签名和目标系统验收。
 

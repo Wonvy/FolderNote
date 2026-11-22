@@ -774,6 +774,31 @@ void exercise(const fn::fs::path &root) {
         movingTabs.back().tint == sourceTint,
         "detaching the manual primary preserves both tabs' distinct file assignments");
 
+  {
+    std::vector<Group> deletingTabs{
+        {L"BoxA", detachedBounds, {sharedPath}, false,
+         {{L"BoxB", {}, {documentPath}, std::optional<COLORREF>{hostTint}},
+          {L"MappedC", folder.native(), {}, std::nullopt}}},
+        {L"Single", detachedBounds, {}, false}};
+    deletingTabs[0].tint = sourceTint;
+    deletingTabs[0].autoRule = L"*.png";
+    check(!deleteTab(deletingTabs, 1, 0) && !deleteTab(deletingTabs, 0, 3) && !deleteTab(deletingTabs, 9, 0),
+          "reject deleting a single-tab box or out-of-bounds tab");
+    const auto removedMapped = deleteTab(deletingTabs, 0, 2);
+    check(removedMapped && removedMapped->name == L"MappedC" && removedMapped->folder == folder.native() &&
+          deletingTabs[0].name == L"BoxA" && deletingTabs[0].tabs.size() == 1 &&
+          deletingTabs[0].tint == sourceTint && deletingTabs[0].autoRule == L"*.png",
+          "deleting a secondary tab keeps the remaining tabs and primary box intact");
+    const auto removedPrimary = deleteTab(deletingTabs, 0, 0);
+    check(removedPrimary && removedPrimary->name == L"BoxA" &&
+          removedPrimary->paths == std::vector<std::wstring>{sharedPath} &&
+          deletingTabs[0].name == L"BoxB" &&
+          deletingTabs[0].paths == std::vector<std::wstring>{documentPath} &&
+          deletingTabs[0].tabs.empty() && deletingTabs[0].autoRule.empty() &&
+          deletingTabs[0].tint == hostTint && !deletingTabs[0].primaryDetachedTint,
+          "deleting the primary tab promotes the survivor and restores its standalone tint");
+  }
+
   const std::uint16_t invalidState[] = {2, 0, 1, 0, 5, 0, 7, 0, 405, 0, 307, 0, 2, 0, 1, 0, L'A', 0, 0};
   check(RegSetKeyValueW(HKEY_CURRENT_USER, settings, value, REG_BINARY, invalidState,
                         sizeof(invalidState)) == ERROR_SUCCESS, "seed an invalid collapse state");
@@ -819,20 +844,20 @@ void exerciseNewBoxEnhancements(const fn::fs::path &root) {
         std::abs((scaledCenter.top + scaledCenter.bottom) / 2 - 520) <= 1,
         "centered box stays centered across resolution changes");
 
-  // 3. Model persistence for browseInBox, autoRule, workArea + Backup export/import
+  // 3. Model persistence for hoverMenu, autoRule, workArea + Backup export/import
   Group custom{L"自动收纳", {100, 120, 460, 400}, {}, false, {{L"子标签", {}, {}}}};
-  custom.browseInBox = false;
+  custom.hoverMenu = false;
   custom.autoRule = L".png, 截图*";
   custom.referenceWorkArea = work2k;
   const auto layoutFile = root / L"enhanced.json";
   save({custom}, layoutFile);
   auto reloaded = load(layoutFile);
-  check(reloaded.size() == 1 && !reloaded[0].browseInBox && reloaded[0].autoRule == L".png, 截图*" &&
+  check(reloaded.size() == 1 && !reloaded[0].hoverMenu && reloaded[0].autoRule == L".png, 截图*" &&
         EqualRect(&reloaded[0].referenceWorkArea, &work2k),
-        "persist browseInBox, autoRule, and referenceWorkArea");
-  check(detachTab(reloaded, 0, 1, {200, 200, 520, 460}) && !reloaded.back().browseInBox &&
+        "persist hoverMenu, autoRule, and referenceWorkArea");
+  check(detachTab(reloaded, 0, 1, {200, 200, 520, 460}) && !reloaded.back().hoverMenu &&
         EqualRect(&reloaded.back().referenceWorkArea, &work2k),
-        "detached tab inherits browseInBox and referenceWorkArea");
+        "detached tab inherits hoverMenu and referenceWorkArea");
 
   const DWORD customRadius = 17;
   check(RegSetKeyValueW(HKEY_CURRENT_USER, settings, L"DesktopGroupsRadius", REG_DWORD,

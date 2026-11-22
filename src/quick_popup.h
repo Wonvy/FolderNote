@@ -41,5 +41,6 @@ struct Branch {
   std::function<bool(unsigned)> invoke;
   bool compact = false;
 };
-unsigned show(HINSTANCE instance, POINT point, std::shared_ptr<Branch> root, ui::ThemeMode theme, HWND anchor);
+unsigned show(HINSTANCE instance, POINT point, std::shared_ptr<Branch> root, ui::ThemeMode theme, HWND anchor,
+              std::optional<RECT> hoverAnchorBounds = std::nullopt);
 }

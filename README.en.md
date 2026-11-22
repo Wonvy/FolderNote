@@ -93,10 +93,10 @@ These screenshots illustrate the page layouts; available options follow the curr
 
 </details>
 
-## What's new in v1.9.11
+## What's new in v1.9.12
 
-- **Native cross-process drag-and-drop**: smoothly drag box items into PowerPoint, the taskbar, Recycle Bin, the desktop, or other boxes and subfolders with dynamic native Shell drop descriptions, direct desktop moves without confirmation popups, filename/multi-item count badges, WinUI insertion indicators, spring-loaded tabs, and `Ctrl` copy / `Alt` shortcut modifiers.
-- **Inline rename, hover InfoTips, and middle-click in boxes**: rename box items in place via context menu or `F2` (preserving file extensions), view asynchronous native Shell hover tooltips, and open the Quick Folders menu with middle-click directly inside desktop boxes.
+- **macOS-style transfer progress & multi-level folder hover menus**: dropped or pasted files and large folders appear immediately at the drop slot with an asynchronous circular pie-ring progress overlay without blocking File Explorer, matched by outgoing progress rings on drag-out, ungroup, and delete; hovering non-empty folders opens a cascading multi-level submenu.
+- **Shortcuts, screenshot paste, automation, and multi-tab refinements**: adds `Ctrl+C/X/V`, `Delete`/`Shift+Delete`, `Alt+Enter`, blank-space New Folder/Text Document, direct clipboard screenshot PNG paste, zero-delay view switching with compact List rows and proper ellipsis (`…`), auto-grouping rules, double-click desktop hide, backup export/import, and per-tab box deletion on multi-tab context menus.
 
 Automated build and release completed. Published installers passed version, SHA-256, embedded-file, and application-icon checks. [Full changelog →](CHANGELOG.md)
 

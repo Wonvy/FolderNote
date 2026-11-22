@@ -336,10 +336,10 @@ Layout parseLayoutObject(const ComPtr<IJsonObject> &root) {
       checkJson(entry->GetNamedBoolean(HStringReference(L"autoCollapse").Get(), &autoCollapse));
       group.autoCollapse = autoCollapse != 0;
     }
-    if (hasField(entry, L"browseInBox")) {
-      boolean browseInBox = true;
-      checkJson(entry->GetNamedBoolean(HStringReference(L"browseInBox").Get(), &browseInBox));
-      group.browseInBox = browseInBox != 0;
+    if (hasField(entry, L"hoverMenu")) {
+      boolean hoverMenu = true;
+      checkJson(entry->GetNamedBoolean(HStringReference(L"hoverMenu").Get(), &hoverMenu));
+      group.hoverMenu = hoverMenu != 0;
     }
     if (hasField(entry, L"autoRule")) group.autoRule = stringField(entry.Get(), L"autoRule");
     if (hasField(entry, L"tint")) group.tint = static_cast<COLORREF>(numberField(entry.Get(), L"tint"));
@@ -470,7 +470,7 @@ std::string formatJson(const Layout &layout) {
       content += *group.glass ? L"true" : L"false";
     }
     if (group.autoCollapse) content += L",\n      \"autoCollapse\": true";
-    if (!group.browseInBox) content += L",\n      \"browseInBox\": false";
+    if (!group.hoverMenu) content += L",\n      \"hoverMenu\": false";
     if (!group.autoRule.empty()) {
       content += L",\n      \"autoRule\": ";
       quote(content, group.autoRule);
@@ -773,7 +773,7 @@ bool detachTab(std::vector<Group> &groups, size_t group, size_t tabIndex, RECT b
   detached.glass = from.glass;
   detached.blurStrength = from.blurStrength;
   detached.autoCollapse = from.autoCollapse;
-  detached.browseInBox = from.browseInBox;
+  detached.hoverMenu = from.hoverMenu;
   detached.referenceWorkArea = from.referenceWorkArea;
   detached.titleHeight = from.titleHeight;
   detached.titleStyle = from.titleStyle;
@@ -786,6 +786,19 @@ bool detachTab(std::vector<Group> &groups, size_t group, size_t tabIndex, RECT b
   detached.primaryDetachedTint.reset();
   groups.push_back(std::move(detached));
   return true;
+}
+
+std::optional<Tab> deleteTab(std::vector<Group> &groups, size_t group, size_t tabIndex) {
+  if (group >= groups.size() || groups[group].tabs.empty() || tabIndex > groups[group].tabs.size())
+    return std::nullopt;
+  auto &target = groups[group];
+  if (tabIndex == 0) target.autoRule.clear();
+  auto removed = removeTab(target, tabIndex);
+  if (target.tabs.empty() && target.primaryDetachedTint) {
+    target.tint = *target.primaryDetachedTint;
+    target.primaryDetachedTint.reset();
+  }
+  return removed;
 }
 
 bool moveTab(std::vector<Group> &groups, size_t source, size_t tab, size_t target, size_t insertion) {

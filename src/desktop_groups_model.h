@@ -62,7 +62,7 @@ struct Group {
   std::wstring folder;
   // The first tab can carry a tint from another box without changing this box's appearance.
   std::optional<std::optional<COLORREF>> primaryDetachedTint;
-  bool browseInBox = true;
+  bool hoverMenu = true;
   std::wstring autoRule;
   RECT referenceWorkArea{};
 };
@@ -98,6 +98,7 @@ bool addItem(std::vector<Group> &groups, std::size_t target, const std::wstring 
 // Group indices are zero-based. A single-tab box cannot be split.
 bool mergeGroups(std::vector<Group> &groups, std::size_t source, std::size_t target);
 bool detachTab(std::vector<Group> &groups, std::size_t group, std::size_t tabIndex, RECT bounds);
+std::optional<Tab> deleteTab(std::vector<Group> &groups, std::size_t group, std::size_t tabIndex);
 // Insertion is a slot in the target's original header, from 0 to tabs.size() + 1.
 bool moveTab(std::vector<Group> &groups, std::size_t source, std::size_t tab,
              std::size_t target, std::size_t insertion);

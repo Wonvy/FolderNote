@@ -1,5 +1,6 @@
 #pragma once
 #include <windows.h>
+#include <functional>
 #include <span>
 #include <string>
 
@@ -11,8 +12,13 @@ std::wstring boxStoredItem(std::span<const std::wstring> roots, const std::wstri
 // Return the new path, or an empty string when the original could not be moved.
 std::wstring storeBoxItem(std::span<const std::wstring> roots, const std::wstring &path);
 std::wstring restoreBoxItem(std::span<const std::wstring> roots, const std::wstring &path);
-std::wstring copyToBoxStorage(std::span<const std::wstring> roots, const std::wstring &source, HWND owner);
-std::wstring moveToBoxStorage(std::span<const std::wstring> roots, const std::wstring &source, HWND owner);
+std::wstring transferItemToFolder(const std::wstring &source, const std::wstring &destinationFolder,
+                                  bool move, HWND owner, bool renameOnCollision = true,
+                                  const std::function<void(double)> &onProgress = {});
+std::wstring copyToBoxStorage(std::span<const std::wstring> roots, const std::wstring &source, HWND owner,
+                              const std::function<void(double)> &onProgress = {});
+std::wstring moveToBoxStorage(std::span<const std::wstring> roots, const std::wstring &source, HWND owner,
+                              const std::function<void(double)> &onProgress = {});
 std::wstring createShortcutInFolder(const std::wstring &targetPath, const std::wstring &destinationFolder);
 std::wstring createBoxShortcut(std::span<const std::wstring> roots, const std::wstring &targetPath);
 std::wstring createNewFolderIn(const std::wstring &parentFolder, const std::wstring &baseName);

@@ -138,6 +138,7 @@ class CopyResultSink final : public Microsoft::WRL::RuntimeClass<
     Microsoft::WRL::RuntimeClassFlags<Microsoft::WRL::ClassicCom>, IFileOperationProgressSink> {
 public:
   std::wstring copiedPath;
+  std::function<void(double)> onProgress;
   HRESULT STDMETHODCALLTYPE StartOperations() override { return S_OK; }
   HRESULT STDMETHODCALLTYPE FinishOperations(HRESULT) override { return S_OK; }
   HRESULT STDMETHODCALLTYPE PreRenameItem(DWORD, IShellItem *, LPCWSTR) override { return S_OK; }
@@ -170,15 +171,51 @@ public:
   HRESULT STDMETHODCALLTYPE PostDeleteItem(DWORD, IShellItem *, HRESULT, IShellItem *) override { return S_OK; }
   HRESULT STDMETHODCALLTYPE PreNewItem(DWORD, IShellItem *, LPCWSTR) override { return S_OK; }
   HRESULT STDMETHODCALLTYPE PostNewItem(DWORD, IShellItem *, LPCWSTR, LPCWSTR, DWORD, HRESULT, IShellItem *) override { return S_OK; }
-  HRESULT STDMETHODCALLTYPE UpdateProgress(UINT, UINT) override { return S_OK; }
+  HRESULT STDMETHODCALLTYPE UpdateProgress(UINT workTotal, UINT workSoFar) override {
+    if (onProgress && workTotal > 0) {
+      const double ratio = static_cast<double>(workSoFar) / static_cast<double>(workTotal);
+      onProgress(ratio < 0.0 ? 0.0 : (ratio > 1.0 ? 1.0 : ratio));
+    }
+    return S_OK;
+  }
   HRESULT STDMETHODCALLTYPE ResetTimer() override { return S_OK; }
   HRESULT STDMETHODCALLTYPE PauseTimer() override { return S_OK; }
   HRESULT STDMETHODCALLTYPE ResumeTimer() override { return S_OK; }
 };
 }
 
+std::wstring transferItemToFolder(const std::wstring &source, const std::wstring &destinationFolder,
+                                  bool move, HWND owner, bool renameOnCollision,
+                                  const std::function<void(double)> &onProgress) {
+  if (source.empty() || destinationFolder.empty() || isDesktopShellItem(source)) return {};
+  if (move && samePath(fs::path(source).parent_path().native(), destinationFolder)) return quick::normalize(source);
+  if (!safeDirectory(destinationFolder)) return {};
+
+  Microsoft::WRL::ComPtr<IShellItem> srcItem;
+  Microsoft::WRL::ComPtr<IShellItem> dstFolder;
+  Microsoft::WRL::ComPtr<IFileOperation> op;
+  auto sink = Microsoft::WRL::Make<CopyResultSink>();
+  if (sink) sink->onProgress = onProgress;
+  if (SUCCEEDED(SHCreateItemFromParsingName(source.c_str(), nullptr, IID_PPV_ARGS(&srcItem))) &&
+      SUCCEEDED(SHCreateItemFromParsingName(destinationFolder.c_str(), nullptr, IID_PPV_ARGS(&dstFolder))) &&
+      SUCCEEDED(CoCreateInstance(CLSID_FileOperation, nullptr, CLSCTX_ALL, IID_PPV_ARGS(&op))) && sink) {
+    op->SetOwnerWindow(owner);
+    DWORD flags = FOF_ALLOWUNDO | FOF_NOCONFIRMMKDIR;
+    if (renameOnCollision) flags |= FOF_RENAMEONCOLLISION;
+    op->SetOperationFlags(flags);
+    DWORD cookie = 0;
+    const bool advised = SUCCEEDED(op->Advise(sink.Get(), &cookie));
+    const HRESULT queued = move
+        ? op->MoveItem(srcItem.Get(), dstFolder.Get(), nullptr, nullptr)
+        : op->CopyItem(srcItem.Get(), dstFolder.Get(), nullptr, nullptr);
+    if (SUCCEEDED(queued)) op->PerformOperations();
+    if (advised) op->Unadvise(cookie);
+  }
+  return sink ? sink->copiedPath : std::wstring{};
+}
+
 std::wstring transferToBoxStorage(std::span<const std::wstring> roots, const std::wstring &source,
-                                  bool move, HWND owner) {
+                                  bool move, HWND owner, const std::function<void(double)> &onProgress) {
   if (source.empty() || isDesktopShellItem(source)) return {};
   const auto folder = boxStorageFolder(roots);
   if (folder.empty()) return {};
@@ -186,34 +223,23 @@ std::wstring transferToBoxStorage(std::span<const std::wstring> roots, const std
   const bool created = CreateDirectoryW(folder.c_str(), nullptr) != FALSE;
   if (!safeDirectory(folder)) return {};
 
-  Microsoft::WRL::ComPtr<IShellItem> srcItem;
-  Microsoft::WRL::ComPtr<IShellItem> dstFolder;
-  Microsoft::WRL::ComPtr<IFileOperation> op;
-  auto sink = Microsoft::WRL::Make<CopyResultSink>();
-  if (SUCCEEDED(SHCreateItemFromParsingName(source.c_str(), nullptr, IID_PPV_ARGS(&srcItem))) &&
-      SUCCEEDED(SHCreateItemFromParsingName(folder.c_str(), nullptr, IID_PPV_ARGS(&dstFolder))) &&
-      SUCCEEDED(CoCreateInstance(CLSID_FileOperation, nullptr, CLSCTX_ALL, IID_PPV_ARGS(&op))) && sink) {
-    op->SetOwnerWindow(owner);
-    op->SetOperationFlags(FOF_ALLOWUNDO | FOF_RENAMEONCOLLISION | FOF_NOCONFIRMMKDIR);
-    const HRESULT queued = move
-        ? op->MoveItem(srcItem.Get(), dstFolder.Get(), nullptr, sink.Get())
-        : op->CopyItem(srcItem.Get(), dstFolder.Get(), nullptr, sink.Get());
-    if (SUCCEEDED(queued)) op->PerformOperations();
-  }
+  auto movedPath = transferItemToFolder(source, folder, move, owner, true, onProgress);
   if (created) {
-    if (sink->copiedPath.empty()) RemoveDirectoryW(folder.c_str());
+    if (movedPath.empty()) RemoveDirectoryW(folder.c_str());
     else if (folder.size() < MAX_PATH)
       SHChangeNotify(SHCNE_MKDIR, SHCNF_PATHW | SHCNF_FLUSHNOWAIT, folder.c_str(), nullptr);
   }
-  return sink ? sink->copiedPath : std::wstring{};
+  return movedPath;
 }
 
-std::wstring copyToBoxStorage(std::span<const std::wstring> roots, const std::wstring &source, HWND owner) {
-  return transferToBoxStorage(roots, source, false, owner);
+std::wstring copyToBoxStorage(std::span<const std::wstring> roots, const std::wstring &source, HWND owner,
+                              const std::function<void(double)> &onProgress) {
+  return transferToBoxStorage(roots, source, false, owner, onProgress);
 }
 
-std::wstring moveToBoxStorage(std::span<const std::wstring> roots, const std::wstring &source, HWND owner) {
-  return transferToBoxStorage(roots, source, true, owner);
+std::wstring moveToBoxStorage(std::span<const std::wstring> roots, const std::wstring &source, HWND owner,
+                              const std::function<void(double)> &onProgress) {
+  return transferToBoxStorage(roots, source, true, owner, onProgress);
 }
 
 std::wstring createShortcutInFolder(const std::wstring &targetPath, const std::wstring &destinationFolder) {
