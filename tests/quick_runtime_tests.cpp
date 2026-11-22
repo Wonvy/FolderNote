@@ -195,8 +195,15 @@ static void desktopTests(HWND dialog) {
   check(box && content, "create desktop-hosted box input fixture");
   simulatedForeground = shell; underPointer = content; quick::eligible = shell;
   const auto beforeBoxClick = launches.size();
-  check(mouse(WM_MBUTTONDOWN) == 73 && mouse(WM_MBUTTONUP) == 73, "desktop box keeps native middle input");
-  drain(); check(launches.size() == beforeBoxClick, "desktop box does not open desktop middle menu");
+  check(mouse(WM_MBUTTONDOWN) == 1 && mouse(WM_MBUTTONUP) == 1, "desktop box swallows middle click for quick menu");
+  drain(); check(launches.size() == beforeBoxClick + 1 && launches.back().first == shell,
+                 "desktop box opens desktop middle menu when desktop is foreground");
+  simulatedForeground = ordinary; underPointer = content;
+  check(mouse(WM_MBUTTONDOWN) == 1 && mouse(WM_MBUTTONUP) == 1,
+        "desktop box swallows middle click even while another window is foreground");
+  drain(); check(launches.size() == beforeBoxClick + 2 && launches.back().first == shell,
+                 "desktop box opens desktop middle menu without requiring focus activation");
+  simulatedForeground = shell;
   DestroyWindow(box);
   check(quick::isDesktop(shell) && quick::isDesktop(worker), "recognize both shell and WorkerW desktop hosts");
   check(!quick::isDesktop(wallpaper) && !quick::isDesktop(ordinary) && !quick::isDesktop(shellView),

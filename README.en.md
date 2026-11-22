@@ -93,10 +93,10 @@ These screenshots illustrate the page layouts; available options follow the curr
 
 </details>
 
-## What's new in v1.9.10
+## What's new in v1.9.11
 
-- **Search box contents from the desktop**: includes other tabs and direct children of mapped folders, identifies each source, keeps same-name items separate, and respects your select/open preference.
-- **Correct Seer preview selection**: releasing Space inside a box previews its selected file. Changing focus or selection cancels a stale request.
+- **Native cross-process drag-and-drop**: smoothly drag box items into PowerPoint, the taskbar, Recycle Bin, the desktop, or other boxes and subfolders with dynamic native Shell drop descriptions, direct desktop moves without confirmation popups, filename/multi-item count badges, WinUI insertion indicators, spring-loaded tabs, and `Ctrl` copy / `Alt` shortcut modifiers.
+- **Inline rename, hover InfoTips, and middle-click in boxes**: rename box items in place via context menu or `F2` (preserving file extensions), view asynchronous native Shell hover tooltips, and open the Quick Folders menu with middle-click directly inside desktop boxes.
 
 Automated build and release completed. Published installers passed version, SHA-256, embedded-file, and application-icon checks. [Full changelog →](CHANGELOG.md)
 

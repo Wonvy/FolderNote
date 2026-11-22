@@ -22,12 +22,12 @@ constexpr UINT showMessage = WM_APP + 0x511, foregroundMessage = WM_APP + 0x512;
 constexpr UINT_PTR historyTimer = 2;
 std::atomic<HWND> eligible{nullptr};
 HWND receiver = nullptr;
-struct MenuRequest { HWND target; DWORD process; POINT point; };
+struct MenuRequest { HWND target; DWORD process; POINT point; bool desktopBox = false; };
 struct MiddleGesture {
   HWND target = nullptr;
   DWORD process = 0;
   POINT down{};
-  bool swallowed = false, dragged = false, suppressUp = false;
+  bool swallowed = false, dragged = false, suppressUp = false, desktopBox = false;
 } middle;
 bool helperEnabled() {
   return navigation::quickEnabled() || tabs::routing::enabled() || quick_find::external::enabled();
@@ -52,11 +52,15 @@ bool desktopClass(HWND window) {
   return classIs(window, L"Progman") || classIs(window, L"WorkerW");
 }
 bool localInputSurface(HWND window, HWND frame) {
-  // Tab bands and desktop boxes own their input, even under a Shell root.
+  // Tab bands own their middle-button gestures (tab close), even under a Shell root.
   // Check only class names/parents here; never call Shell or UIA in the hook.
   for (HWND current = window; current && current != frame; current = GetParent(current))
-    if (classIs(current, L"FolderNote.ExplorerTabs.Band.v1") ||
-        classIs(current, L"FolderNote.DesktopGroups.Panel")) return true;
+    if (classIs(current, L"FolderNote.ExplorerTabs.Band.v1")) return true;
+  return false;
+}
+bool desktopPanelSurface(HWND window, HWND frame) {
+  for (HWND current = window; current && current != frame; current = GetParent(current))
+    if (classIs(current, L"FolderNote.DesktopGroups.Panel")) return true;
   return false;
 }
 DWORD integrity(DWORD pid) {
@@ -122,11 +126,12 @@ LRESULT CALLBACK mouseHook(int code, WPARAM message, LPARAM parameter) {
       middle = {};
       // These cheap checks run on the hook thread. Process identity, dialog
       // contents and integrity are checked on the helper thread before launch.
+      const bool inBox = root && desktopClass(root) && desktopPanelSurface(under, root);
       if (allowed && root && (desktopClass(root) || (root == foreground &&
           (classIs(root, L"CabinetWClass") || classIs(root, L"ExploreWClass") || classIs(root, L"#32770"))))) {
-        middle.target = root; middle.down = mouse->pt;
+        middle.target = root; middle.down = mouse->pt; middle.desktopBox = inBox;
         GetWindowThreadProcessId(root, &middle.process);
-        middle.swallowed = root == foreground && eligible.load() == root;
+        middle.swallowed = inBox || (root == foreground && eligible.load() == root);
       }
       if (middle.swallowed) return 1;
     } else if (middle.target) {
@@ -139,9 +144,12 @@ LRESULT CALLBACK mouseHook(int code, WPARAM message, LPARAM parameter) {
         // Explorer can keep Progman foreground while its desktop view lives
         // under WorkerW. Use the actual foreground window as the popup anchor.
         const bool desktop = desktopClass(completed.target) && desktopClass(foreground);
-        if (!completed.dragged && (foreground == completed.target || desktop) && process == completed.process &&
-            root == completed.target) {
-          auto request = new (std::nothrow) MenuRequest{foreground, completed.process, mouse->pt};
+        const bool boxDesktop = completed.desktopBox && desktopClass(completed.target) &&
+                                desktopPanelSurface(under, root);
+        if (!completed.dragged && root == completed.target &&
+            (((foreground == completed.target || desktop) && process == completed.process) || boxDesktop)) {
+          const HWND anchor = desktopClass(foreground) ? foreground : completed.target;
+          auto request = new (std::nothrow) MenuRequest{anchor, completed.process, mouse->pt, boxDesktop};
           if (request && !PostMessageW(receiver, showMessage, 0, reinterpret_cast<LPARAM>(request))) delete request;
         }
         // Unknown targets retain native input while awaiting full validation.
@@ -198,9 +206,10 @@ LRESULT CALLBACK helperProc(HWND window, UINT message, WPARAM w, LPARAM l) {
     if (message == foregroundMessage) { updateTarget(); return 0; }
     if (message == showMessage) {
       std::unique_ptr<MenuRequest> request(reinterpret_cast<MenuRequest *>(l));
-      if (request && request->target == GetForegroundWindow() && eligibleTarget(request->target, request->process) &&
+      if (request && (request->desktopBox || request->target == GetForegroundWindow()) &&
+          eligibleTarget(request->target, request->process) &&
           (!desktopClass(request->target) || isDesktop(GetAncestor(WindowFromPoint(request->point), GA_ROOT))) &&
-          request->target == GetForegroundWindow()) {
+          (request->desktopBox || request->target == GetForegroundWindow())) {
         eligible.store(request->target);
         launchMenu(request->target, nullptr, request->point);
       }

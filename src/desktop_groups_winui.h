@@ -21,6 +21,7 @@ struct Item {
 struct Events {
   std::function<void(std::vector<int>)> selection;
   std::function<void(int)> open;
+  std::function<void(int)> rename;
   std::function<bool(int)> preview;
   std::function<bool()> previewAvailable;
   std::function<void()> previewFocus;
@@ -86,11 +87,16 @@ public:
   void showActions(bool visible);
   void showCollapseMove(bool visible);
   bool beginTitleRename(std::function<void(std::wstring)> commit);
+  bool beginItemRename(int row, const std::wstring &initialText, int selectLength,
+                       std::function<void(std::optional<std::wstring>)> commit);
+  void cancelItemRename();
   void highlight(bool highlighted);
   bool headerInteractive(POINT screen) const;
   std::optional<std::size_t> tabAt(POINT screen) const;
   std::optional<std::size_t> tabInsertion(POINT screen) const;
   void showTabInsertion(std::optional<std::size_t> slot);
+  void showItemInsertion(std::optional<RECT> screenBounds);
+  void setDragActive(bool active);
   bool wheelOnTab(POINT screen, int delta);
   int hit(POINT screen) const;
   bool itemBounds(int row, RECT &screen) const;

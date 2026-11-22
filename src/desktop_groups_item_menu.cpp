@@ -49,8 +49,9 @@ struct MenuMessages {
 };
 }
 
-bool showItemMenu(HWND owner, const std::wstring &path, POINT point, bool canRemove, bool &remove) {
+bool showItemMenu(HWND owner, const std::wstring &path, POINT point, bool canRemove, bool &remove, bool &rename) {
   remove = false;
+  rename = false;
   if (!IsWindow(owner) || path.empty()) return false;
 
   PIDLIST_ABSOLUTE parsed = nullptr;
@@ -68,7 +69,7 @@ bool showItemMenu(HWND owner, const std::wstring &path, POINT point, bool canRem
   Menu menu;
   const bool extended = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
   if (!menu.handle || FAILED(shell->QueryContextMenu(menu.handle, 0, firstShellCommand, lastShellCommand,
-                                                   CMF_NORMAL | (extended ? CMF_EXTENDEDVERBS : 0)))) return false;
+                                                   CMF_NORMAL | CMF_CANRENAME | (extended ? CMF_EXTENDEDVERBS : 0)))) return false;
   const auto count = GetMenuItemCount(menu.handle);
   if (count < 0 || (!count && !canRemove)) return false;
   if (canRemove && ((count && !AppendMenuW(menu.handle, MF_SEPARATOR, 0, nullptr)) ||
@@ -84,14 +85,26 @@ bool showItemMenu(HWND owner, const std::wstring &path, POINT point, bool canRem
   PostMessageW(owner, WM_NULL, 0, 0);
   remove = command == removeCommand;
   if (command >= firstShellCommand && command <= lastShellCommand && IsWindow(owner)) {
-    CMINVOKECOMMANDINFOEX invoke{sizeof(invoke)};
-    invoke.fMask = CMIC_MASK_UNICODE | CMIC_MASK_PTINVOKE;
-    invoke.hwnd = owner;
-    invoke.lpVerb = MAKEINTRESOURCEA(command - firstShellCommand);
-    invoke.lpVerbW = MAKEINTRESOURCEW(command - firstShellCommand);
-    invoke.nShow = SW_SHOWNORMAL;
-    invoke.ptInvoke = point;
-    shell->InvokeCommand(reinterpret_cast<CMINVOKECOMMANDINFO *>(&invoke));
+    const UINT offset = command - firstShellCommand;
+    wchar_t verbW[64]{};
+    char verbA[64]{};
+    const bool isRename =
+        (SUCCEEDED(shell->GetCommandString(offset, GCS_VERBW, nullptr, reinterpret_cast<char *>(verbW), ARRAYSIZE(verbW))) &&
+         _wcsicmp(verbW, L"rename") == 0) ||
+        (SUCCEEDED(shell->GetCommandString(offset, GCS_VERBA, nullptr, verbA, ARRAYSIZE(verbA))) &&
+         _stricmp(verbA, "rename") == 0);
+    if (isRename) {
+      rename = true;
+    } else {
+      CMINVOKECOMMANDINFOEX invoke{sizeof(invoke)};
+      invoke.fMask = CMIC_MASK_UNICODE | CMIC_MASK_PTINVOKE;
+      invoke.hwnd = owner;
+      invoke.lpVerb = MAKEINTRESOURCEA(offset);
+      invoke.lpVerbW = MAKEINTRESOURCEW(offset);
+      invoke.nShow = SW_SHOWNORMAL;
+      invoke.ptInvoke = point;
+      shell->InvokeCommand(reinterpret_cast<CMINVOKECOMMANDINFO *>(&invoke));
+    }
   }
   return true;
 }

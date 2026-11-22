@@ -267,7 +267,23 @@ struct Popup {
 int menu(HINSTANCE instance, HWND target, HWND view, POINT point) {
   const bool desktop = isDesktop(target);
   if (!navigation::quickEnabled() || (!desktop && !isExplorer(target) && !isFileDialog(target))) return 1;
-  if (GetForegroundWindow() != target) return 0;
+  const bool inDesktopBox = [&] {
+    if (!desktop) return false;
+    const HWND under = WindowFromPoint(point), underRoot = under ? GetAncestor(under, GA_ROOT) : nullptr;
+    if (!under || !isDesktop(underRoot)) return false;
+    for (HWND h = under; h && h != underRoot; h = GetParent(h)) {
+      wchar_t cls[128]{};
+      GetClassNameW(h, cls, ARRAYSIZE(cls));
+      if (!wcscmp(cls, L"FolderNote.DesktopGroups.Panel")) return true;
+    }
+    return false;
+  }();
+  const HWND initialForeground = GetForegroundWindow();
+  const auto foregroundOk = [&] {
+    const HWND currentForeground = GetForegroundWindow();
+    return currentForeground == target || (inDesktopBox && currentForeground == initialForeground);
+  };
+  if (!foregroundOk()) return 0;
   DWORD targetPid = 0; GetWindowThreadProcessId(target, &targetPid);
   auto requestName = std::wstring(L"Local\\FolderNote.QuickFolders.Request.v1.") + std::to_wstring(targetPid) + L"." +
       std::to_wstring(reinterpret_cast<UINT_PTR>(target));
@@ -298,7 +314,7 @@ int menu(HINSTANCE instance, HWND target, HWND view, POINT point) {
           if (gate.error() != ERROR_TIMEOUT) fn::fail(lang::text(L"无法打开快速文件夹菜单"), gate.error());
           break;
         }
-        if (!validTarget() || GetForegroundWindow() != target || !navigation::quickEnabled()) break;
+        if (!validTarget() || !foregroundOk() || !navigation::quickEnabled()) break;
         if (!started) {
           request.begin(); started = true;
           // Keep preparation serialized too: a slow Shell provider must not
@@ -333,7 +349,7 @@ int menu(HINSTANCE instance, HWND target, HWND view, POINT point) {
           }
           if (!current.empty()) touchHistory(current);
         }
-        if (!currentRequest() || GetForegroundWindow() != target) break;
+        if (!currentRequest() || !foregroundOk()) break;
         popup.mode = mode; popup.selectedCount = selectedCount;
         popup.showCurrentName = showCurrentName;
         popup.showFrequent = showFrequent;
@@ -341,7 +357,7 @@ int menu(HINSTANCE instance, HWND target, HWND view, POINT point) {
         popup.canMove = transfer::supports(selection.Get(), MenuMode::Move);
         popup.build(current);
         // Slow queries must not reopen after focus changes or a newer request.
-        if (!currentRequest() || GetForegroundWindow() != target) break;
+        if (!currentRequest() || !foregroundOk()) break;
         selected = popup::show(instance, point, popup.root, ui::configuredTheme(), target);
         mode = popup.mode;
         showFrequent = popup.showFrequent;

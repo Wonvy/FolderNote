@@ -6,7 +6,9 @@
 #include "language.h"
 #include <MddBootstrap.h>
 #include <commctrl.h>
+#include <shlobj.h>
 #include <wincodec.h>
+#include <wrl/client.h>
 #undef GetCurrentTime
 #include <winrt/Microsoft.UI.Composition.SystemBackdrops.h>
 #include <winrt/Microsoft.UI.Content.h>
@@ -25,18 +27,23 @@
 #include <winrt/Microsoft.UI.Xaml.Media.h>
 #include <winrt/Microsoft.UI.Xaml.Shapes.h>
 #include <winrt/Microsoft.UI.Xaml.XamlTypeInfo.h>
+#include <winrt/Windows.ApplicationModel.DataTransfer.h>
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Graphics.Imaging.h>
+#include <winrt/Windows.Storage.h>
 #include <winrt/Windows.Storage.Streams.h>
 #include <winrt/Windows.UI.ViewManagement.h>
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <iterator>
+#include <map>
 #include <optional>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <windowsx.h>
 
@@ -215,6 +222,27 @@ ux::Media::ImageSource imageSource(IWICImagingFactory *factory, HICON icon) {
   return source;
 }
 
+std::wstring queryShellInfoTip(const std::wstring &path) {
+  if (path.empty()) return {};
+  PIDLIST_ABSOLUTE parsed = nullptr;
+  if (FAILED(SHParseDisplayName(path.c_str(), nullptr, &parsed, 0, nullptr)) || !parsed) return {};
+  const std::unique_ptr<void, decltype(&CoTaskMemFree)> owned(static_cast<void *>(parsed), CoTaskMemFree);
+  Microsoft::WRL::ComPtr<IShellFolder> folder;
+  PCUITEMID_CHILD child = nullptr;
+  if (FAILED(SHBindToParent(parsed, IID_PPV_ARGS(&folder), &child)) || !folder || !child) return {};
+  Microsoft::WRL::ComPtr<IQueryInfo> query;
+  if (FAILED(folder->GetUIObjectOf(nullptr, 1, &child, IID_IQueryInfo, nullptr,
+                                   reinterpret_cast<void **>(query.GetAddressOf()))) || !query) return {};
+  PWSTR raw = nullptr;
+  if (FAILED(query->GetInfoTip(QITIPF_USESLOWTIP, &raw)) || !raw) {
+    if (FAILED(query->GetInfoTip(QITIPF_DEFAULT, &raw)) || !raw) return {};
+  }
+  std::wstring text(raw);
+  CoTaskMemFree(raw);
+  while (!text.empty() && (text.back() == L' ' || text.back() == L'\r' || text.back() == L'\n')) text.pop_back();
+  return text;
+}
+
 }
 
 struct Runtime::State {
@@ -304,6 +332,11 @@ struct Surface::State {
   controls::TextBox titleEditor{nullptr};
   std::function<void(std::wstring)> finishTitleRename;
   bool titleEditorReady = false;
+  controls::Canvas itemEditorLayer{nullptr};
+  controls::TextBox itemEditor{nullptr};
+  controls::TextBlock hiddenItemLabel{nullptr};
+  std::function<void(std::optional<std::wstring>)> finishItemRename;
+  bool itemEditorReady = false;
   controls::Grid body{nullptr};
   controls::StackPanel pageDots{nullptr};
   std::function<void(int)> navigatePage;
@@ -328,6 +361,11 @@ struct Surface::State {
   Point selectionOrigin{};
   std::vector<int> selectionBeforeDrag;
   bool selecting = false, toggleSelection = false, extendSelection = false;
+  bool dragActive = false;
+  controls::ToolTip activeToolTip{nullptr};
+  controls::Canvas itemInsertionLayer{nullptr};
+  ux::Shapes::Rectangle itemInsertionMarker{nullptr};
+  std::optional<RECT> itemInsertionBounds;
   ::winrt::com_ptr<BoxAcrylic> acrylic;
   bool acrylicAttached = false;
   bool wallpaperGlass = false;
@@ -360,14 +398,22 @@ struct Surface::State {
   ::winrt::com_ptr<IWICImagingFactory> factory;
   struct Row {
     std::wstring name;
+    std::wstring path;
     ux::Media::ImageSource image{nullptr};
   };
   std::vector<Row> items;
+  struct CachedTip {
+    std::wstring text;
+    ULONGLONG at = 0;
+  };
+  std::map<std::wstring, CachedTip> tipCache;
+  std::shared_ptr<std::atomic<bool>> alive = std::make_shared<std::atomic<bool>>(true);
   int size = 0;
   bool details = false, synchronizing = false;
   bool previewSpaceDown = false;
 
   ~State() {
+    alive->store(false);
     try { if (frameToken) ux::Media::CompositionTarget::Rendering(frameToken); } catch (...) {}
     try { if (tabHover) tabHover.Stop(); } catch (...) {}
     try { if (reflowTimer) reflowTimer.Stop(); } catch (...) {}
@@ -571,6 +617,51 @@ struct Surface::State {
     titleEditor.LostFocus([this](auto const &, auto const &) { endTitleRename(true); });
     titleBar.Children().Append(titleEditor);
     controls::Canvas::SetZIndex(titleEditor, 1);
+  }
+
+  void hideItemEditor() {
+    if (itemEditorLayer) itemEditorLayer.Visibility(ux::Visibility::Collapsed);
+    if (hiddenItemLabel) {
+      hiddenItemLabel.Opacity(1.0);
+      hiddenItemLabel = nullptr;
+    }
+  }
+
+  void endItemRename(bool accept) {
+    if (!finishItemRename || !itemEditorReady) return;
+    itemEditorReady = false;
+    auto finish = std::exchange(finishItemRename, {});
+    std::optional<std::wstring> value;
+    if (accept) {
+      const auto input = itemEditor.Text();
+      value.emplace(input.c_str(), input.size());
+    }
+    hideItemEditor();
+    finish(std::move(value));
+  }
+
+  void makeItemEditor() {
+    itemEditorLayer = controls::Canvas{};
+    itemEditorLayer.Visibility(ux::Visibility::Collapsed);
+    itemEditor = controls::TextBox{};
+    itemEditor.UseSystemFocusVisuals(false);
+    itemEditor.MaxLength(255);
+    itemEditor.MinWidth(0);
+    itemEditor.MinHeight(0);
+    itemEditor.Padding({5, 2, 5, 2});
+    itemEditor.FontSize(13);
+    itemEditor.CornerRadius({4, 4, 4, 4});
+    itemEditor.AcceptsReturn(false);
+    ux::Automation::AutomationProperties::SetName(itemEditor, lang::text(L"重命名"));
+    itemEditor.KeyDown([this](auto const &, const ux::Input::KeyRoutedEventArgs &args) {
+      using ::winrt::Windows::System::VirtualKey;
+      if (args.Key() != VirtualKey::Enter && args.Key() != VirtualKey::Escape) return;
+      args.Handled(true);
+      endItemRename(args.Key() == VirtualKey::Enter);
+    });
+    itemEditor.LostFocus([this](auto const &, auto const &) { endItemRename(true); });
+    itemEditorLayer.Children().Append(itemEditor);
+    body.Children().Append(itemEditorLayer);
   }
 
   void paintCollapseButton() {
@@ -1199,8 +1290,66 @@ struct Surface::State {
     return -1;
   }
 
-  void apply(controls::ContentControl const &container, int index) const {
+  void attachItemToolTip(controls::ContentControl const &container) {
+    if (!container || controls::ToolTipService::GetToolTip(container)) return;
+    controls::ToolTip tip;
+    tip.Placement(controls::Primitives::PlacementMode::Mouse);
+    ::winrt::weak_ref<controls::ContentControl> weakContainer(container);
+    ::winrt::weak_ref<controls::ToolTip> weakTip(tip);
+    tip.Opened([this, weakContainer, weakTip](auto const &, auto const &) {
+      const auto currentContainer = weakContainer.get();
+      const auto currentTip = weakTip.get();
+      if (!currentContainer || !currentTip || !view) return;
+      if (finishItemRename || dragActive || selectionPointer) {
+        currentTip.IsOpen(false);
+        return;
+      }
+      if (activeToolTip && activeToolTip != currentTip) activeToolTip.IsOpen(false);
+      activeToolTip = currentTip;
+      const int row = view.IndexFromContainer(currentContainer);
+      if (row < 0 || static_cast<size_t>(row) >= items.size()) {
+        currentTip.IsOpen(false);
+        return;
+      }
+      const auto path = items[row].path;
+      const auto name = items[row].name;
+      if (path.empty()) {
+        currentTip.Content(::winrt::box_value(name));
+        return;
+      }
+      const auto now = GetTickCount64();
+      if (const auto cached = tipCache.find(path); cached != tipCache.end() && now - cached->second.at < 10000) {
+        currentTip.Content(::winrt::box_value(cached->second.text.empty() ? name : cached->second.text));
+        return;
+      }
+      currentTip.Content(::winrt::box_value(name));
+      const auto queue = root.DispatcherQueue();
+      const auto token = alive;
+      std::thread([this, queue, token, weakContainer, weakTip, path, name] {
+        const HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+        std::wstring info;
+        if (SUCCEEDED(com) || com == RPC_E_CHANGED_MODE) info = queryShellInfoTip(path);
+        if (SUCCEEDED(com)) CoUninitialize();
+        if (!token->load()) return;
+        queue.TryEnqueue([this, token, weakContainer, weakTip, path, name, info = std::move(info)] {
+          if (!token->load()) return;
+          tipCache[path] = {info, GetTickCount64()};
+          const auto targetContainer = weakContainer.get();
+          const auto targetTip = weakTip.get();
+          if (!targetContainer || !targetTip || !targetTip.IsOpen() || dragActive || !view) return;
+          const int currentRow = view.IndexFromContainer(targetContainer);
+          if (currentRow >= 0 && static_cast<size_t>(currentRow) < items.size() && items[currentRow].path == path) {
+            targetTip.Content(::winrt::box_value(info.empty() ? name : info));
+          }
+        });
+      }).detach();
+    });
+    controls::ToolTipService::SetToolTip(container, tip);
+  }
+
+  void apply(controls::ContentControl const &container, int index) {
     if (!container || index < 0 || static_cast<size_t>(index) >= items.size()) return;
+    attachItemToolTip(container);
     auto element = container.ContentTemplateRoot().try_as<ux::FrameworkElement>();
     if (!element) return;
     const auto &item = items[index];
@@ -1238,7 +1387,8 @@ struct Surface::State {
 
   void beginSelection(const ux::Input::PointerRoutedEventArgs &args) {
     const auto pointer = args.Pointer();
-    if (selectionPointer || collapsed || pointer.PointerDeviceType() != ::winrt::Microsoft::UI::Input::PointerDeviceType::Mouse) return;
+    if (selectionPointer || collapsed || finishItemRename ||
+        pointer.PointerDeviceType() != ::winrt::Microsoft::UI::Input::PointerDeviceType::Mouse) return;
     const auto point = args.GetCurrentPoint(body);
     if (!point.Properties().IsLeftButtonPressed()) return;
     POINT screen{};
@@ -1328,14 +1478,21 @@ struct Surface::State {
 
     body.AddHandler(ux::UIElement::PointerPressedEvent(), ::winrt::box_value(ux::Input::PointerEventHandler(
         [this](auto const &, auto const &args) {
-          if (args.GetCurrentPoint(body).Properties().IsLeftButtonPressed()) {
+          bool insideItemEditor = false;
+          if (finishItemRename) {
+            for (auto node = args.OriginalSource().try_as<ux::DependencyObject>(); node && node != body;
+                 node = ux::Media::VisualTreeHelper::GetParent(node)) {
+              if (node == itemEditor) { insideItemEditor = true; break; }
+            }
+          }
+          if (!insideItemEditor && args.GetCurrentPoint(body).Properties().IsLeftButtonPressed()) {
             // Desktop boxes deliberately do not activate on their frame. A
             // file click must nevertheless give the island keyboard focus;
             // otherwise Space still reaches Explorer and its old selection.
             SetForegroundWindow(GetAncestor(parent, GA_ROOT));
             SetFocus(islandWindow);
           }
-          beginSelection(args);
+          if (!insideItemEditor) beginSelection(args);
         })), true);
     body.AddHandler(ux::UIElement::PointerMovedEvent(), ::winrt::box_value(ux::Input::PointerEventHandler(
         [this](auto const &, const ux::Input::PointerRoutedEventArgs &args) {
@@ -1458,6 +1615,7 @@ struct Surface::State {
       args.Handled(true);
     });
     itemsView.PreviewKeyDown([this](auto const &, ux::Input::KeyRoutedEventArgs const &args) {
+      if (finishItemRename) return;
       if (events.findInput && events.findInput(WM_KEYDOWN, static_cast<WPARAM>(args.Key()))) {
         args.Handled(true); return;
       }
@@ -1478,6 +1636,7 @@ struct Surface::State {
              GetKeyState(VK_LWIN) | GetKeyState(VK_RWIN)) & 0x8000)) events.preview(view.SelectedIndex());
     });
     itemsView.CharacterReceived([this](auto const &, ux::Input::CharacterReceivedRoutedEventArgs const &args) {
+      if (finishItemRename) return;
       if (events.findInput && events.findInput(WM_CHAR, args.Character())) args.Handled(true);
     });
     itemsView.LostFocus([this](auto const &, auto const &) {
@@ -1487,14 +1646,23 @@ struct Surface::State {
       if (events.previewFocus) events.previewFocus();
     });
     itemsView.KeyDown([this](auto const &, ux::Input::KeyRoutedEventArgs const &args) {
+      if (finishItemRename) return;
       if (args.Key() == ::winrt::Windows::System::VirtualKey::Enter && events.open && view.SelectedIndex() >= 0) {
         events.open(view.SelectedIndex());
+        args.Handled(true);
+      } else if (args.Key() == ::winrt::Windows::System::VirtualKey::F2 && events.rename && view.SelectedIndex() >= 0 &&
+                 !((GetKeyState(VK_CONTROL) | GetKeyState(VK_SHIFT) | GetKeyState(VK_MENU) |
+                    GetKeyState(VK_LWIN) | GetKeyState(VK_RWIN)) & 0x8000)) {
+        events.rename(view.SelectedIndex());
         args.Handled(true);
       }
     });
     itemsView.DragItemsStarting([this](auto const &, controls::DragItemsStartingEventArgs const &args) {
       args.Cancel(true);
-      if (events.beginDrag && args.Items().Size()) events.beginDrag(::winrt::unbox_value<int>(args.Items().GetAt(0)));
+      if (activeToolTip) activeToolTip.IsOpen(false);
+      if (finishItemRename || !args.Items().Size()) return;
+      updateResizeCursor(HTCLIENT);
+      if (events.beginDrag) events.beginDrag(::winrt::unbox_value<int>(args.Items().GetAt(0)));
     });
     itemsView.AddHandler(ux::UIElement::PointerWheelChangedEvent(),
         ::winrt::box_value(ux::Input::PointerEventHandler([this](auto const &, ux::Input::PointerRoutedEventArgs const &args) {
@@ -1617,6 +1785,17 @@ Surface::Surface(HWND parent, Events events, IDropTarget *dropTarget) : state(st
     CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(state->factory.put()));
     state->makeView(false, 32);
     state->configureSelection();
+    state->makeItemEditor();
+    state->itemInsertionLayer = controls::Canvas{};
+    state->itemInsertionLayer.IsHitTestVisible(false);
+    controls::Canvas::SetZIndex(state->itemInsertionLayer, 3);
+    state->itemInsertionMarker = ux::Shapes::Rectangle{};
+    state->itemInsertionMarker.RadiusX(1.5);
+    state->itemInsertionMarker.RadiusY(1.5);
+    state->itemInsertionMarker.IsHitTestVisible(false);
+    state->itemInsertionMarker.Visibility(ux::Visibility::Collapsed);
+    state->itemInsertionLayer.Children().Append(state->itemInsertionMarker);
+    state->root.Children().Append(state->itemInsertionLayer);
     if (dropTarget) {
       // OLE hit-tests the island's child HWND over the content area. Register
       // the same native target here as on the host so files and Shell items
@@ -1683,6 +1862,7 @@ void Surface::show(bool visible) {
       state->endTabPress(true);
       state->endCollapsePress(true);
       state->endTitleRename(false);
+      state->endItemRename(false);
       bridge.Hide();
     }
   } catch (...) {}
@@ -1750,6 +1930,7 @@ void Surface::rows(const std::vector<Item> &items, bool listMode, int logicalIco
   state->synchronizing = true;
   try {
     state->endSelection(true);
+    state->endItemRename(false);
     state->spacing = std::clamp(spacing, 0, 24);
     state->makeView(listMode, logicalIconSize);
     state->items.clear();
@@ -1760,7 +1941,7 @@ void Surface::rows(const std::vector<Item> &items, bool listMode, int logicalIco
       ux::Media::ImageSource image{nullptr};
       try { image = imageSource(state->factory.get(), item.image); } catch (...) {}
       indices.push_back(::winrt::box_value(static_cast<int>(state->items.size())));
-      state->items.push_back({item.name, image});
+      state->items.push_back({item.name, item.path, image});
     }
     state->view.ItemsSource(::winrt::single_threaded_observable_vector<IInspectable>(std::move(indices)));
     state->root.InvalidateMeasure();
@@ -1874,7 +2055,10 @@ void Surface::header(const std::vector<std::wstring> &titles, std::size_t active
                      COLORREF border, COLORREF accent, int height, TitleStyle style, HICON icon) {
   if (!available()) return;
   try {
-    if (collapsed) state->endSelection(true);
+    if (collapsed) {
+      state->endSelection(true);
+      state->endItemRename(false);
+    }
     const bool changedTitles = state->titles != titles || state->titleStyle != style;
     state->titleStyle = style;
     state->headerHeight = height;
@@ -1968,6 +2152,93 @@ bool Surface::beginTitleRename(std::function<void(std::wstring)> commit) {
   return false;
 }
 
+bool Surface::beginItemRename(int row, const std::wstring &initialText, int selectLength,
+                              std::function<void(std::optional<std::wstring>)> commit) {
+  if (!available() || state->collapsed || state->finishItemRename || !commit ||
+      row < 0 || static_cast<size_t>(row) >= state->items.size()) return false;
+  try {
+    state->endSelection(true);
+    state->view.ScrollIntoView(state->view.Items().GetAt(row));
+    state->view.UpdateLayout();
+    const auto container = state->view.ContainerFromIndex(row).try_as<controls::ContentControl>();
+    if (!container) return false;
+    const auto element = container.ContentTemplateRoot().try_as<ux::FrameworkElement>();
+    const auto label = element ? element.FindName(L"FileName").try_as<controls::TextBlock>() : nullptr;
+    const double bodyWidth = state->body.ActualWidth();
+    const double bodyHeight = state->body.ActualHeight();
+    if (bodyWidth <= 20.0 || bodyHeight <= 20.0) return false;
+    const auto containerBounds = container.TransformToVisual(state->body).TransformBounds(
+        {0, 0, static_cast<float>(container.ActualWidth()), static_cast<float>(container.ActualHeight())});
+    const auto labelBounds = label ? label.TransformToVisual(state->body).TransformBounds(
+        {0, 0, static_cast<float>(label.ActualWidth()), static_cast<float>(label.ActualHeight())}) : containerBounds;
+    if (state->details) {
+      state->itemEditor.TextWrapping(ux::TextWrapping::NoWrap);
+      state->itemEditor.TextAlignment(ux::TextAlignment::Left);
+      const double left = std::clamp(static_cast<double>(labelBounds.X) - 4.0, 0.0, std::max(0.0, bodyWidth - 60.0));
+      const double width = std::max(60.0, std::min(static_cast<double>(containerBounds.X + containerBounds.Width) - left - 4.0,
+                                                   bodyWidth - left));
+      const double height = std::clamp(std::max(26.0, static_cast<double>(labelBounds.Height) + 6.0), 24.0, 34.0);
+      const double top = std::clamp(static_cast<double>(labelBounds.Y + labelBounds.Height / 2.0) - height / 2.0,
+                                    0.0, std::max(0.0, bodyHeight - height));
+      state->itemEditor.Width(width);
+      state->itemEditor.Height(height);
+      state->itemEditor.ClearValue(ux::FrameworkElement::MinHeightProperty());
+      state->itemEditor.ClearValue(ux::FrameworkElement::MaxHeightProperty());
+      controls::Canvas::SetLeft(state->itemEditor, left);
+      controls::Canvas::SetTop(state->itemEditor, top);
+    } else {
+      state->itemEditor.TextWrapping(ux::TextWrapping::Wrap);
+      state->itemEditor.TextAlignment(ux::TextAlignment::Center);
+      const double width = std::clamp(std::max(static_cast<double>(containerBounds.Width) + 20.0, 104.0),
+                                      60.0, std::max(60.0, bodyWidth));
+      const double center = static_cast<double>(containerBounds.X) + static_cast<double>(containerBounds.Width) / 2.0;
+      const double left = std::clamp(center - width / 2.0, 0.0, std::max(0.0, bodyWidth - width));
+      const double top = std::clamp(static_cast<double>(labelBounds.Y) - 3.0, 0.0, std::max(0.0, bodyHeight - 30.0));
+      const double maxHeight = std::clamp(bodyHeight - top, 30.0, 72.0);
+      state->itemEditor.Width(width);
+      state->itemEditor.ClearValue(ux::FrameworkElement::HeightProperty());
+      state->itemEditor.MinHeight(28.0);
+      state->itemEditor.MaxHeight(maxHeight);
+      controls::Canvas::SetLeft(state->itemEditor, left);
+      controls::Canvas::SetTop(state->itemEditor, top);
+    }
+    state->finishItemRename = std::move(commit);
+    state->hiddenItemLabel = label;
+    if (label) label.Opacity(0.0);
+    state->itemEditor.Text(initialText);
+    state->itemEditorLayer.Visibility(ux::Visibility::Visible);
+    state->body.UpdateLayout();
+    const auto root = GetAncestor(state->parent, GA_ROOT);
+    SetForegroundWindow(root);
+    auto foreground = GetForegroundWindow();
+    if (foreground != root && GetAncestor(foreground, GA_ROOT) != root &&
+        GetWindowThreadProcessId(foreground, nullptr) != GetCurrentThreadId()) {
+      SetForegroundWindow(state->parent);
+      foreground = GetForegroundWindow();
+    }
+    if (foreground == root || GetAncestor(foreground, GA_ROOT) == root ||
+        GetWindowThreadProcessId(foreground, nullptr) == GetCurrentThreadId()) {
+      SetFocus(state->islandWindow);
+      if (state->itemEditor.Focus(ux::FocusState::Programmatic) && state->finishItemRename) {
+        const int length = std::clamp(selectLength, 0, static_cast<int>(initialText.size()));
+        state->itemEditor.Select(0, length);
+        state->itemEditorReady = true;
+        return true;
+      }
+    }
+  } catch (const ::winrt::hresult_error &error) {
+    logFailure(L"begin item rename", error);
+  } catch (...) {}
+  state->finishItemRename = {};
+  try { state->hideItemEditor(); } catch (...) {}
+  return false;
+}
+
+void Surface::cancelItemRename() {
+  if (!available()) return;
+  try { state->endItemRename(false); } catch (...) {}
+}
+
 void Surface::highlight(bool highlighted) {
   if (!available() || state->highlighted == highlighted) return;
   try {
@@ -2015,6 +2286,42 @@ std::optional<std::size_t> Surface::tabInsertion(POINT screen) const {
 void Surface::showTabInsertion(std::optional<std::size_t> slot) {
   if (!available() || std::exchange(state->tabInsertionSlot, slot) == slot) return;
   try { state->positionTabInsertion(); } catch (...) {}
+}
+
+void Surface::showItemInsertion(std::optional<RECT> screenBounds) {
+  if (!available() || !state->itemInsertionMarker) return;
+  if (state->itemInsertionBounds.has_value() == screenBounds.has_value() &&
+      (!screenBounds || EqualRect(&*state->itemInsertionBounds, &*screenBounds))) return;
+  state->itemInsertionBounds = screenBounds;
+  try {
+    if (!screenBounds || IsRectEmpty(&*screenBounds)) {
+      state->itemInsertionMarker.Visibility(ux::Visibility::Collapsed);
+      return;
+    }
+    const double scale = GetDpiForWindow(state->islandWindow) / 96.0;
+    if (scale <= 0) return;
+    POINT topLeft{screenBounds->left, screenBounds->top};
+    POINT bottomRight{screenBounds->right, screenBounds->bottom};
+    if (!ScreenToClient(state->islandWindow, &topLeft) || !ScreenToClient(state->islandWindow, &bottomRight)) return;
+    const double left = topLeft.x / scale;
+    const double top = topLeft.y / scale;
+    const double width = std::max(2.0, (bottomRight.x - topLeft.x) / scale);
+    const double height = std::max(2.0, (bottomRight.y - topLeft.y) / scale);
+    controls::Canvas::SetLeft(state->itemInsertionMarker, left);
+    controls::Canvas::SetTop(state->itemInsertionMarker, top);
+    state->itemInsertionMarker.Width(width);
+    state->itemInsertionMarker.Height(height);
+    state->itemInsertionMarker.Fill(solidBrush(state->accentColor, state->highContrast ? 255 : 230));
+    state->itemInsertionMarker.Visibility(ux::Visibility::Visible);
+  } catch (...) {}
+}
+
+void Surface::setDragActive(bool active) {
+  if (!available()) return;
+  state->dragActive = active;
+  if (active && state->activeToolTip) {
+    try { state->activeToolTip.IsOpen(false); } catch (...) {}
+  }
 }
 bool Surface::wheelOnTab(POINT screen, int delta) {
   if (!tabAt(screen)) return false;

@@ -3,7 +3,12 @@
 #include "quick_folders.h"
 #include <algorithm>
 #include <filesystem>
+#include <memory>
+#include <shellapi.h>
 #include <shlobj.h>
+#include <shlwapi.h>
+#include <wrl/client.h>
+#include <wrl/implements.h>
 
 namespace desktop_groups {
 namespace {
@@ -122,6 +127,128 @@ std::wstring restoreBoxItem(std::span<const std::wstring> roots, const std::wstr
   const auto source = boxStoredItem(roots, path);
   if (source.empty()) return {};
   return moveToFolder(source, quick::normalize(roots.front()));
+}
+
+namespace {
+class CopyResultSink final : public Microsoft::WRL::RuntimeClass<
+    Microsoft::WRL::RuntimeClassFlags<Microsoft::WRL::ClassicCom>, IFileOperationProgressSink> {
+public:
+  std::wstring copiedPath;
+  HRESULT STDMETHODCALLTYPE StartOperations() override { return S_OK; }
+  HRESULT STDMETHODCALLTYPE FinishOperations(HRESULT) override { return S_OK; }
+  HRESULT STDMETHODCALLTYPE PreRenameItem(DWORD, IShellItem *, LPCWSTR) override { return S_OK; }
+  HRESULT STDMETHODCALLTYPE PostRenameItem(DWORD, IShellItem *, LPCWSTR, HRESULT, IShellItem *) override { return S_OK; }
+  HRESULT STDMETHODCALLTYPE PreMoveItem(DWORD, IShellItem *, IShellItem *, LPCWSTR) override { return S_OK; }
+  HRESULT STDMETHODCALLTYPE PostMoveItem(DWORD, IShellItem *, IShellItem *, LPCWSTR, HRESULT, IShellItem *) override { return S_OK; }
+  HRESULT STDMETHODCALLTYPE PreCopyItem(DWORD, IShellItem *, IShellItem *, LPCWSTR) override { return S_OK; }
+  HRESULT STDMETHODCALLTYPE PostCopyItem(DWORD, IShellItem *, IShellItem *, LPCWSTR, HRESULT hrCopy,
+                                         IShellItem *newlyCreated) override {
+    if (SUCCEEDED(hrCopy) && newlyCreated && copiedPath.empty()) {
+      PWSTR raw = nullptr;
+      if (SUCCEEDED(newlyCreated->GetDisplayName(SIGDN_FILESYSPATH, &raw)) && raw) {
+        copiedPath = quick::normalize(raw);
+        CoTaskMemFree(raw);
+      }
+    }
+    return S_OK;
+  }
+  HRESULT STDMETHODCALLTYPE PreDeleteItem(DWORD, IShellItem *) override { return S_OK; }
+  HRESULT STDMETHODCALLTYPE PostDeleteItem(DWORD, IShellItem *, HRESULT, IShellItem *) override { return S_OK; }
+  HRESULT STDMETHODCALLTYPE PreNewItem(DWORD, IShellItem *, LPCWSTR) override { return S_OK; }
+  HRESULT STDMETHODCALLTYPE PostNewItem(DWORD, IShellItem *, LPCWSTR, LPCWSTR, DWORD, HRESULT, IShellItem *) override { return S_OK; }
+  HRESULT STDMETHODCALLTYPE UpdateProgress(UINT, UINT) override { return S_OK; }
+  HRESULT STDMETHODCALLTYPE ResetTimer() override { return S_OK; }
+  HRESULT STDMETHODCALLTYPE PauseTimer() override { return S_OK; }
+  HRESULT STDMETHODCALLTYPE ResumeTimer() override { return S_OK; }
+};
+}
+
+std::wstring copyToBoxStorage(std::span<const std::wstring> roots, const std::wstring &source, HWND owner) {
+  if (source.empty() || isDesktopShellItem(source)) return {};
+  const auto folder = boxStorageFolder(roots);
+  if (folder.empty()) return {};
+  const bool created = CreateDirectoryW(folder.c_str(), nullptr) != FALSE;
+  if (!safeDirectory(folder)) return {};
+
+  Microsoft::WRL::ComPtr<IShellItem> srcItem;
+  Microsoft::WRL::ComPtr<IShellItem> dstFolder;
+  Microsoft::WRL::ComPtr<IFileOperation> op;
+  auto sink = Microsoft::WRL::Make<CopyResultSink>();
+  if (SUCCEEDED(SHCreateItemFromParsingName(source.c_str(), nullptr, IID_PPV_ARGS(&srcItem))) &&
+      SUCCEEDED(SHCreateItemFromParsingName(folder.c_str(), nullptr, IID_PPV_ARGS(&dstFolder))) &&
+      SUCCEEDED(CoCreateInstance(CLSID_FileOperation, nullptr, CLSCTX_ALL, IID_PPV_ARGS(&op))) && sink) {
+    op->SetOwnerWindow(owner);
+    op->SetOperationFlags(FOF_ALLOWUNDO | FOF_RENAMEONCOLLISION | FOF_NOCONFIRMMKDIR);
+    if (SUCCEEDED(op->CopyItem(srcItem.Get(), dstFolder.Get(), nullptr, sink.Get()))) {
+      op->PerformOperations();
+    }
+  }
+  if (created) {
+    if (sink->copiedPath.empty()) RemoveDirectoryW(folder.c_str());
+    else if (folder.size() < MAX_PATH)
+      SHChangeNotify(SHCNE_MKDIR, SHCNF_PATHW | SHCNF_FLUSHNOWAIT, folder.c_str(), nullptr);
+  }
+  return sink ? sink->copiedPath : std::wstring{};
+}
+
+std::wstring createShortcutInFolder(const std::wstring &targetPath, const std::wstring &destinationFolder) {
+  if (targetPath.empty() || !safeDirectory(destinationFolder)) return {};
+  PIDLIST_ABSOLUTE id = nullptr;
+  if (FAILED(SHParseDisplayName(targetPath.c_str(), nullptr, &id, 0, nullptr)) || !id) return {};
+  const std::unique_ptr<void, decltype(&CoTaskMemFree)> ownedId(static_cast<void *>(id), CoTaskMemFree);
+
+  std::wstring baseName;
+  Microsoft::WRL::ComPtr<IShellItem> shellItem;
+  if (SUCCEEDED(SHCreateItemFromIDList(id, IID_PPV_ARGS(&shellItem))) && shellItem) {
+    PWSTR disp = nullptr;
+    if (SUCCEEDED(shellItem->GetDisplayName(SIGDN_NORMALDISPLAY, &disp)) && disp) {
+      baseName = disp;
+      CoTaskMemFree(disp);
+    }
+  }
+  if (baseName.empty()) baseName = fs::path(targetPath).stem().wstring();
+  if (baseName.empty()) baseName = L"Shortcut";
+  for (auto &ch : baseName) {
+    if (wcschr(L"<>:\"/\\|?*", ch) || ch < 32) ch = L'_';
+  }
+
+  Microsoft::WRL::ComPtr<IShellLinkW> link;
+  Microsoft::WRL::ComPtr<IPersistFile> persist;
+  if (FAILED(CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&link))) ||
+      FAILED(link->SetIDList(id)) || FAILED(link.As(&persist))) return {};
+  if (!isDesktopShellItem(targetPath)) {
+    const auto parentDir = fs::path(targetPath).parent_path().wstring();
+    if (!parentDir.empty()) link->SetWorkingDirectory(parentDir.c_str());
+  }
+
+  const fs::path dest(destinationFolder);
+  for (unsigned attempt = 1; attempt <= 10000; ++attempt) {
+    const auto candidateName = attempt == 1 ? (baseName + L".lnk") : collisionName(fs::path(baseName + L".lnk"), false, attempt);
+    const auto full = (dest / candidateName).native();
+    if (full.size() > 32760) return {};
+    if (GetFileAttributesW(full.c_str()) != INVALID_FILE_ATTRIBUTES) continue;
+    if (SUCCEEDED(persist->Save(full.c_str(), TRUE))) {
+      if (full.size() < MAX_PATH)
+        SHChangeNotify(SHCNE_CREATE, SHCNF_PATHW | SHCNF_FLUSHNOWAIT, full.c_str(), nullptr);
+      return full;
+    }
+    return {};
+  }
+  return {};
+}
+
+std::wstring createBoxShortcut(std::span<const std::wstring> roots, const std::wstring &targetPath) {
+  const auto folder = boxStorageFolder(roots);
+  if (folder.empty()) return {};
+  const bool created = CreateDirectoryW(folder.c_str(), nullptr) != FALSE;
+  if (!safeDirectory(folder)) return {};
+  auto shortcut = createShortcutInFolder(targetPath, folder);
+  if (created) {
+    if (shortcut.empty()) RemoveDirectoryW(folder.c_str());
+    else if (folder.size() < MAX_PATH)
+      SHChangeNotify(SHCNE_MKDIR, SHCNF_PATHW | SHCNF_FLUSHNOWAIT, folder.c_str(), nullptr);
+  }
+  return shortcut;
 }
 
 bool rollbackBoxMove(const std::wstring &moved, const std::wstring &previous) {
