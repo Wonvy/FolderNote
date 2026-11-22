@@ -1,103 +1,129 @@
-# FolderNote
+<p align="center">
+  <img src="docs/previews/foldernote-icon.png" width="88" alt="FolderNote icon">
+</p>
+<h1 align="center">FolderNote</h1>
+<p align="center"><strong>Organize your desktop. Find files faster. Make Explorer work your way.</strong></p>
+<p align="center">Desktop boxes · Chinese initials search · Middle-click menu · Folder notes</p>
+<p align="center">
+  <a href="https://github.com/Wonvy/FolderNote/releases/latest"><img src="https://img.shields.io/github/v/release/Wonvy/FolderNote?style=flat-square&amp;color=2563eb" alt="Latest release"></a>
+  <img src="https://img.shields.io/badge/Windows-10%20%2F%2011%20x64-64748b?style=flat-square" alt="Windows 10 / 11 x64">
+  <a href="https://github.com/Wonvy/FolderNote/actions/workflows/windows-release.yml"><img src="https://github.com/Wonvy/FolderNote/actions/workflows/windows-release.yml/badge.svg" alt="Windows build status"></a>
+</p>
+<p align="center">
+  <a href="README.md">简体中文</a> · <strong>English</strong><br>
+  <a href="https://github.com/Wonvy/FolderNote/releases/latest">Download</a> ·
+  <a href="docs/USER_GUIDE.md">User guide (中文)</a> ·
+  <a href="CHANGELOG.md">Changelog (中文)</a> ·
+  <a href="https://github.com/Wonvy/FolderNote/issues">Report an issue</a>
+</p>
 
-[简体中文](README.md) · [English](README.en.md)
+---
 
-**Windows File Explorer tools · Latest release 1.9.10 · x64**
+FolderNote adds tools to Windows File Explorer. Collect desktop files into boxes, find items by typing a few letters, and return to favorite folders with the middle-click menu. Enable folder notes, menu management, and Windows 10 tabs as needed, all from one settings window.
 
-FolderNote adds desktop boxes, folder entry management, context menu management, folder notes, double-click navigation, a middle-click folder menu, and tabs for Windows 10. It uses a native Win32 settings window and requires no separate C++ runtime installation.
+## Download and get started
 
-[User guide (Chinese)](docs/USER_GUIDE.md) · [Development and builds (Chinese)](docs/DEVELOPMENT.md) · [Changelog (Chinese)](CHANGELOG.md) · [Contributing (Chinese)](CONTRIBUTING.md)
-
-## Interface preview
-
-![FolderNote Context Menu Manager in English](docs/previews/settings-en-US.png)
-
-| Folder entries | Feature settings |
+| Installer | Choose this for |
 | --- | --- |
-| ![This PC grouped icon view in Simplified Chinese](docs/previews/folder-entries-zh-CN.png) | ![Feature settings in Simplified Chinese](docs/previews/features-zh-CN.png) |
-| **Pins and history** | **Custom command editor** |
-| ![Pins and history in Simplified Chinese](docs/previews/quick-folders-zh-CN.png) | ![Custom command editor in Simplified Chinese](docs/previews/context-editor-zh-CN.png) |
+| **[Download the standard installer](https://github.com/Wonvy/FolderNote/releases/latest/download/FolderNote-Setup-x64.exe)** | Windows 10 / 11 x64. On Win11, folder note commands appear under **Show more options** |
+| [Download the Win11 first-level menu test edition](https://github.com/Wonvy/FolderNote/releases/latest/download/FolderNote-Setup-Win11-x64.exe) | Folder note commands in the new Win11 menu's app area. See the [test edition guide](packaging/README-Win11.md) |
 
-[View Context Menu Manager in Simplified Chinese](docs/previews/settings-zh-CN.png)
+1. **Install**: run the single EXE. No extraction is needed; follow the installer prompts.
+2. **Configure**: search the Start menu for **FolderNote Settings**, enable the features you want, and save.
+3. **Start using it**: reopen your Explorer windows. To search from the desktop, enable **Desktop and File Explorer** on the **Quick search** page.
+
+> On a fresh install, double-clicking empty space goes up one folder. Boxes, notes, the middle-click menu, and tabs are opt-in. Upgrades preserve existing settings and data. Uninstall through Windows **Installed apps**.
+
+**Already installed?** Choose **Check for updates** at the bottom left of Settings. You can also enable **Automatic updates** in Preferences: opening Settings checks at most once a day, and the standard edition can install updates that need no administrator approval. Downloads are checked against SHA-256. See [update details](docs/USER_GUIDE.md#检查更新与自动更新).
 
 ## Features
 
-| Feature | How to use it | Default |
-| --- | --- | --- |
-| Context Menu Manager | Browse existing menus by Explorer object, hide or restore supported entries, and create ordered FolderNote commands. | Off |
-| Folder entries | Add folders in This PC, the navigation pane, or the desktop. Hide, show, or restore supported entries, and remove or recover supported This PC entries. | Available in Settings |
-| Desktop boxes | Add boxes to the Windows desktop and move items you drop into them to the `FolderNote Boxes` folder on your desktop. | Off |
-| Folder notes | Add, edit, clear, or repair notes from a folder's context menu. Show notes in the Comments column in File Explorer. | Off |
-| Double-click empty space | Go up one level or configure the gesture to go back. | Go up one level |
-| Middle-click folder menu | Open pinned, recent, and frequently used folders on the desktop or in File Explorer. Hover over folders to browse subfolders. You can also enable the menu in file and folder dialogs. | Off |
-| Copy or move by middle click | Select files, middle-click, choose Copy or Move, and select a destination. Windows shows the operation's progress. | Available when the menu opens with items selected |
-| Tabs on Windows 10 | Create, duplicate, close, and reopen tabs. Scroll to switch tabs, middle-click to close a tab, or drop files on a tab to transfer them to its folder. | Off |
-| Open folders in new tabs | Route new folder windows to tabs in an existing window on Windows 10. A tab's context menu also offers Open in New Window. | Off |
-| Appearance | Use a light, dark, or system theme with DPI scaling and the folders' own icons. | Follow system |
-| Interface language | Choose Simplified Chinese or English, export a translation template, or import a custom XML language file. | Settings tab |
+| Feature and guide | What it does |
+| --- | --- |
+| **[Desktop boxes](docs/USER_GUIDE.md#桌面盒子)** | Drag and drop, tabs, mapped folders, icon/list views, pages, and folding; color, opacity, and blur per box |
+| **[Chinese initials search](docs/USER_GUIDE.md#中文首字母快速定位)** | Candidates near the pointer in boxes, app lists, the desktop, Explorer, and standard file dialogs; choose to select or open |
+| **[Middle-click menu](docs/USER_GUIDE.md#中键快速定位)** | Pinned, recent, and frequent folders and subfolders; copy or move selected items |
+| **[Context menu management](docs/USER_GUIDE.md#右键菜单管理)** | Inspect, hide, and restore supported entries; add programs, websites, CMD, or PowerShell commands |
+| **[Folder entry management](docs/USER_GUIDE.md#文件夹入口管理)** | Add and manage supported entries in This PC, the navigation pane, and the desktop |
+| **[Folder notes](docs/USER_GUIDE.md#文件夹备注)** | Add, edit, clear, or repair notes and show them in Explorer's Comments column |
+| **[Double-click navigation](docs/USER_GUIDE.md#双击空白处导航)** | Double-click empty space in a file list to go up one level or back |
+| **[Windows 10 tabs](docs/USER_GUIDE.md#windows-10-多标签)** | Create, duplicate, and reopen tabs; scroll to switch, middle-click to close, drop files onto tabs, and route folder opens to an existing window |
 
-Windows 11 uses its built-in File Explorer tabs. The Windows 10 option to open folders in tabs opens the first window normally and applies to subsequent folder opens. If an existing window cannot accept the folder, File Explorer opens a separate window.
+### Organized files, clear locations
 
-In a build published on GitHub, choose **Check for updates** at the bottom left of Settings. After you confirm, FolderNote downloads the matching installer package, verifies its SHA-256 hash, and starts the installer.
+Windows continues to manage the native desktop icons and context menu. Dropping desktop files into a regular box moves them into **`FolderNote Boxes`** on your personal desktop. Drag them back or choose **Remove from box** to return them to the desktop. Mapped folders show their contents in the original location.
 
-Enable **Automatic updates** in **Preferences** to check GitHub when you open Settings, up to once a day. The installed standard edition automatically applies updates that require no administrator approval. Reopen Settings to use the new version. For other updates, FolderNote shows the available version so you can select **Check for updates** and confirm installation. Automatic updates are off by default, and changes to this preference take effect immediately.
+Boxes have no separate taskbar buttons or tray icon and remain available when you use Win+D. Image thumbnails keep their full aspect ratio; **Ctrl + mouse wheel** changes icon size. With Seer running, select a file and press **Space** to preview it.
 
-## Manage context menus
+Right-click a box title to customize its appearance. Enable frosted glass, then use the **Blur strength** slider from **0–100%**. Each box saves its own setting.
 
-Choose **Context Menu Manager** in the settings sidebar. Browse menus for files, extensions, folders, folder backgrounds, drives, and the desktop, plus the **New**, **Send to**, and **Open with** submenus. Select a row to view its source. The eye icon hides or restores supported entries.
+### Type a few letters, then choose a result
 
-The status bar shows progress while FolderNote reads menus. Some Windows commands are read-only, including **Restore previous versions** on drives.
+| Type | Example matches |
+| --- | --- |
+| `sc` | 素材, with English matches such as `ScriptData` also listed |
+| `sjsc` | 设计素材 or 設計素材 |
+| `cqxm` | 重庆项目 |
+| `pssj2026` | PS设计_2026.png |
 
-Add programs, websites, or CMD and PowerShell commands under **Custom commands**. You can limit commands to a folder or file extension and set their order in the FolderNote submenu. The editor can open the Windows folder and icon pickers. See the [user guide](docs/USER_GUIDE.md#右键菜单管理) for supported changes and how to restore them.
+Candidates show native Windows icons. Click a result or choose it with the arrow keys and Enter. By default, **folders open and files are selected**; change these separately on the **Quick search** page. The menu fits its results and shows a scrollbar only when needed.
 
-## Manage folder entries
+**Desktop search includes files inside boxes.** Click empty desktop space and type. Results identify the box and tab; choosing one expands the box, switches tabs, and selects the correct page. Matching stays local and does not build a whole-disk index.
 
-Select **Folder entries** and choose a location. Switch between list and icon views, collapse any of the three **This PC** groups, or select an entry to view its status, source, and target path where available. Select **Add folder…** to add your own folder to the selected location. See the [user guide](docs/USER_GUIDE.md#文件夹入口管理) for the hide, restore, and remove actions.
+| Light candidate menu | Dark candidate menu |
+| :---: | :---: |
+| ![Light quick-search menu](docs/previews/quick-search-light.png) | ![Dark quick-search menu](docs/previews/quick-search-dark.png) |
 
-## Organize the desktop
+<sub>Example filenames rendered by the current version's actual candidate control.</sub>
 
-1. In **Features**, enable **Desktop boxes** and save. Windows continues to manage desktop icons, their positions, and the native context menu. Use **Box appearance** to preview and adjust the corner radius, background opacity, frosted glass, and drop shadow.
-2. Right-click an empty area of the desktop and select **New box**. On Windows 11, this command may be under **Show more options**. You can also open the creation menu from **Manage desktop boxes** in settings. To configure a box, right-click its title bar.
-3. Drag a desktop file or folder into a regular box to move it to the `FolderNote Boxes` folder on your desktop. Drag it back to an empty area of the desktop or right-click and select **Remove from box** to move it back.
-4. Right-click empty space inside a box to switch between **Icons** and **List**, change the sort order, or adjust **Item spacing**. Use the button on the right side of the title bar to collapse or expand the box. The title menu lets you map a folder, adjust frosted glass and background opacity, and independently choose **Show icon** and **Show text**.
-5. Enable **Auto-collapse** in a box's title menu to expand it when you hover over the title and collapse it shortly after the pointer leaves. This option is off by default.
-6. Deleting a box moves its stored items back to your desktop. References from earlier versions still point to their original locations. After turning off desktop boxes or uninstalling FolderNote, you can find stored items by opening `FolderNote Boxes` in File Explorer.
+## Interface preview
 
-## Install and get started
+![Context Menu Manager in English](docs/previews/settings-en-US.png)
 
-Version 1.9.10 includes box contents in native desktop quick search. Results identify their box and tab; choosing one expands the box and selects the correct page, honoring the configured locate/open action. It also fixes Space inside a box previewing the native desktop's selected file: releasing Space previews the box's current selection, and changing selection or focus cancels stale requests.
+<details>
+<summary><strong>More previews: folder entries, pins and history, custom commands</strong></summary>
 
-Version 1.9.9 keeps desktop boxes behind applications without briefly covering them when switching windows. A fixed desktop wallpaper layer keeps frosted glass stable while moving boxes. With frosted glass enabled, the title menu's **Blur strength** slider provides a live 0–100% preview and saves each box's setting independently.
+| Folder entries | Pins and history |
+| :---: | :---: |
+| ![Folder entries in Simplified Chinese](docs/previews/folder-entries-zh-CN.png) | ![Pins and history in Simplified Chinese](docs/previews/quick-folders-zh-CN.png) |
 
-Version 1.9.8 adds a Chinese-initial candidate popup: `sjsc` finds “设计素材” and `cq` finds “重庆”. The dedicated **Quick search** page controls folder and file actions independently (locate or open), enabled surfaces, popup position, visible result count, and native icons. Defaults open folders, select files, and place the popup beside the pointer. Desktop boxes and FolderNote lists are enabled by default. The native Windows desktop shares the File Explorer switch; standard Open, Save, and folder pickers have a separate switch. Click blank desktop space before typing to focus its icon list. Files in system pickers are always selected without submitting the dialog. Matching is offline and supports traditional characters, multiple readings, mixed Latin names, and box pagination.
+![Custom command editor in Simplified Chinese](docs/previews/context-editor-zh-CN.png)
 
-1. Download and run **FolderNote-Setup-x64.exe** from [Releases](https://github.com/Wonvy/FolderNote/releases/latest). No extraction is needed. Use **FolderNote-Setup-Win11-x64.exe** for the Windows 11 first-level context menu test edition. Both installers use the application icon and include all program components. The first installation may request administrator approval to register the navigation extension.
-2. Find **FolderNote** in the Start menu or open `FolderNote.exe`. Use the sidebar to switch between Features, Pins and history, Context Menu Manager, Folder entries, and Settings. The running version appears at the bottom left.
-3. Enable the features you want and save. To display notes, add the **Comments** column to File Explorer's Details view.
-4. Close and reopen File Explorer windows after installing or upgrading. If Explorer still has the old extension loaded, wait for any file operations to finish before restarting Explorer.
+These screenshots illustrate the page layouts; available options follow the current version.
 
-The standard edition uses the folder context menu on Windows 10 and **Show more options** on Windows 11. The [Windows 11 test edition](packaging/README-Win11.md) uses the newer context menu. Windows determines where it appears.
+</details>
 
-## Translate the interface
+## What's new in v1.9.10
 
-1. Open **FolderNote Settings**, select the **Settings** tab and choose English or Simplified Chinese from the **Language** list.
-2. To create another language, click **Export language template** or [download the XML template](docs/FolderNote-language.xml). Edit the XML's `name` attribute and translated strings in a text editor. Keep entry IDs and placeholders such as `{0}` intact. Missing entries use English.
-3. Save the file as UTF-8 with an `.xml` extension and click **Import language file** to apply the translation.
-4. Close and reopen File Explorer windows to see the localized context menus.
+- **Search box contents from the desktop**: includes other tabs and direct children of mapped folders, identifies each source, keeps same-name items separate, and respects your select/open preference.
+- **Correct Seer preview selection**: releasing Space inside a box previews its selected file. Changing focus or selection cancels a stale request.
 
-## Data and background processes
+Automated build and release completed. Published installers passed version, SHA-256, embedded-file, and application-icon checks. [Full changelog →](CHANGELOG.md)
 
-- Folder notes are stored in each folder's `desktop.ini`. Keep that file when copying folders. Repair can restore missing attributes. To restore deleted note contents, use a backup of the file.
-- Notes, visit history, and desktop group layouts stay on your PC. Manual checks and enabled automatic updates connect to GitHub.
-- When desktop boxes are enabled, the desktop helper starts at sign-in without a notification area icon. Layouts are saved to `%LOCALAPPDATA%\Programs\FolderNote\DesktopGroups.json`.
-- The Explorer extension handles double-click navigation and Windows 10 tabs. A background helper supports the desktop middle-click menu and opening folders in new tabs. The helper exits when both features are off. Support for file and folder dialogs can be switched off separately.
-- Upgrades preserve settings, pinned folders, history, and box layouts. Remove **FolderNote System Tools** through Windows **Settings → Apps**, or run `Uninstall.exe` from its installed version directory. User files, notes, preferences, and history are retained.
+## Compatibility and data
 
-## Build
+| Item | Details |
+| --- | --- |
+| Windows | Windows 10 / 11 **x64**; no ARM64 package. The main hands-on validation environment is Windows 10 22H2 |
+| Tabs | FolderNote's tab bar is for Windows 10; Windows 11 uses its built-in tabs |
+| Desktop UI | WinUI 3 requires Microsoft Windows App Runtime 1.8. Boxes fall back to Win32 if it is missing. [Runtime downloads](https://learn.microsoft.com/windows/apps/windows-app-sdk/downloads-archive) |
+| File locations | Regular boxes store files in the desktop's `FolderNote Boxes` folder. Mapped files stay in place. Notes are stored in each folder's `desktop.ini` |
+| Local data | Settings, pins, history, and box layouts stay on the computer. Update checks connect to GitHub |
+| Installation | Single EXE installers use the app icon. Upgrades and removal preserve user files and notes. Packages are currently unsigned; the Win11 first-level menu edition is for testing |
 
-Install Visual Studio 2022 with Desktop development with C++, a Windows SDK, and CMake 3.24 or later.
+See the [user guide](docs/USER_GUIDE.md) for dialog support, wallpaper-based blur, and reopening old Explorer windows after an upgrade.
 
-Desktop boxes use C++ and WinUI 3 by default. Install Microsoft Windows App Runtime 1.8 from the [Windows App SDK downloads archive](https://learn.microsoft.com/windows/apps/windows-app-sdk/downloads-archive) to use that interface. Desktop boxes use the Win32 interface when the runtime is unavailable.
+## Documentation and development
+
+| Document | Contents |
+| --- | --- |
+| [User guide (中文)](docs/USER_GUIDE.md) | Installation, features, operation reference, data locations, and troubleshooting |
+| [Development guide (中文)](docs/DEVELOPMENT.md) | Builds, modules, tests, installers, and automated releases |
+| [Changelog (中文)](CHANGELOG.md) | Features and fixes by version |
+| [Contributing (中文)](CONTRIBUTING.md) | Issue reports, contribution workflow, and validation |
+| [Language template](docs/FolderNote-language.xml) | Simplified Chinese and English are built in; custom XML translations can be imported |
+
+Requires Visual Studio 2022 C++ desktop tools, Windows SDK, and CMake 3.24+:
 
 ```powershell
 cmake --preset windows-x64
@@ -105,18 +131,4 @@ cmake --build --preset release --parallel
 ctest --preset release
 ```
 
-Binaries go to `build/Release/`. Run `packaging/build-release.ps1` after the Release build to create the installer archives. See the [development guide](docs/DEVELOPMENT.md) for release automation and testing.
-
-| Path | Contents |
-| --- | --- |
-| `src/` | Native app, Shell extensions, navigation, and interface |
-| `assets/` | Icons and other app resources |
-| `packaging/` | MSIX manifest, package scripts, and Windows 11 installation notes |
-| `tests/` | Automated tests and diagnostic utilities |
-| `docs/` | User guide, development guide, and interface previews |
-| `CMakeLists.txt` | Build targets and app version |
-| `CMakePresets.json` | Windows x64 build and test presets |
-
-## Compatibility
-
-FolderNote targets Windows 10 and 11 on x64. Version 1.9.7 passed 34 CTest tests on Windows 10 22H2, covering desktop boxes, Seer preview layering, dialog history, installation and removal, update selection, and existing features. Both standalone installers also passed file and icon integrity checks. The unsigned Windows 11 first-level context menu package is intended for testing. See the [user guide](docs/USER_GUIDE.md) for supported configurations and troubleshooting.
+Built with C++20, Win32, and WinUI 3. Output is in `build/Release/`. [Build and release details →](docs/DEVELOPMENT.md)
