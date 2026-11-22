@@ -139,6 +139,13 @@ int main(int argc, char **argv) {
       SendMessageW(list, WM_CHAR, L's', 0); SendMessageW(list, WM_CHAR, L'j', 0); SendMessageW(list, WM_KEYDOWN, VK_RETURN, 0);
       check(SendMessageW(list, LB_GETCURSEL, 0, 0) == -1, "disabled internal search keeps native input");
       saveSettings({});
+      {
+        Popup sourced;
+        int selected = -1;
+        sourced.begin(parent, {L"ScriptData", L"素材  ·  工作 / 收藏"}, [&](int row) { selected = row; }, {}, {L"ScriptData", L"素材"});
+        sourced.character(L's'); sourced.character(L'c'); sourced.key(VK_RETURN);
+        check(selected == 1, "source labels do not alter exact-initial ranking or candidate identity");
+      }
       std::vector<std::wstring> many;
       for (int i = 0; i < 20; ++i) many.push_back(L"sample" + std::to_wstring(i));
       Popup popup;

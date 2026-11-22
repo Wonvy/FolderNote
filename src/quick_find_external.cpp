@@ -2,6 +2,7 @@
 #include "quick_find.h"
 #include "quick_find_popup.h"
 #include "quick_dialog_history.h"
+#include "desktop_groups_search.h"
 #include <objbase.h>
 #include <UIAutomation.h>
 #include <wrl/client.h>
@@ -120,7 +121,7 @@ ComPtr<IUIAutomationElement> focusedList(IUIAutomation *ui, const Input &input) 
   }
   return {};
 }
-struct Item { ComPtr<IUIAutomationElement> element; };
+struct Item { ComPtr<IUIAutomationElement> element; std::optional<desktop_groups::search::Entry> box; };
 struct Contents {
   std::vector<Item> items;
   std::vector<Name> names;
@@ -134,7 +135,7 @@ Contents readItems(IUIAutomation *ui, IUIAutomationElement *list, const Input &i
     if (SUCCEEDED(item->get_CurrentName(&name)) && name) {
       result.names.emplace_back(std::wstring_view(name, SysStringLen(name)));
       result.labels.emplace_back(name, SysStringLen(name));
-      result.items.push_back({std::move(item)});
+      result.items.push_back({std::move(item), std::nullopt});
     }
     SysFreeString(name);
   };
@@ -170,6 +171,10 @@ Contents readItems(IUIAutomation *ui, IUIAutomationElement *list, const Input &i
 void locate(IUIAutomation *ui, const Input &input, IUIAutomationElement *list,
             const Contents &contents, int row) {
   if (row < 0 || size_t(row) >= contents.items.size() || !current(input)) return;
+  if (const auto &box = contents.items[row].box) {
+    if (desktopHost(input.root)) desktop_groups::search::locate(*box);
+    return;
+  }
   auto focused = focusedList(ui, input);
   BOOL same = FALSE;
   if (!focused || FAILED(ui->CompareElements(list, focused.Get(), &same)) || !same) return;
@@ -280,15 +285,28 @@ void run() {
           const bool desktop = desktopHost(input.root);
           const auto parent = desktop ? std::wstring{} : quick::dialog::currentPath(input.root);
           if (desktop) contents.shell = desktopItems();
+          auto matchLabels = contents.labels;
+          if (desktop && desktop_groups::search::receiver()) {
+            try {
+              const auto boxes = desktop_groups::search::collect(desktop_groups::readLayout().groups, [&] { return !current(input); });
+              for (const auto &box : boxes) {
+                contents.items.push_back({{}, box});
+                contents.labels.push_back(box.label);
+                matchLabels.push_back(box.name);
+              }
+            } catch (...) {} // A broken box layout must not disable native desktop search.
+          }
           std::vector<CandidateIcon> icons;
-          for (const auto &label : contents.labels) {
-            if (!desktop) icons.emplace_back(quick::icons::Source::child(parent, label));
+          for (size_t i = 0; i < contents.labels.size(); ++i) {
+            const auto &label = contents.labels[i];
+            if (const auto &box = contents.items[i].box) icons.emplace_back(quick::icons::Source::file(box->path));
+            else if (!desktop) icons.emplace_back(quick::icons::Source::child(parent, label));
             else if (const auto entry = contents.shell.find(label); entry != contents.shell.end() && !entry->second.path.empty())
               icons.emplace_back(quick::icons::Source::file(entry->second.path));
             else icons.emplace_back();
           }
           if (!current(input)) { candidatePending = false; continue; }
-          popup.begin(input.focus, contents.labels, [&, input](int row) { locate(ui.Get(), input, list.Get(), contents, row); }, std::move(icons));
+          popup.begin(input.focus, contents.labels, [&, input](int row) { locate(ui.Get(), input, list.Get(), contents, row); }, std::move(icons), matchLabels);
         }
         // Include typing that arrived while virtualized items were enumerated.
         {

@@ -19,7 +19,8 @@ Popup::~Popup() {
   if (font) DeleteObject(font);
 }
 bool Popup::contains(HWND value) const { return window && (value == window || IsChild(window, value)); }
-void Popup::begin(HWND anchor, const std::vector<std::wstring> &items, Choose callback, std::vector<CandidateIcon> itemIcons) {
+void Popup::begin(HWND anchor, const std::vector<std::wstring> &items, Choose callback, std::vector<CandidateIcon> itemIcons,
+                  const std::vector<std::wstring> &matchLabels) {
   close();
   if (watched && watched != this) watched->close();
   options = settings();
@@ -32,7 +33,7 @@ void Popup::begin(HWND anchor, const std::vector<std::wstring> &items, Choose ca
   dpi = GetDpiForWindow(anchor); if (!dpi) dpi = 96;
   labels = items; names.clear();
   icons = std::move(itemIcons); icons.resize(labels.size());
-  for (const auto &label : labels) names.emplace_back(label);
+  for (const auto &label : matchLabels.size() == labels.size() ? matchLabels : labels) names.emplace_back(label);
   choose = std::move(callback);
   theme.reset(ui::configuredTheme());
   if (!window) {

@@ -430,6 +430,8 @@ struct Surface::State {
 
   static LRESULT CALLBACK islandInput(HWND window, UINT message, WPARAM w, LPARAM l, UINT_PTR, DWORD_PTR data) {
     auto &state = *reinterpret_cast<State *>(data);
+    if (state.events.previewFocus && (message == WM_SETFOCUS || message == WM_LBUTTONDOWN || message == WM_POINTERDOWN))
+      state.events.previewFocus();
     // The Shell may destroy our desktop ancestor before the Surface owner.
     // Release OLE's reference while the HWND still exists.
     if (message == WM_DESTROY && state.dropRegistered) {
@@ -1481,6 +1483,9 @@ struct Surface::State {
     itemsView.LostFocus([this](auto const &, auto const &) {
       previewSpaceDown = false;
     });
+    itemsView.GotFocus([this](auto const &, auto const &) {
+      if (events.previewFocus) events.previewFocus();
+    });
     itemsView.KeyDown([this](auto const &, ux::Input::KeyRoutedEventArgs const &args) {
       if (args.Key() == ::winrt::Windows::System::VirtualKey::Enter && events.open && view.SelectedIndex() >= 0) {
         events.open(view.SelectedIndex());
@@ -1628,8 +1633,32 @@ Surface::Surface(HWND parent, Events events, IDropTarget *dropTarget) : state(st
 Surface::~Surface() = default;
 bool Surface::available() const { return state && state->islandWindow && state->view; }
 
-void Surface::focus() {
-  if (available()) SetFocus(state->islandWindow);
+void Surface::focus(int row) {
+  if (!available()) return;
+  if (row >= 0) SetForegroundWindow(GetAncestor(state->parent, GA_ROOT));
+  SetFocus(state->islandWindow);
+  if (row >= 0) try {
+    state->view.UpdateLayout();
+    if (auto item = state->view.ContainerFromIndex(row).try_as<controls::Control>()) item.Focus(ux::FocusState::Programmatic);
+    else state->view.Focus(ux::FocusState::Programmatic);
+  } catch (...) {}
+}
+
+std::optional<int> Surface::previewRow() const {
+  if (!available() || (GetFocus() != state->islandWindow && !IsChild(state->islandWindow, GetFocus()))) return std::nullopt;
+  try {
+    int focusedRow = -1;
+    for (auto node = ux::Input::FocusManager::GetFocusedElement(state->root.XamlRoot()).try_as<ux::DependencyObject>();
+         node; node = ux::Media::VisualTreeHelper::GetParent(node)) {
+      if (node == state->view) return focusedRow >= 0 ? focusedRow : state->view.SelectedIndex();
+      const auto row = state->view.IndexFromContainer(node);
+      if (row >= 0) {
+        const auto selected = state->selectedRows();
+        if (std::find(selected.begin(), selected.end(), row) != selected.end()) focusedRow = row;
+      }
+    }
+  } catch (...) {}
+  return std::nullopt;
 }
 
 void Surface::place(RECT bounds) {

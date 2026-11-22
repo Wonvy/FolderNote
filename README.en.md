@@ -2,7 +2,7 @@
 
 [简体中文](README.md) · [English](README.en.md)
 
-**Windows File Explorer tools · Latest release 1.9.9 · x64**
+**Windows File Explorer tools · Latest release 1.9.10 · x64**
 
 FolderNote adds desktop boxes, folder entry management, context menu management, folder notes, double-click navigation, a middle-click folder menu, and tabs for Windows 10. It uses a native Win32 settings window and requires no separate C++ runtime installation.
 
@@ -64,6 +64,8 @@ Select **Folder entries** and choose a location. Switch between list and icon vi
 6. Deleting a box moves its stored items back to your desktop. References from earlier versions still point to their original locations. After turning off desktop boxes or uninstalling FolderNote, you can find stored items by opening `FolderNote Boxes` in File Explorer.
 
 ## Install and get started
+
+Version 1.9.10 includes box contents in native desktop quick search. Results identify their box and tab; choosing one expands the box and selects the correct page, honoring the configured locate/open action. It also fixes Space inside a box previewing the native desktop's selected file: releasing Space previews the box's current selection, and changing selection or focus cancels stale requests.
 
 Version 1.9.9 keeps desktop boxes behind applications without briefly covering them when switching windows. A fixed desktop wallpaper layer keeps frosted glass stable while moving boxes. With frosted glass enabled, the title menu's **Blur strength** slider provides a live 0–100% preview and saves each box's setting independently.
 

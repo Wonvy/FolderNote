@@ -231,11 +231,19 @@ int main(int argc, char **argv) {
             log("SKIP: desktop title editing needs foreground desktop; another app owns focus");
             if (!result) result = 77;
           } else {
+            surface.select({1}); surface.focus(1); pump(50);
+            if (surface.previewRow() != 1) { log("FAIL: desktop preview does not resolve the selected WinUI file"); result = 13; }
+            surface.select({0}); surface.focus(0);
+            if (surface.previewRow() != 0) { log("FAIL: desktop preview retains a stale selection"); result = 13; }
+            surface.select({});
+            if (surface.previewRow() != -1) { log("FAIL: empty selection must not resolve a preview file"); result = 13; }
             bool committed = false;
             if (!surface.beginTitleRename([&](std::wstring value) { committed = !value.empty(); })) {
               log("FAIL: desktop-hosted title editor cannot acquire focus"); result = 11;
             }
-            pump(50); press(VK_ESCAPE);
+            pump(50);
+            if (surface.previewRow()) { log("FAIL: title input must not become a file-preview shortcut"); result = 13; }
+            press(VK_ESCAPE);
             if (committed) { log("FAIL: canceled title edit committed"); result = 11; }
           }
         }

@@ -573,6 +573,8 @@ bool writeJson(const Layout &layout, const fn::fs::path &file, bool replace) {
 
 std::filesystem::path layoutPath() { return fn::localRoot() / L"DesktopGroups.json"; }
 
+Layout readLayout(const fn::fs::path &file) { return loadJson(file).value_or(Layout{}); }
+
 Layout loadLayout(const fn::fs::path &file) {
   if (auto layout = loadJson(file)) return std::move(*layout);
   if (auto legacy = loadLegacy()) {

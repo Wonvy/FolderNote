@@ -31,7 +31,8 @@ public:
   ~Popup();
   Popup(const Popup &) = delete;
   Popup &operator=(const Popup &) = delete;
-  void begin(HWND anchor, const std::vector<std::wstring> &labels, Choose choose, std::vector<CandidateIcon> icons = {});
+  void begin(HWND anchor, const std::vector<std::wstring> &labels, Choose choose, std::vector<CandidateIcon> icons = {},
+             const std::vector<std::wstring> &matchLabels = {});
   void close();
   bool active() const { return opened; }
   bool contains(HWND value) const;

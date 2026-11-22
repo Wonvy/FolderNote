@@ -10,6 +10,8 @@
 #include "desktop_groups_item_menu.h"
 #include "desktop_groups_process.h"
 #include "desktop_groups_preview.h"
+#include "desktop_groups_preview_keys.h"
+#include "desktop_groups_search.h"
 #include "desktop_groups_zorder.h"
 #include "desktop_groups_wallpaper.h"
 #include "desktop_groups_glass.h"
@@ -61,6 +63,8 @@ constexpr auto runName = L"FolderNote.DesktopGroups";
 constexpr UINT manageMessage = WM_APP + 1, rejectedMessage = WM_APP + 3;
 constexpr UINT dragMessage = WM_APP + 4, refreshMessage = WM_APP + 5;
 constexpr UINT createMessage = WM_APP + 6;
+constexpr UINT previewSelectedMessage = WM_APP + 8;
+constexpr UINT locateSearchMessage = WM_APP + 9;
 constexpr UINT dropBoxTabMessage = WM_APP + 41;
 constexpr UINT dragTimer = 2;
 constexpr UINT headerTimer = 3;
@@ -608,6 +612,7 @@ struct Panel {
   int selection() const { return ListView_GetNextItem(list, -1, LVNI_SELECTED); }
   bool previewSpaceDown = false;
   bool preview(int row);
+  void chooseMatch(int match, bool focus = false);
   void applyTheme(const ui::Palette &colors);
   void paintBackground(HDC dc, POINT offset = {});
   int headerHeight() const;
@@ -680,12 +685,18 @@ public:
   HWND host = nullptr;
   bool rebuilding = false;
   std::map<int, std::unique_ptr<DesktopGlass>> glass;
+  std::unique_ptr<PreviewKeys> previewKeys;
+  std::optional<PreviewTarget> previewTarget() const;
+  std::optional<search::Entry> pendingSearch;
+  ULONGLONG searchDeadline = 0;
+  void locateSearch();
   void updateGlass(HWND raisedPanel = nullptr);
   bool ensureHost();
 
   explicit Desktop(HINSTANCE module) : instance(module), groups(load()) {}
   ~Desktop() {
     quitting = true;
+    previewKeys.reset();
     if (dragPreview) DestroyWindow(dragPreview);
     if (dragIcon) DestroyIcon(dragIcon);
     panels.clear();
@@ -1472,6 +1483,8 @@ LRESULT CALLBACK tabInput(HWND control, UINT message, WPARAM w, LPARAM l, UINT_P
 
 LRESULT CALLBACK iconInput(HWND control, UINT message, WPARAM w, LPARAM l, UINT_PTR, DWORD_PTR data) {
   auto &panel = *reinterpret_cast<Panel *>(data);
+  if ((message == WM_SETFOCUS || message == WM_LBUTTONDOWN) && panel.desktop.previewKeys)
+    panel.desktop.previewKeys->refresh();
   if (panel.findInput(message, w)) return 0;
   if (message == WM_LBUTTONDOWN) {
     SetForegroundWindow(GetAncestor(panel.window, GA_ROOT));
@@ -2343,7 +2356,13 @@ bool Panel::findInput(UINT message, WPARAM key) {
   if (!findPopup.active()) {
     std::vector<quick_find::CandidateIcon> icons;
     for (const auto &path : orderedItems) icons.emplace_back(quick::icons::Source::file(path));
-    findPopup.begin(window, findNames, [this](int match) {
+    findPopup.begin(window, findNames, [this](int match) { chooseMatch(match); }, std::move(icons));
+  }
+  findPopup.character(static_cast<wchar_t>(key));
+  return true;
+}
+
+void Panel::chooseMatch(int match, bool focus) {
     if (match < 0 || size_t(match) >= orderedItems.size()) return;
     if (pageCount && pageCapacity && match / pageCapacity != currentPage) goToPage(match / pageCapacity);
     const int row = match - (pageCount ? currentPage * pageCapacity : 0);
@@ -2354,13 +2373,16 @@ bool Panel::findInput(UINT message, WPARAM key) {
     if (hasSurface()) { surface->select({row}); surface->reveal(row); }
 #endif
     queueScrollSync();
+    if (focus) {
+#ifdef FOLDERNOTE_WINUI
+      if (hasSurface()) surface->focus(row);
+      else
+#endif
+      focusDesktopWindow(window, list);
+    }
     const auto attributes = GetFileAttributesW(orderedItems[match].c_str());
     if (attributes != INVALID_FILE_ATTRIBUTES && quick_find::settings().opens((attributes & FILE_ATTRIBUTE_DIRECTORY) != 0))
       PostMessageW(window, WM_COMMAND, OpenItem, 0);
-    }, std::move(icons));
-  }
-  findPopup.character(static_cast<wchar_t>(key));
-  return true;
 }
 
 int Panel::pageSize(const Group &group) const {
@@ -3416,6 +3438,7 @@ void Panel::openSurface() {
   };
   events.preview = [this](int row) { return preview(row); };
   events.previewAvailable = [] { return desktopPreviewAvailable(); };
+  events.previewFocus = [this] { if (desktop.previewKeys) desktop.previewKeys->refresh(); };
   events.findInput = [this](UINT message, WPARAM key) { return findInput(message, key); };
   events.context = [this](POINT point) { contextMenu(point); };
   events.zoom = [this](int delta) { zoom(delta); };
@@ -3724,6 +3747,53 @@ void Desktop::movePanelTab(Panel &source, size_t tab, Panel &target, size_t slot
   if (target.activeTab >= next) ++target.activeTab;
   target.resize();
   target.showTab(next);
+}
+
+std::optional<PreviewTarget> Desktop::previewTarget() const {
+  if (quitting || rebuilding || editing || menuOpen || dragging) return std::nullopt;
+  const auto focus = GetFocus();
+  const auto panel = panelForWindow(focus);
+  if (!panel || panel->dockHidden || panel->collapsed() || panel->findPopup.active() || panel->titleEdit ||
+      GetForegroundWindow() != GetAncestor(panel->window, GA_ROOT)) return std::nullopt;
+  std::optional<int> row;
+#ifdef FOLDERNOTE_WINUI
+  if (panel->hasSurface()) row = panel->surface->previewRow();
+  else
+#endif
+  if (focus == panel->list) row = panel->selection();
+  if (!row) return std::nullopt;
+  PreviewTarget target{panel->window, focus, {}};
+  if (*row >= 0 && static_cast<size_t>(*row) < panel->displayed.size()) target.path = panel->displayed[*row];
+  return target;
+}
+
+void Desktop::locateSearch() {
+  if (!pendingSearch) return;
+  const auto &entry = *pendingSearch;
+  if (quitting || rebuilding || editing || menuOpen || dragging || GetTickCount64() > searchDeadline ||
+      !search::matches(groups, entry) || entry.group >= panels.size()) { pendingSearch.reset(); return; }
+  auto &panel = *panels[entry.group];
+  if (panel.movingOrSizing || GetForegroundWindow() != GetAncestor(panel.window, GA_ROOT) ||
+      GetFileAttributesW(entry.path.c_str()) == INVALID_FILE_ATTRIBUTES) { pendingSearch.reset(); return; }
+  const bool layoutChanged = panel.collapsed() || panel.dockHidden || panel.activeTab != entry.tab;
+  if (groups[entry.group].collapsed) {
+    auto changed = groups; changed[entry.group].collapsed = false;
+    if (!commit(std::move(changed), panel.window, false)) { pendingSearch.reset(); return; }
+  }
+  panel.autoCollapsed = false;
+  panel.autoCollapseAt = panel.dockHideAt = GetTickCount64() + 3000;
+  panel.showDockedBox(true);
+  panel.setCollapsed();
+  panel.showTab(entry.tab);
+  panel.refresh(groups[entry.group]);
+  if (layoutChanged) return; // Let WinUI update page capacity after expanding or changing tabs.
+  const auto found = std::find_if(panel.orderedItems.begin(), panel.orderedItems.end(),
+      [&](const auto &path) { return samePath(path, entry.path); });
+  if (found == panel.orderedItems.end()) return; // A mapped tab may still be loading asynchronously.
+  const int row = static_cast<int>(found - panel.orderedItems.begin());
+  pendingSearch.reset();
+  lower(panel.window);
+  panel.chooseMatch(row, true);
 }
 
 bool Desktop::ensureHost() {
@@ -4508,6 +4578,11 @@ LRESULT CALLBACK Desktop::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
   }
   if (!desktop) return DefWindowProcW(window, message, w, l);
   try {
+    static const UINT seerReady = RegisterWindowMessageW(L"SEER_CORE_READY");
+    if (seerReady && message == seerReady) {
+      if (desktop->previewKeys) desktop->previewKeys->refresh();
+      return 0;
+    }
     if (message == desktop->taskbarCreated) {
       if (desktop->ensureHost()) desktop->lower();
       return 0;
@@ -4537,6 +4612,26 @@ LRESULT CALLBACK Desktop::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
       desktop->updateShadows();
     }
     switch (message) {
+    case WM_COPYDATA: {
+      if (!l || desktop->quitting || !search::sameApplication(reinterpret_cast<HWND>(w))) return FALSE;
+      const auto &data = *reinterpret_cast<const COPYDATASTRUCT *>(l);
+      if (data.dwData != search::copyDataCommand || !data.lpData || !data.cbData ||
+          data.cbData % sizeof(wchar_t) || data.cbData > search::requestLimit * sizeof(wchar_t)) return FALSE;
+      auto entry = search::decode({static_cast<const wchar_t *>(data.lpData), data.cbData / sizeof(wchar_t)});
+      if (!entry || !search::matches(desktop->groups, *entry)) return FALSE;
+      desktop->pendingSearch = std::move(entry);
+      desktop->searchDeadline = GetTickCount64() + 5000;
+      if (!PostMessageW(window, locateSearchMessage, 0, 0)) { desktop->pendingSearch.reset(); return FALSE; }
+      return TRUE;
+    }
+    case locateSearchMessage:
+      desktop->locateSearch();
+      return 0;
+    case previewSelectedMessage:
+      if (desktop->previewKeys) {
+        if (const auto path = desktop->previewKeys->take()) previewDesktopItem(*path);
+      }
+      return 0;
     case WM_TIMER:
       if (desktop->rebuilding) return 0;
       if (w == headerTimer) {
@@ -4569,6 +4664,7 @@ LRESULT CALLBACK Desktop::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
         if (std::any_of(desktop->panels.begin(), desktop->panels.end(),
                         [](const auto &panel) { return panel->movingOrSizing; })) return 0;
         for (const auto &panel : desktop->panels) panel->applyThumbnails();
+        desktop->locateSearch();
         const auto now = GetTickCount64();
         if (!desktop->editing && !desktop->dragging && !desktop->menuOpen &&
             now - desktop->lastFolderRefresh > 2000) {
@@ -4762,6 +4858,8 @@ int run(HINSTANCE instance, bool manage, bool create, bool delegated) {
         // only when Explorer recreates its desktop view.
         restoreDesktopIcons();
         desktop.ensureHost();
+        desktop.previewKeys = std::make_unique<PreviewKeys>(desktop.window, previewSelectedMessage,
+            [&desktop] { return desktop.previewTarget(); });
         if (!SetTimer(desktop.window, 1, 400, nullptr)) throw 0;
         if (!SetTimer(desktop.window, headerTimer, 70, nullptr)) throw 0;
         if (!SetPropW(desktop.window, readyProperty, reinterpret_cast<HANDLE>(1))) throw 0;

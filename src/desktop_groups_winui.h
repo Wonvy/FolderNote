@@ -23,6 +23,7 @@ struct Events {
   std::function<void(int)> open;
   std::function<bool(int)> preview;
   std::function<bool()> previewAvailable;
+  std::function<void()> previewFocus;
   std::function<bool(UINT, WPARAM)> findInput;
   std::function<void(POINT)> context;
   std::function<void(int)> zoom;
@@ -64,7 +65,9 @@ public:
   Surface &operator=(const Surface &) = delete;
   bool available() const;
   void place(RECT bounds);
-  void focus();
+  void focus(int row = -1);
+  // nullopt outside the file list, -1 for a focused list with no selection.
+  std::optional<int> previewRow() const;
   void show(bool visible);
   void animateReflow(bool resizing);
   void animateZoom(bool zoomIn);

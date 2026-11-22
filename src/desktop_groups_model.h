@@ -78,6 +78,8 @@ struct Layout {
 
 std::filesystem::path layoutPath();
 Layout loadLayout(const std::filesystem::path &file = layoutPath());
+// Search must not migrate legacy settings or write a missing layout.
+Layout readLayout(const std::filesystem::path &file = layoutPath());
 void saveLayout(const Layout &layout, const std::filesystem::path &file = layoutPath());
 std::vector<Group> load(const std::filesystem::path &file = layoutPath());
 void save(const std::vector<Group> &groups, const std::filesystem::path &file = layoutPath());
