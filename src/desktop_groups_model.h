@@ -62,6 +62,9 @@ struct Group {
   std::wstring folder;
   // The first tab can carry a tint from another box without changing this box's appearance.
   std::optional<std::optional<COLORREF>> primaryDetachedTint;
+  bool browseInBox = true;
+  std::wstring autoRule;
+  RECT referenceWorkArea{};
 };
 
 struct LooseItem {
@@ -98,4 +101,10 @@ bool detachTab(std::vector<Group> &groups, std::size_t group, std::size_t tabInd
 // Insertion is a slot in the target's original header, from 0 to tabs.size() + 1.
 bool moveTab(std::vector<Group> &groups, std::size_t source, std::size_t tab,
              std::size_t target, std::size_t insertion);
+bool matchesAutoRule(std::wstring_view fileName, std::wstring_view rule);
+RECT scaleBoundsToWorkArea(RECT bounds, RECT fromWork, RECT toWork);
+void exportDesktopBackup(const std::filesystem::path &backupFile,
+                         const std::filesystem::path &file = layoutPath());
+Layout importDesktopBackup(const std::filesystem::path &backupFile,
+                           const std::filesystem::path &file = layoutPath());
 }

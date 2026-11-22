@@ -793,6 +793,108 @@ void exercise(const fn::fs::path &root) {
                                 unchanged, &bytes) == ERROR_SUCCESS &&
         unchanged[0] == unsupported[0], "reject unsupported layout without clearing it");
 }
+
+void exerciseNewBoxEnhancements(const fn::fs::path &root) {
+  using namespace desktop_groups;
+  fn::fs::create_directories(root);
+
+  // 1. Auto-grouping rule matching
+  check(matchesAutoRule(L"Photo.PNG", L".png, .jpg"), "match leading-dot extension case-insensitively");
+  check(matchesAutoRule(L"截图_20261123.jpg", L"截图*；*.pdf"), "match wildcard prefix and Chinese semicolon");
+  check(matchesAutoRule(L"2026电子发票.pdf", L"发票"), "match plain keyword substring");
+  check(!matchesAutoRule(L"archive.zip", L".png, .jpg, 截图*, 发票"), "reject non-matching filenames");
+
+  // 2. Proportional multi-monitor workArea scaling
+  const RECT work2k{0, 0, 2560, 1400};
+  const RECT work1080{0, 0, 1920, 1040};
+  const RECT rightAligned{2200, 20, 2560, 320};
+  const auto scaledRight = scaleBoundsToWorkArea(rightAligned, work2k, work1080);
+  check(scaledRight.right == 1920 && scaledRight.right - scaledRight.left == 360,
+        "right-aligned box stays flush with the right edge on smaller monitor");
+  const auto restoredRight = scaleBoundsToWorkArea(rightAligned, work2k, work2k);
+  check(EqualRect(&restoredRight, &rightAligned), "reconnecting original monitor preserves exact pixel bounds");
+  const RECT centered{1100, 550, 1460, 850};
+  const auto scaledCenter = scaleBoundsToWorkArea(centered, work2k, work1080);
+  check(std::abs((scaledCenter.left + scaledCenter.right) / 2 - 960) <= 1 &&
+        std::abs((scaledCenter.top + scaledCenter.bottom) / 2 - 520) <= 1,
+        "centered box stays centered across resolution changes");
+
+  // 3. Model persistence for browseInBox, autoRule, workArea + Backup export/import
+  Group custom{L"自动收纳", {100, 120, 460, 400}, {}, false, {{L"子标签", {}, {}}}};
+  custom.browseInBox = false;
+  custom.autoRule = L".png, 截图*";
+  custom.referenceWorkArea = work2k;
+  const auto layoutFile = root / L"enhanced.json";
+  save({custom}, layoutFile);
+  auto reloaded = load(layoutFile);
+  check(reloaded.size() == 1 && !reloaded[0].browseInBox && reloaded[0].autoRule == L".png, 截图*" &&
+        EqualRect(&reloaded[0].referenceWorkArea, &work2k),
+        "persist browseInBox, autoRule, and referenceWorkArea");
+  check(detachTab(reloaded, 0, 1, {200, 200, 520, 460}) && !reloaded.back().browseInBox &&
+        EqualRect(&reloaded.back().referenceWorkArea, &work2k),
+        "detached tab inherits browseInBox and referenceWorkArea");
+
+  const DWORD customRadius = 17;
+  check(RegSetKeyValueW(HKEY_CURRENT_USER, settings, L"DesktopGroupsRadius", REG_DWORD,
+                        &customRadius, sizeof(customRadius)) == ERROR_SUCCESS, "seed radius setting");
+  const wchar_t pinsMulti[] = L"C:\\Work\0D:\\Docs\0";
+  check(RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote\\QuickFolders", L"Pins", REG_MULTI_SZ,
+                        pinsMulti, sizeof(pinsMulti)) == ERROR_SUCCESS, "seed QuickFolders Pins");
+  const auto backupFile = root / L"FolderNote-Backup.json";
+  exportDesktopBackup(backupFile, layoutFile);
+  check(fn::fs::exists(backupFile), "write backup JSON file");
+
+  const DWORD zeroRadius = 0;
+  RegSetKeyValueW(HKEY_CURRENT_USER, settings, L"DesktopGroupsRadius", REG_DWORD, &zeroRadius, sizeof(zeroRadius));
+  RegDeleteTreeW(HKEY_CURRENT_USER, L"Software\\FolderNote\\QuickFolders");
+  const auto restoredLayoutFile = root / L"restored.json";
+  const auto imported = importDesktopBackup(backupFile, restoredLayoutFile);
+  DWORD restoredRadius = 0, radiusBytes = sizeof(restoredRadius);
+  check(imported.groups.size() == 1 && imported.groups[0].autoRule == L".png, 截图*" &&
+        RegGetValueW(HKEY_CURRENT_USER, settings, L"DesktopGroupsRadius", RRF_RT_REG_DWORD,
+                     nullptr, &restoredRadius, &radiusBytes) == ERROR_SUCCESS && restoredRadius == 17,
+        "import backup restores layout and DWORD settings");
+  wchar_t restoredPins[64]{};
+  DWORD pinsBytes = sizeof(restoredPins);
+  check(RegGetValueW(HKEY_CURRENT_USER, L"Software\\FolderNote\\QuickFolders", L"Pins", RRF_RT_REG_MULTI_SZ,
+                     nullptr, restoredPins, &pinsBytes) == ERROR_SUCCESS &&
+        std::memcmp(restoredPins, pinsMulti, sizeof(pinsMulti)) == 0,
+        "import backup restores QuickFolders multi-string pins");
+
+  // 4. Box item creation & WIC HBITMAP-to-PNG encoding
+  struct ComInit {
+    HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    ~ComInit() { if (SUCCEEDED(hr)) CoUninitialize(); }
+  } com;
+  const auto personal = root / L"PersonalDesktop";
+  fn::fs::create_directories(personal);
+  const std::vector<std::wstring> roots{personal.native()};
+  const auto folder1 = createNewFolderInBox(roots, L"新建文件夹");
+  const auto folder2 = createNewFolderInBox(roots, L"新建文件夹");
+  check(!folder1.empty() && !folder2.empty() && folder1 != folder2 &&
+        fn::fs::is_directory(folder1) && fn::fs::is_directory(folder2),
+        "create collision-safe new folders inside FolderNote Boxes");
+  const auto txt1 = createNewTextFileInBox(roots, L"新建文本文档.txt");
+  const auto txt2 = createNewTextFileInBox(roots, L"新建文本文档.txt");
+  check(!txt1.empty() && !txt2.empty() && txt1 != txt2 &&
+        fn::fs::is_regular_file(txt1) && fn::fs::is_regular_file(txt2),
+        "create collision-safe new text files inside FolderNote Boxes");
+
+  BITMAPINFO bmi{};
+  bmi.bmiHeader = {sizeof(BITMAPINFOHEADER), 16, -16, 1, 32, BI_RGB};
+  void *bits = nullptr;
+  const std::unique_ptr<std::remove_pointer_t<HBITMAP>, decltype(&DeleteObject)> testBmp(
+      CreateDIBSection(nullptr, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0), DeleteObject);
+  check(testBmp && bits, "allocate test screenshot bitmap");
+  std::fill_n(static_cast<DWORD *>(bits), 16 * 16, 0x002060c0u);
+  const auto pngPath = saveHBitmapToPngInFolder(testBmp.get(), folder1, L"截图");
+  check(!pngPath.empty() && fn::fs::is_regular_file(pngPath), "encode screenshot bitmap to PNG file");
+  std::ifstream pngIn(pngPath, std::ios::binary);
+  unsigned char header[8]{};
+  pngIn.read(reinterpret_cast<char *>(header), sizeof(header));
+  const unsigned char expectedPng[8]{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A};
+  check(pngIn.gcount() == 8 && std::memcmp(header, expectedPng, 8) == 0, "written screenshot has valid PNG header");
+}
 }
 
 int main() {
@@ -803,6 +905,7 @@ int main() {
     registry.redirect(files.root.filename().native());
     exercise(files.root);
     exerciseBoxStorage(files.root / L"storage-test");
+    exerciseNewBoxEnhancements(files.root / L"enhancements-test");
     exerciseShadow();
     exerciseThumbnailMask();
     exerciseThumbnailFit(files.root);

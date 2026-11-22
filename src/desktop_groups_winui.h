@@ -22,6 +22,9 @@ struct Events {
   std::function<void(std::vector<int>)> selection;
   std::function<void(int)> open;
   std::function<void(int)> rename;
+  std::function<bool(UINT, bool, bool, bool)> shortcut;
+  std::function<void()> blankDoubleClick;
+  std::function<void()> navigateBack;
   std::function<bool(int)> preview;
   std::function<bool()> previewAvailable;
   std::function<void()> previewFocus;
@@ -83,7 +86,7 @@ public:
   void header(const std::vector<std::wstring> &titles, std::size_t active, bool collapsed,
               bool actionsVisible, bool highlighted, int radius,
               COLORREF text, COLORREF muted, COLORREF border, COLORREF accent,
-              int height, TitleStyle style, HICON icon);
+              int height, TitleStyle style, HICON icon, bool canNavigateBack = false);
   void showActions(bool visible);
   void showCollapseMove(bool visible);
   bool beginTitleRename(std::function<void(std::wstring)> commit);

@@ -377,6 +377,8 @@ struct Surface::State {
     double width = 0;
   };
   std::array<HeaderControl, 3> buttons;
+  HeaderControl backButton;
+  bool canNavigateBack = false;
   ux::Input::Pointer collapsePointer{nullptr};
   bool collapseMoveVisible = false;
   std::vector<HeaderControl> tabs;
@@ -439,7 +441,8 @@ struct Surface::State {
     };
     if (std::any_of(tabs.begin(), tabs.end(), hit)) return true;
     return y < headerHeight - headerPadding &&
-           ((actionsVisible && (hit(buttons[0]) || hit(buttons[1]))) || hit(buttons[2]));
+           ((canNavigateBack && hit(backButton)) ||
+            (actionsVisible && (hit(buttons[0]) || hit(buttons[1]))) || hit(buttons[2]));
   }
 
   LRESULT resizeHit(POINT point) const {
@@ -492,6 +495,12 @@ struct Surface::State {
       // XAML child-to-child LostFocus also fires when a match is selected.
       // Reset only for an actual window focus change or a new pointer gesture.
       state.events.findInput(message == WM_KILLFOCUS ? WM_KILLFOCUS : WM_LBUTTONDOWN, 0);
+    }
+    if (message == WM_SYSKEYDOWN && w == VK_RETURN && !state.finishTitleRename && !state.finishItemRename &&
+        state.events.shortcut) {
+      const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+      const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+      if (state.events.shortcut(VK_RETURN, ctrl, shift, true)) return 0;
     }
     if (message == WM_NCHITTEST) {
       const auto hit = SendMessageW(state.parent, WM_NCHITTEST, 0, l);
@@ -741,6 +750,26 @@ struct Surface::State {
     tabHover.Tick([this](auto const &, auto const &) {
       if (hoveredTab && !pressedTab && events.tab) events.tab(*hoveredTab);
     });
+    backButton = makeHeaderControl(lang::text(L"返回上一级"));
+    backButton.label.Text(L"\uE72B");
+    backButton.label.FontFamily(ux::Media::FontFamily(L"Segoe MDL2 Assets"));
+    backButton.label.HorizontalAlignment(ux::HorizontalAlignment::Center);
+    backButton.box.Child(backButton.label);
+    backButton.box.Visibility(ux::Visibility::Collapsed);
+    backButton.box.PointerEntered([this](auto const &, auto const &) { paintHeaderButton(backButton, textColor); });
+    backButton.box.PointerExited([this](auto const &, auto const &) { paintHeaderButton(backButton, mutedColor); });
+    backButton.box.Tapped([this](auto const &, ux::Input::TappedRoutedEventArgs const &args) {
+      args.Handled(true);
+      if (events.navigateBack) events.navigateBack();
+    });
+    backButton.box.KeyDown([this](auto const &, ux::Input::KeyRoutedEventArgs const &args) {
+      const auto key = args.Key();
+      if ((key == ::winrt::Windows::System::VirtualKey::Enter || key == ::winrt::Windows::System::VirtualKey::Space) &&
+          events.navigateBack) {
+        args.Handled(true);
+        events.navigateBack();
+      }
+    });
     const std::array labels{lang::text(L"图标"), lang::text(L"列表"), lang::text(L"折叠盒子")};
     for (int i = 0; i < static_cast<int>(buttons.size()); ++i) {
       auto control = makeHeaderControl(labels[i]);
@@ -958,15 +987,28 @@ struct Surface::State {
       place(buttons[i], std::max(0.0, width - headerPadding - buttonWidth * (buttons.size() - i)),
             buttonWidth, headerHeight - 2 * headerPadding);
     }
+    const double backReserve = canNavigateBack ? (buttonWidth + 2.0) : 0.0;
+    if (backButton.box) {
+      if (canNavigateBack) {
+        place(backButton, headerPadding, buttonWidth, headerHeight - 2 * headerPadding);
+        backButton.box.Visibility(ux::Visibility::Visible);
+      } else {
+        backButton.left = backButton.width = 0;
+        backButton.box.Visibility(ux::Visibility::Collapsed);
+      }
+    }
     if (!tabs.empty()) {
-      const double space = std::max(0.0, width - 2 * headerPadding - buttonWidth * buttons.size() - 16);
+      const double tabStart = headerPadding + backReserve;
+      const double space = std::max(0.0, width - tabStart - headerPadding - buttonWidth * buttons.size() - 16);
       const double tabWidth = std::min(116.0, space / tabs.size());
       for (std::size_t i = 0; i < tabs.size(); ++i)
-        place(tabs[i], headerPadding + i * tabWidth, tabWidth, headerHeight - headerPadding);
+        place(tabs[i], tabStart + i * tabWidth, tabWidth, headerHeight - headerPadding);
       if (showsTitleIcon(titleStyle) && showsTitleText(titleStyle))
         tabs.front().label.MaxWidth(std::max(0.0, tabWidth - 40));
     }
-    const double titleSpace = std::max(0.0, width - (actionsVisible ? 3 : 1) * buttonWidth - 24);
+    const double titleLeft = canNavigateBack ? (headerPadding + backReserve + 4.0) : 14.0;
+    controls::Canvas::SetLeft(titleContent, titleLeft);
+    const double titleSpace = std::max(0.0, width - titleLeft - (actionsVisible ? 3 : 1) * buttonWidth - 10);
     const auto titleWidth = std::max(0.0, titleSpace - (showsTitleIcon(titleStyle) ? 25 : 0));
     if (title.Width() != titleWidth) {
       title.Width(titleWidth);
@@ -1608,20 +1650,38 @@ struct Surface::State {
     });
     itemsView.DoubleTapped([this](auto const &, ux::Input::DoubleTappedRoutedEventArgs const &args) {
       POINT point{};
-      if (events.open && GetCursorPos(&point)) {
+      if (GetCursorPos(&point)) {
         const auto row = hit(point);
-        if (row >= 0) events.open(row);
+        if (row >= 0) {
+          if (events.open) events.open(row);
+        } else if (events.blankDoubleClick) {
+          events.blankDoubleClick();
+        }
       }
       args.Handled(true);
     });
     itemsView.PreviewKeyDown([this](auto const &, ux::Input::KeyRoutedEventArgs const &args) {
       if (finishItemRename) return;
+      const auto vk = static_cast<UINT>(args.Key());
+      const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+      const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+      const bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
+      const bool win = ((GetKeyState(VK_LWIN) | GetKeyState(VK_RWIN)) & 0x8000) != 0;
       if (events.findInput && events.findInput(WM_KEYDOWN, static_cast<WPARAM>(args.Key()))) {
         args.Handled(true); return;
       }
+      if (!win && events.shortcut &&
+          ((ctrl && !alt && (vk == 'C' || vk == 'X' || vk == 'V')) ||
+           (!ctrl && !alt && vk == VK_DELETE) ||
+           (!ctrl && !shift && !alt && vk == VK_BACK) ||
+           (alt && !ctrl && !shift && vk == VK_RETURN))) {
+        if (events.shortcut(vk, ctrl, shift, alt)) {
+          args.Handled(true);
+          return;
+        }
+      }
       if (args.Key() != ::winrt::Windows::System::VirtualKey::Space || !events.preview || view.SelectedIndex() < 0 ||
-          ((GetKeyState(VK_CONTROL) | GetKeyState(VK_SHIFT) | GetKeyState(VK_MENU) |
-            GetKeyState(VK_LWIN) | GetKeyState(VK_RWIN)) & 0x8000)) return;
+          ctrl || shift || alt || win) return;
       if (!args.KeyStatus().WasKeyDown)
         previewSpaceDown = events.previewAvailable && events.previewAvailable();
       if (previewSpaceDown) args.Handled(true);
@@ -2052,7 +2112,8 @@ bool Surface::usesDesktopGlass() const { return available() && state->wallpaperG
 
 void Surface::header(const std::vector<std::wstring> &titles, std::size_t active, bool collapsed,
                      bool actionsVisible, bool highlighted, int radius, COLORREF text, COLORREF muted,
-                     COLORREF border, COLORREF accent, int height, TitleStyle style, HICON icon) {
+                     COLORREF border, COLORREF accent, int height, TitleStyle style, HICON icon,
+                     bool canNavigateBack) {
   if (!available()) return;
   try {
     if (collapsed) {
@@ -2060,6 +2121,7 @@ void Surface::header(const std::vector<std::wstring> &titles, std::size_t active
       state->endItemRename(false);
     }
     const bool changedTitles = state->titles != titles || state->titleStyle != style;
+    state->canNavigateBack = canNavigateBack;
     state->titleStyle = style;
     state->headerHeight = height;
     state->titleBar.Height(height);
@@ -2099,6 +2161,7 @@ void Surface::header(const std::vector<std::wstring> &titles, std::size_t active
     state->title.Foreground(solidBrush(text));
     state->showActions(actionsVisible);
     for (auto &button : state->buttons) state->paintHeaderButton(button, muted);
+    if (state->backButton.box) state->paintHeaderButton(state->backButton, muted);
     state->paintCollapseButton();
     state->paintTabs();
     state->paintOutline();

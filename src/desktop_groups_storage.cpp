@@ -2,11 +2,15 @@
 #include "desktop_groups_model.h"
 #include "quick_folders.h"
 #include <algorithm>
+#include <cstring>
+#include <cwchar>
 #include <filesystem>
 #include <memory>
 #include <shellapi.h>
 #include <shlobj.h>
 #include <shlwapi.h>
+#include <vector>
+#include <wincodec.h>
 #include <wrl/client.h>
 #include <wrl/implements.h>
 
@@ -139,7 +143,17 @@ public:
   HRESULT STDMETHODCALLTYPE PreRenameItem(DWORD, IShellItem *, LPCWSTR) override { return S_OK; }
   HRESULT STDMETHODCALLTYPE PostRenameItem(DWORD, IShellItem *, LPCWSTR, HRESULT, IShellItem *) override { return S_OK; }
   HRESULT STDMETHODCALLTYPE PreMoveItem(DWORD, IShellItem *, IShellItem *, LPCWSTR) override { return S_OK; }
-  HRESULT STDMETHODCALLTYPE PostMoveItem(DWORD, IShellItem *, IShellItem *, LPCWSTR, HRESULT, IShellItem *) override { return S_OK; }
+  HRESULT STDMETHODCALLTYPE PostMoveItem(DWORD, IShellItem *, IShellItem *, LPCWSTR, HRESULT hrMove,
+                                         IShellItem *newlyMoved) override {
+    if (SUCCEEDED(hrMove) && newlyMoved && copiedPath.empty()) {
+      PWSTR raw = nullptr;
+      if (SUCCEEDED(newlyMoved->GetDisplayName(SIGDN_FILESYSPATH, &raw)) && raw) {
+        copiedPath = quick::normalize(raw);
+        CoTaskMemFree(raw);
+      }
+    }
+    return S_OK;
+  }
   HRESULT STDMETHODCALLTYPE PreCopyItem(DWORD, IShellItem *, IShellItem *, LPCWSTR) override { return S_OK; }
   HRESULT STDMETHODCALLTYPE PostCopyItem(DWORD, IShellItem *, IShellItem *, LPCWSTR, HRESULT hrCopy,
                                          IShellItem *newlyCreated) override {
@@ -163,10 +177,12 @@ public:
 };
 }
 
-std::wstring copyToBoxStorage(std::span<const std::wstring> roots, const std::wstring &source, HWND owner) {
+std::wstring transferToBoxStorage(std::span<const std::wstring> roots, const std::wstring &source,
+                                  bool move, HWND owner) {
   if (source.empty() || isDesktopShellItem(source)) return {};
   const auto folder = boxStorageFolder(roots);
   if (folder.empty()) return {};
+  if (move && samePath(fs::path(source).parent_path().native(), folder)) return quick::normalize(source);
   const bool created = CreateDirectoryW(folder.c_str(), nullptr) != FALSE;
   if (!safeDirectory(folder)) return {};
 
@@ -179,9 +195,10 @@ std::wstring copyToBoxStorage(std::span<const std::wstring> roots, const std::ws
       SUCCEEDED(CoCreateInstance(CLSID_FileOperation, nullptr, CLSCTX_ALL, IID_PPV_ARGS(&op))) && sink) {
     op->SetOwnerWindow(owner);
     op->SetOperationFlags(FOF_ALLOWUNDO | FOF_RENAMEONCOLLISION | FOF_NOCONFIRMMKDIR);
-    if (SUCCEEDED(op->CopyItem(srcItem.Get(), dstFolder.Get(), nullptr, sink.Get()))) {
-      op->PerformOperations();
-    }
+    const HRESULT queued = move
+        ? op->MoveItem(srcItem.Get(), dstFolder.Get(), nullptr, sink.Get())
+        : op->CopyItem(srcItem.Get(), dstFolder.Get(), nullptr, sink.Get());
+    if (SUCCEEDED(queued)) op->PerformOperations();
   }
   if (created) {
     if (sink->copiedPath.empty()) RemoveDirectoryW(folder.c_str());
@@ -189,6 +206,14 @@ std::wstring copyToBoxStorage(std::span<const std::wstring> roots, const std::ws
       SHChangeNotify(SHCNE_MKDIR, SHCNF_PATHW | SHCNF_FLUSHNOWAIT, folder.c_str(), nullptr);
   }
   return sink ? sink->copiedPath : std::wstring{};
+}
+
+std::wstring copyToBoxStorage(std::span<const std::wstring> roots, const std::wstring &source, HWND owner) {
+  return transferToBoxStorage(roots, source, false, owner);
+}
+
+std::wstring moveToBoxStorage(std::span<const std::wstring> roots, const std::wstring &source, HWND owner) {
+  return transferToBoxStorage(roots, source, true, owner);
 }
 
 std::wstring createShortcutInFolder(const std::wstring &targetPath, const std::wstring &destinationFolder) {
@@ -257,5 +282,217 @@ bool rollbackBoxMove(const std::wstring &moved, const std::wstring &previous) {
     return false;
   notifyMove(moved, previous, (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0);
   return true;
+}
+
+namespace {
+template<typename Fn>
+std::wstring withBoxStorageFolder(std::span<const std::wstring> roots, Fn &&createInside) {
+  const auto folder = boxStorageFolder(roots);
+  if (folder.empty()) return {};
+  const bool created = CreateDirectoryW(folder.c_str(), nullptr) != FALSE;
+  if (!safeDirectory(folder)) return {};
+  auto result = createInside(folder);
+  if (created) {
+    if (result.empty()) RemoveDirectoryW(folder.c_str());
+    else if (folder.size() < MAX_PATH)
+      SHChangeNotify(SHCNE_MKDIR, SHCNF_PATHW | SHCNF_FLUSHNOWAIT, folder.c_str(), nullptr);
+  }
+  return result;
+}
+
+std::wstring screenshotBaseName(const std::wstring &prefix) {
+  SYSTEMTIME now{};
+  GetLocalTime(&now);
+  wchar_t stamp[64]{};
+  swprintf_s(stamp, L"%04u%02u%02u_%02u%02u%02u",
+             now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond);
+  return (prefix.empty() ? std::wstring(L"截图") : prefix) + L"_" + stamp + L".png";
+}
+
+UINT pngClipboardFormat() {
+  static const UINT format = RegisterClipboardFormatW(L"PNG");
+  return format;
+}
+}
+
+std::wstring createNewFolderIn(const std::wstring &parentFolder, const std::wstring &baseName) {
+  if (!safeDirectory(parentFolder)) return {};
+  const std::wstring label = baseName.empty() ? L"新建文件夹" : baseName;
+  const fs::path dest(parentFolder);
+  for (unsigned attempt = 1; attempt <= 10000; ++attempt) {
+    const auto candidate = attempt == 1 ? label : collisionName(fs::path(label), true, attempt);
+    const auto full = (dest / candidate).native();
+    if (full.size() > 32760) return {};
+    if (CreateDirectoryW(full.c_str(), nullptr)) {
+      if (full.size() < MAX_PATH)
+        SHChangeNotify(SHCNE_MKDIR, SHCNF_PATHW | SHCNF_FLUSHNOWAIT, full.c_str(), nullptr);
+      return quick::normalize(full);
+    }
+    const auto error = GetLastError();
+    if (error != ERROR_ALREADY_EXISTS && error != ERROR_FILE_EXISTS &&
+        GetFileAttributesW(full.c_str()) == INVALID_FILE_ATTRIBUTES) return {};
+  }
+  return {};
+}
+
+std::wstring createNewFolderInBox(std::span<const std::wstring> roots, const std::wstring &baseName) {
+  return withBoxStorageFolder(roots, [&](const std::wstring &folder) {
+    return createNewFolderIn(folder, baseName);
+  });
+}
+
+std::wstring createNewTextFileIn(const std::wstring &parentFolder, const std::wstring &baseName) {
+  if (!safeDirectory(parentFolder)) return {};
+  std::wstring fileName = baseName.empty() ? L"新建文本文档.txt" : baseName;
+  if (fs::path(fileName).extension().empty()) fileName += L".txt";
+  const fs::path dest(parentFolder);
+  for (unsigned attempt = 1; attempt <= 10000; ++attempt) {
+    const auto candidate = attempt == 1 ? fileName : collisionName(fs::path(fileName), false, attempt);
+    const auto full = (dest / candidate).native();
+    if (full.size() > 32760) return {};
+    const HANDLE handle = CreateFileW(full.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+                                      FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (handle != INVALID_HANDLE_VALUE) {
+      CloseHandle(handle);
+      if (full.size() < MAX_PATH)
+        SHChangeNotify(SHCNE_CREATE, SHCNF_PATHW | SHCNF_FLUSHNOWAIT, full.c_str(), nullptr);
+      return quick::normalize(full);
+    }
+    const auto error = GetLastError();
+    if (error != ERROR_FILE_EXISTS && error != ERROR_ALREADY_EXISTS &&
+        GetFileAttributesW(full.c_str()) == INVALID_FILE_ATTRIBUTES) return {};
+  }
+  return {};
+}
+
+std::wstring createNewTextFileInBox(std::span<const std::wstring> roots, const std::wstring &baseName) {
+  return withBoxStorageFolder(roots, [&](const std::wstring &folder) {
+    return createNewTextFileIn(folder, baseName);
+  });
+}
+
+std::wstring saveHBitmapToPngInFolder(HBITMAP bitmap, const std::wstring &parentFolder, const std::wstring &prefix) {
+  if (!bitmap || !safeDirectory(parentFolder)) return {};
+  Microsoft::WRL::ComPtr<IWICImagingFactory> factory;
+  Microsoft::WRL::ComPtr<IWICBitmap> wicBitmap;
+  if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory))) || !factory ||
+      FAILED(factory->CreateBitmapFromHBITMAP(bitmap, nullptr, WICBitmapIgnoreAlpha, &wicBitmap)) || !wicBitmap)
+    return {};
+
+  const auto baseName = screenshotBaseName(prefix);
+  const fs::path dest(parentFolder);
+  for (unsigned attempt = 1; attempt <= 10000; ++attempt) {
+    const auto candidate = attempt == 1 ? baseName : collisionName(fs::path(baseName), false, attempt);
+    const auto full = (dest / candidate).native();
+    if (full.size() > 32760) return {};
+    if (GetFileAttributesW(full.c_str()) != INVALID_FILE_ATTRIBUTES) continue;
+    const HANDLE file = CreateFileW(full.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+                                    FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+      const auto err = GetLastError();
+      if (err == ERROR_FILE_EXISTS || err == ERROR_ALREADY_EXISTS) continue;
+      return {};
+    }
+    CloseHandle(file);
+    Microsoft::WRL::ComPtr<IWICStream> fileStream;
+    Microsoft::WRL::ComPtr<IWICBitmapEncoder> encoder;
+    Microsoft::WRL::ComPtr<IWICBitmapFrameEncode> frame;
+    if (SUCCEEDED(factory->CreateStream(&fileStream)) && fileStream &&
+        SUCCEEDED(fileStream->InitializeFromFilename(full.c_str(), GENERIC_WRITE)) &&
+        SUCCEEDED(factory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encoder)) && encoder &&
+        SUCCEEDED(encoder->Initialize(fileStream.Get(), WICBitmapEncoderNoCache)) &&
+        SUCCEEDED(encoder->CreateNewFrame(&frame, nullptr)) && frame &&
+        SUCCEEDED(frame->Initialize(nullptr)) &&
+        SUCCEEDED(frame->WriteSource(wicBitmap.Get(), nullptr)) &&
+        SUCCEEDED(frame->Commit()) &&
+        SUCCEEDED(encoder->Commit())) {
+      fileStream.Reset();
+      if (full.size() < MAX_PATH)
+        SHChangeNotify(SHCNE_CREATE, SHCNF_PATHW | SHCNF_FLUSHNOWAIT, full.c_str(), nullptr);
+      return quick::normalize(full);
+    }
+    fileStream.Reset();
+    DeleteFileW(full.c_str());
+    return {};
+  }
+  return {};
+}
+
+std::wstring saveClipboardImageToFolder(const std::wstring &parentFolder, const std::wstring &prefix) {
+  if (!safeDirectory(parentFolder) || !OpenClipboard(nullptr)) return {};
+  std::vector<BYTE> pngBytes;
+  HBITMAP copiedBitmap = nullptr;
+  if (const UINT cfPng = pngClipboardFormat(); cfPng && IsClipboardFormatAvailable(cfPng)) {
+    if (const HANDLE data = GetClipboardData(cfPng)) {
+      const SIZE_T bytes = GlobalSize(data);
+      if (bytes >= 8 && bytes <= 128 * 1024 * 1024) {
+        if (const auto *raw = static_cast<const BYTE *>(GlobalLock(data))) {
+          constexpr BYTE magic[8]{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A};
+          if (std::memcmp(raw, magic, sizeof(magic)) == 0) pngBytes.assign(raw, raw + bytes);
+          GlobalUnlock(data);
+        }
+      }
+    }
+  }
+  if (pngBytes.empty()) {
+    if (const auto rawBmp = static_cast<HBITMAP>(GetClipboardData(CF_BITMAP))) {
+      copiedBitmap = static_cast<HBITMAP>(CopyImage(rawBmp, IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION));
+      if (!copiedBitmap) copiedBitmap = static_cast<HBITMAP>(CopyImage(rawBmp, IMAGE_BITMAP, 0, 0, 0));
+    }
+  }
+  CloseClipboard();
+
+  if (!pngBytes.empty()) {
+    const auto baseName = screenshotBaseName(prefix);
+    const fs::path dest(parentFolder);
+    for (unsigned attempt = 1; attempt <= 10000; ++attempt) {
+      const auto candidate = attempt == 1 ? baseName : collisionName(fs::path(baseName), false, attempt);
+      const auto full = (dest / candidate).native();
+      if (full.size() > 32760) return {};
+      const HANDLE file = CreateFileW(full.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+                                      FILE_ATTRIBUTE_NORMAL, nullptr);
+      if (file == INVALID_HANDLE_VALUE) {
+        const auto err = GetLastError();
+        if (err == ERROR_FILE_EXISTS || err == ERROR_ALREADY_EXISTS) continue;
+        return {};
+      }
+      DWORD written = 0;
+      const bool saved = WriteFile(file, pngBytes.data(), static_cast<DWORD>(pngBytes.size()), &written, nullptr) &&
+                         written == pngBytes.size();
+      CloseHandle(file);
+      if (saved) {
+        if (full.size() < MAX_PATH)
+          SHChangeNotify(SHCNE_CREATE, SHCNF_PATHW | SHCNF_FLUSHNOWAIT, full.c_str(), nullptr);
+        return quick::normalize(full);
+      }
+      DeleteFileW(full.c_str());
+      return {};
+    }
+    return {};
+  }
+
+  if (!copiedBitmap) return {};
+  const std::unique_ptr<std::remove_pointer_t<HBITMAP>, decltype(&DeleteObject)> owned(copiedBitmap, DeleteObject);
+  return saveHBitmapToPngInFolder(owned.get(), parentFolder, prefix);
+}
+
+std::wstring saveClipboardImageToBox(std::span<const std::wstring> roots, const std::wstring &prefix) {
+  return withBoxStorageFolder(roots, [&](const std::wstring &folder) {
+    return saveClipboardImageToFolder(folder, prefix);
+  });
+}
+
+bool clipboardHasBitmap() {
+  const UINT cfPng = pngClipboardFormat();
+  return (cfPng && IsClipboardFormatAvailable(cfPng)) ||
+         IsClipboardFormatAvailable(CF_BITMAP) ||
+         IsClipboardFormatAvailable(CF_DIB) ||
+         IsClipboardFormatAvailable(CF_DIBV5);
+}
+
+bool clipboardHasPasteableContent() {
+  if (IsClipboardFormatAvailable(CF_HDROP) || clipboardHasBitmap()) return true;
+  static const UINT shellIdList = RegisterClipboardFormatW(CFSTR_SHELLIDLIST);
+  return shellIdList && IsClipboardFormatAvailable(shellIdList);
 }
 }

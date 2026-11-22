@@ -13,6 +13,7 @@
 #include <roapi.h>
 #include <set>
 #include <shlobj.h>
+#include <shlwapi.h>
 #include <span>
 #include <string_view>
 #include <windows.data.json.h>
@@ -55,6 +56,10 @@ bool validBounds(const RECT &bounds) {
          height <= std::numeric_limits<int>::max();
 }
 
+bool unsetRect(const RECT &bounds) {
+  return bounds.left == 0 && bounds.top == 0 && bounds.right == 0 && bounds.bottom == 0;
+}
+
 using PathSet = std::set<std::wstring_view, PathOrder>;
 
 void validateGroups(const std::vector<Group> &groups, PathSet &paths, const wchar_t *message) {
@@ -78,6 +83,8 @@ void validateGroups(const std::vector<Group> &groups, PathSet &paths, const wcha
         group.titleHeight < 28 || group.titleHeight > 80 ||
         group.titleStyle < TitleStyle::Text || group.titleStyle > TitleStyle::Hidden ||
         group.titleIcon.find(L'\0') != std::wstring::npos ||
+        group.autoRule.size() > 512 || group.autoRule.find(L'\0') != std::wstring::npos ||
+        (!unsetRect(group.referenceWorkArea) && !validBounds(group.referenceWorkArea)) ||
         group.view < View::Icons || group.view > View::List ||
         group.displayMode < DisplayMode::Scroll || group.displayMode > DisplayMode::Pages ||
         group.itemSpacing < 0 || group.itemSpacing > maxItemSpacing ||
@@ -287,22 +294,7 @@ std::vector<std::wstring> pathsField(IJsonObject *object) {
   return result;
 }
 
-Layout parseJson(std::string_view utf8) {
-  if (utf8.starts_with("\xef\xbb\xbf")) utf8.remove_prefix(3);
-  const auto size = static_cast<int>(utf8.size());
-  const auto length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8.data(), size, nullptr, 0);
-  if (!length) fn::fail(lang::text(readError), ERROR_INVALID_DATA);
-  std::wstring content(length, L'\0');
-  if (!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8.data(), size, content.data(), length))
-    fn::fail(lang::text(readError));
-  if (content.find(L'\0') != content.npos) fn::fail(lang::text(readError), ERROR_INVALID_DATA);
-
-  const Runtime runtime;
-  ComPtr<IJsonObjectStatics> parser;
-  checkJson(RoGetActivationFactory(HStringReference(RuntimeClass_Windows_Data_Json_JsonObject).Get(),
-                                   IID_PPV_ARGS(&parser)));
-  ComPtr<IJsonObject> root;
-  checkJson(parser->Parse(HStringReference(content.c_str(), static_cast<unsigned>(content.size())).Get(), &root));
+Layout parseLayoutObject(const ComPtr<IJsonObject> &root) {
   if (numberField(root.Get(), L"version") != jsonVersion)
     fn::fail(lang::text(readError), ERROR_REVISION_MISMATCH);
 
@@ -318,6 +310,12 @@ Layout parseJson(std::string_view utf8) {
     checkJson(entry->GetNamedObject(HStringReference(L"bounds").Get(), &bounds));
     group.bounds = {numberField(bounds.Get(), L"left"), numberField(bounds.Get(), L"top"),
                     numberField(bounds.Get(), L"right"), numberField(bounds.Get(), L"bottom")};
+    if (hasField(entry, L"workArea")) {
+      ComPtr<IJsonObject> work;
+      checkJson(entry->GetNamedObject(HStringReference(L"workArea").Get(), &work));
+      group.referenceWorkArea = {numberField(work.Get(), L"left"), numberField(work.Get(), L"top"),
+                                 numberField(work.Get(), L"right"), numberField(work.Get(), L"bottom")};
+    }
     boolean collapsed = false;
     checkJson(entry->GetNamedBoolean(HStringReference(L"collapsed").Get(), &collapsed));
     group.collapsed = collapsed != 0;
@@ -338,6 +336,12 @@ Layout parseJson(std::string_view utf8) {
       checkJson(entry->GetNamedBoolean(HStringReference(L"autoCollapse").Get(), &autoCollapse));
       group.autoCollapse = autoCollapse != 0;
     }
+    if (hasField(entry, L"browseInBox")) {
+      boolean browseInBox = true;
+      checkJson(entry->GetNamedBoolean(HStringReference(L"browseInBox").Get(), &browseInBox));
+      group.browseInBox = browseInBox != 0;
+    }
+    if (hasField(entry, L"autoRule")) group.autoRule = stringField(entry.Get(), L"autoRule");
     if (hasField(entry, L"tint")) group.tint = static_cast<COLORREF>(numberField(entry.Get(), L"tint"));
     if (hasField(entry, L"titleHeight")) group.titleHeight = numberField(entry.Get(), L"titleHeight");
     if (hasField(entry, L"titleStyle")) group.titleStyle = static_cast<TitleStyle>(numberField(entry.Get(), L"titleStyle"));
@@ -381,6 +385,29 @@ Layout parseJson(std::string_view utf8) {
   return layout;
 }
 
+ComPtr<IJsonObject> parseJsonRoot(std::string_view utf8) {
+  if (utf8.starts_with("\xef\xbb\xbf")) utf8.remove_prefix(3);
+  const auto size = static_cast<int>(utf8.size());
+  const auto length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8.data(), size, nullptr, 0);
+  if (!length) fn::fail(lang::text(readError), ERROR_INVALID_DATA);
+  std::wstring content(length, L'\0');
+  if (!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8.data(), size, content.data(), length))
+    fn::fail(lang::text(readError));
+  if (content.find(L'\0') != content.npos) fn::fail(lang::text(readError), ERROR_INVALID_DATA);
+
+  ComPtr<IJsonObjectStatics> parser;
+  checkJson(RoGetActivationFactory(HStringReference(RuntimeClass_Windows_Data_Json_JsonObject).Get(),
+                                   IID_PPV_ARGS(&parser)));
+  ComPtr<IJsonObject> root;
+  checkJson(parser->Parse(HStringReference(content.c_str(), static_cast<unsigned>(content.size())).Get(), &root));
+  return root;
+}
+
+Layout parseJson(std::string_view utf8) {
+  const Runtime runtime;
+  return parseLayoutObject(parseJsonRoot(utf8));
+}
+
 void quote(std::wstring &output, std::wstring_view value) {
   constexpr wchar_t hex[] = L"0123456789abcdef";
   output += L'"';
@@ -417,7 +444,14 @@ std::string formatJson(const Layout &layout) {
     content += L",\n      \"bounds\": {\"left\": " + std::to_wstring(group.bounds.left) +
                L", \"top\": " + std::to_wstring(group.bounds.top) +
                L", \"right\": " + std::to_wstring(group.bounds.right) +
-               L", \"bottom\": " + std::to_wstring(group.bounds.bottom) + L"},\n      \"collapsed\": ";
+               L", \"bottom\": " + std::to_wstring(group.bounds.bottom) + L"}";
+    if (!unsetRect(group.referenceWorkArea)) {
+      content += L",\n      \"workArea\": {\"left\": " + std::to_wstring(group.referenceWorkArea.left) +
+                 L", \"top\": " + std::to_wstring(group.referenceWorkArea.top) +
+                 L", \"right\": " + std::to_wstring(group.referenceWorkArea.right) +
+                 L", \"bottom\": " + std::to_wstring(group.referenceWorkArea.bottom) + L"}";
+    }
+    content += L",\n      \"collapsed\": ";
     content += group.collapsed ? L"true" : L"false";
     content += L",\n      \"view\": ";
     quote(content, viewNames[static_cast<size_t>(group.view)]);
@@ -436,6 +470,11 @@ std::string formatJson(const Layout &layout) {
       content += *group.glass ? L"true" : L"false";
     }
     if (group.autoCollapse) content += L",\n      \"autoCollapse\": true";
+    if (!group.browseInBox) content += L",\n      \"browseInBox\": false";
+    if (!group.autoRule.empty()) {
+      content += L",\n      \"autoRule\": ";
+      quote(content, group.autoRule);
+    }
     if (group.tint) content += L",\n      \"tint\": " + std::to_wstring(*group.tint);
     if (group.primaryDetachedTint) {
       content += L",\n      \"primaryDetachedTint\": ";
@@ -500,12 +539,12 @@ std::string formatJson(const Layout &layout) {
   return bytes;
 }
 
-std::optional<Layout> loadJson(const fn::fs::path &file) {
+std::optional<std::string> readFileBytes(const fn::fs::path &file, bool missingOk) {
   const File input{CreateFileW(file.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE,
                               nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr)};
   if (input.handle == INVALID_HANDLE_VALUE) {
     const auto error = GetLastError();
-    if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND) return {};
+    if (missingOk && (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND)) return {};
     fn::fail(lang::text(readError), error);
   }
   BY_HANDLE_FILE_INFORMATION info{};
@@ -518,12 +557,16 @@ std::optional<Layout> loadJson(const fn::fs::path &file) {
   if (!ReadFile(input.handle, bytes.data(), info.nFileSizeLow, &received, nullptr))
     fn::fail(lang::text(readError));
   if (received != info.nFileSizeLow) fn::fail(lang::text(readError), ERROR_HANDLE_EOF);
-  return parseJson(bytes);
+  return bytes;
 }
 
-bool writeJson(const Layout &layout, const fn::fs::path &file, bool replace) {
-  validate(layout, writeError);
-  const auto bytes = formatJson(layout);
+std::optional<Layout> loadJson(const fn::fs::path &file) {
+  auto bytes = readFileBytes(file, true);
+  if (!bytes) return {};
+  return parseJson(*bytes);
+}
+
+bool writeAtomicBytes(std::string_view bytes, const fn::fs::path &file, bool replace) {
   const auto attributes = GetFileAttributesW(file.c_str());
   if (attributes != INVALID_FILE_ATTRIBUTES) {
     if (!replace) return false;
@@ -568,6 +611,12 @@ bool writeJson(const Layout &layout, const fn::fs::path &file, bool replace) {
     if (created) DeleteFileW(temporary.c_str());
     throw;
   }
+}
+
+bool writeJson(const Layout &layout, const fn::fs::path &file, bool replace) {
+  validate(layout, writeError);
+  const auto bytes = formatJson(layout);
+  return writeAtomicBytes(bytes, file, replace);
 }
 }
 
@@ -724,6 +773,8 @@ bool detachTab(std::vector<Group> &groups, size_t group, size_t tabIndex, RECT b
   detached.glass = from.glass;
   detached.blurStrength = from.blurStrength;
   detached.autoCollapse = from.autoCollapse;
+  detached.browseInBox = from.browseInBox;
+  detached.referenceWorkArea = from.referenceWorkArea;
   detached.titleHeight = from.titleHeight;
   detached.titleStyle = from.titleStyle;
   detached.titleIcon = from.titleIcon;
@@ -759,5 +810,252 @@ bool moveTab(std::vector<Group> &groups, size_t source, size_t tab, size_t targe
     to.tabs.insert(to.tabs.begin() + (destination - 1), std::move(item));
   }
   return true;
+}
+
+namespace {
+bool sameCharIgnoreCase(wchar_t a, wchar_t b) {
+  return a == b || CompareStringOrdinal(&a, 1, &b, 1, TRUE) == CSTR_EQUAL;
+}
+
+bool wildcardMatch(std::wstring_view text, std::wstring_view pattern) {
+  size_t ti = 0, pi = 0;
+  size_t starIdx = std::wstring_view::npos, matchIdx = 0;
+  while (ti < text.size()) {
+    if (pi < pattern.size() && (pattern[pi] == L'?' || sameCharIgnoreCase(text[ti], pattern[pi]))) {
+      ++ti;
+      ++pi;
+    } else if (pi < pattern.size() && pattern[pi] == L'*') {
+      starIdx = pi++;
+      matchIdx = ti;
+    } else if (starIdx != std::wstring_view::npos) {
+      pi = starIdx + 1;
+      ti = ++matchIdx;
+    } else {
+      return false;
+    }
+  }
+  while (pi < pattern.size() && pattern[pi] == L'*') ++pi;
+  return pi == pattern.size();
+}
+}
+
+bool matchesAutoRule(std::wstring_view fileName, std::wstring_view rule) {
+  if (fileName.empty() || rule.empty()) return false;
+  size_t pos = 0;
+  while (pos < rule.size()) {
+    const auto sep = rule.find_first_of(L",;，；\r\n", pos);
+    auto token = rule.substr(pos, sep == std::wstring_view::npos ? std::wstring_view::npos : sep - pos);
+    pos = sep == std::wstring_view::npos ? rule.size() : sep + 1;
+    const auto start = token.find_first_not_of(L" \t");
+    if (start == std::wstring_view::npos) continue;
+    token = token.substr(start, token.find_last_not_of(L" \t") - start + 1);
+    if (token.empty()) continue;
+
+    std::wstring pattern;
+    if (token.front() == L'.' && token.find_first_of(L"*?") == std::wstring_view::npos) {
+      pattern = L"*" + std::wstring(token);
+    } else if (token.find_first_of(L".*?") == std::wstring_view::npos) {
+      pattern = L"*" + std::wstring(token) + L"*";
+    } else {
+      pattern.assign(token);
+    }
+    if (wildcardMatch(fileName, pattern)) return true;
+  }
+  return false;
+}
+
+RECT scaleBoundsToWorkArea(RECT bounds, RECT fromWork, RECT toWork) {
+  if (!validBounds(bounds) || !validBounds(toWork)) return bounds;
+  const LONG newW = toWork.right - toWork.left;
+  const LONG newH = toWork.bottom - toWork.top;
+  const LONG width = std::clamp(bounds.right - bounds.left, 1L, newW);
+  const LONG height = std::clamp(bounds.bottom - bounds.top, 1L, newH);
+  if (unsetRect(fromWork) || !validBounds(fromWork) || EqualRect(&fromWork, &toWork)) {
+    const LONG x = std::clamp(bounds.left, toWork.left, toWork.right - width);
+    const LONG y = std::clamp(bounds.top, toWork.top, toWork.bottom - height);
+    return {x, y, x + width, y + height};
+  }
+  const LONG oldW = fromWork.right - fromWork.left;
+  const LONG oldH = fromWork.bottom - fromWork.top;
+  const LONG oldBoxW = bounds.right - bounds.left;
+  const LONG oldBoxH = bounds.bottom - bounds.top;
+  const LONG oldSlackX = oldW - oldBoxW;
+  const LONG oldSlackY = oldH - oldBoxH;
+  const double ratioX = oldSlackX > 0
+      ? std::clamp(double(bounds.left - fromWork.left) / double(oldSlackX), 0.0, 1.0)
+      : std::clamp(double(bounds.left - fromWork.left) / double(std::max(1L, oldW)), 0.0, 1.0);
+  const double ratioY = oldSlackY > 0
+      ? std::clamp(double(bounds.top - fromWork.top) / double(oldSlackY), 0.0, 1.0)
+      : std::clamp(double(bounds.top - fromWork.top) / double(std::max(1L, oldH)), 0.0, 1.0);
+  const LONG newSlackX = std::max(0L, newW - width);
+  const LONG newSlackY = std::max(0L, newH - height);
+  const LONG x = std::clamp(toWork.left + static_cast<LONG>(std::lround(ratioX * newSlackX)),
+                            toWork.left, toWork.right - width);
+  const LONG y = std::clamp(toWork.top + static_cast<LONG>(std::lround(ratioY * newSlackY)),
+                            toWork.top, toWork.bottom - height);
+  return {x, y, x + width, y + height};
+}
+
+namespace {
+constexpr LONG backupVersion = 1;
+constexpr wchar_t quickFoldersSubkey[] = L"Software\\FolderNote\\QuickFolders";
+
+void appendRegistryKeyJson(std::wstring &out, const wchar_t *subkey) {
+  out += L'[';
+  HKEY key = nullptr;
+  if (RegOpenKeyExW(HKEY_CURRENT_USER, subkey, 0, KEY_READ, &key) == ERROR_SUCCESS && key) {
+    bool first = true;
+    for (DWORD index = 0;; ++index) {
+      wchar_t name[256]{};
+      DWORD nameLen = ARRAYSIZE(name);
+      DWORD type = 0;
+      DWORD dataBytes = 0;
+      const auto query = RegEnumValueW(key, index, name, &nameLen, nullptr, &type, nullptr, &dataBytes);
+      if (query == ERROR_NO_MORE_ITEMS) break;
+      if (query != ERROR_SUCCESS || dataBytes > 1024 * 1024) continue;
+      if (_wcsicmp(name, groupsValue) == 0 || _wcsicmp(name, L"DesktopGroupsHidden") == 0) continue;
+      if (type != REG_DWORD && type != REG_SZ && type != REG_MULTI_SZ) continue;
+      std::vector<BYTE> buf(dataBytes + 4, 0);
+      nameLen = ARRAYSIZE(name);
+      if (RegEnumValueW(key, index, name, &nameLen, nullptr, &type, buf.data(), &dataBytes) != ERROR_SUCCESS)
+        continue;
+      if (type == REG_DWORD && dataBytes == sizeof(DWORD)) {
+        DWORD val = 0;
+        std::memcpy(&val, buf.data(), sizeof(val));
+        if (!first) out += L',';
+        first = false;
+        out += L"\n    {\"name\": ";
+        quote(out, std::wstring_view(name, nameLen));
+        out += L", \"type\": \"dword\", \"value\": " + std::to_wstring(val) + L'}';
+      } else if (type == REG_SZ && dataBytes % sizeof(wchar_t) == 0) {
+        const auto *chars = reinterpret_cast<const wchar_t *>(buf.data());
+        size_t len = dataBytes / sizeof(wchar_t);
+        while (len > 0 && chars[len - 1] == L'\0') --len;
+        if (!first) out += L',';
+        first = false;
+        out += L"\n    {\"name\": ";
+        quote(out, std::wstring_view(name, nameLen));
+        out += L", \"type\": \"sz\", \"value\": ";
+        quote(out, std::wstring_view(chars, len));
+        out += L'}';
+      } else if (type == REG_MULTI_SZ && dataBytes >= 2 && dataBytes % sizeof(wchar_t) == 0) {
+        const auto *chars = reinterpret_cast<const wchar_t *>(buf.data());
+        const size_t count = dataBytes / sizeof(wchar_t);
+        std::vector<std::wstring> items;
+        for (size_t i = 0; i < count && chars[i];) {
+          const size_t begin = i;
+          while (i < count && chars[i]) ++i;
+          items.emplace_back(chars + begin, i - begin);
+          if (i < count) ++i;
+        }
+        if (!first) out += L',';
+        first = false;
+        out += L"\n    {\"name\": ";
+        quote(out, std::wstring_view(name, nameLen));
+        out += L", \"type\": \"multi_sz\", \"values\": ";
+        appendPaths(out, items);
+        out += L'}';
+      }
+    }
+    if (!first) out += L"\n  ";
+    RegCloseKey(key);
+  }
+  out += L']';
+}
+
+void applyRegistryKeyJson(IJsonObject *root, const wchar_t *fieldName, const wchar_t *subkey) {
+  ComPtr<IJsonObject> rootRef(root);
+  if (!hasField(rootRef, fieldName)) return;
+  JsonArrayReader entries(root, fieldName);
+  if (!entries.size) return;
+  HKEY key = nullptr;
+  if (RegCreateKeyExW(HKEY_CURRENT_USER, subkey, 0, nullptr, 0, KEY_SET_VALUE, nullptr, &key, nullptr) != ERROR_SUCCESS || !key)
+    return;
+  for (unsigned i = 0; i < entries.size; ++i) {
+    const auto item = entries.objectAt(i);
+    const auto name = stringField(item.Get(), L"name");
+    if (name.empty() || name.find(L'\0') != std::wstring::npos || _wcsicmp(name.c_str(), groupsValue) == 0) continue;
+    const auto type = stringField(item.Get(), L"type");
+    if (type == L"dword") {
+      double raw = 0;
+      checkJson(item->GetNamedNumber(HStringReference(L"value").Get(), &raw));
+      if (std::isfinite(raw) && raw == std::trunc(raw) && raw >= 0 && raw <= double(std::numeric_limits<DWORD>::max())) {
+        const DWORD val = static_cast<DWORD>(raw);
+        RegSetValueExW(key, name.c_str(), 0, REG_DWORD, reinterpret_cast<const BYTE *>(&val), sizeof(val));
+      }
+    } else if (type == L"sz") {
+      const auto val = stringField(item.Get(), L"value");
+      if (val.find(L'\0') == std::wstring::npos) {
+        RegSetValueExW(key, name.c_str(), 0, REG_SZ, reinterpret_cast<const BYTE *>(val.c_str()),
+                       static_cast<DWORD>((val.size() + 1) * sizeof(wchar_t)));
+      }
+    } else if (type == L"multi_sz") {
+      JsonArrayReader values(item.Get(), L"values");
+      std::vector<wchar_t> multi;
+      for (unsigned j = 0; j < values.size; ++j) {
+        HString str;
+        checkJson(values.array->GetStringAt(j, str.GetAddressOf()));
+        const auto wideStr = wide(str);
+        if (wideStr.empty() || wideStr.find(L'\0') != std::wstring::npos) continue;
+        multi.insert(multi.end(), wideStr.begin(), wideStr.end());
+        multi.push_back(L'\0');
+      }
+      multi.push_back(L'\0');
+      if (multi.size() == 1) multi.push_back(L'\0');
+      RegSetValueExW(key, name.c_str(), 0, REG_MULTI_SZ, reinterpret_cast<const BYTE *>(multi.data()),
+                     static_cast<DWORD>(multi.size() * sizeof(wchar_t)));
+    }
+  }
+  RegCloseKey(key);
+}
+}
+
+void exportDesktopBackup(const fn::fs::path &backupFile, const fn::fs::path &file) {
+  const auto layout = readLayout(file);
+  validate(layout, writeError);
+  const auto layoutUtf8 = formatJson(layout);
+  const int wlen = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, layoutUtf8.data(),
+                                       static_cast<int>(layoutUtf8.size()), nullptr, 0);
+  if (!wlen) fn::fail(lang::text(writeError));
+  std::wstring layoutWide(wlen, L'\0');
+  MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, layoutUtf8.data(),
+                      static_cast<int>(layoutUtf8.size()), layoutWide.data(), wlen);
+  while (!layoutWide.empty() && (layoutWide.back() == L'\n' || layoutWide.back() == L'\r')) layoutWide.pop_back();
+
+  std::wstring content = L"{\n  \"backupVersion\": " + std::to_wstring(backupVersion) + L",\n  \"layout\": " + layoutWide;
+  content += L",\n  \"settings\": ";
+  appendRegistryKeyJson(content, settingsKey);
+  content += L",\n  \"quickFolders\": ";
+  appendRegistryKeyJson(content, quickFoldersSubkey);
+  content += L"\n}\n";
+
+  if (content.size() > jsonSizeLimit) fn::fail(lang::text(writeError), ERROR_FILE_TOO_LARGE);
+  const int length = static_cast<int>(content.size());
+  const int size = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, content.data(), length, nullptr, 0, nullptr, nullptr);
+  if (!size || size > static_cast<int>(jsonSizeLimit)) fn::fail(lang::text(writeError), ERROR_FILE_TOO_LARGE);
+  std::string bytes(size, '\0');
+  if (!WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, content.data(), length, bytes.data(), size, nullptr, nullptr))
+    fn::fail(lang::text(writeError));
+  writeAtomicBytes(bytes, backupFile, true);
+}
+
+Layout importDesktopBackup(const fn::fs::path &backupFile, const fn::fs::path &file) {
+  const auto bytes = readFileBytes(backupFile, false);
+  const Runtime runtime;
+  const auto root = parseJsonRoot(*bytes);
+  if (hasField(root, L"backupVersion")) {
+    if (numberField(root.Get(), L"backupVersion") != backupVersion)
+      fn::fail(lang::text(readError), ERROR_REVISION_MISMATCH);
+    ComPtr<IJsonObject> layoutObj;
+    checkJson(root->GetNamedObject(HStringReference(L"layout").Get(), &layoutObj));
+    auto layout = parseLayoutObject(layoutObj);
+    saveLayout(layout, file);
+    applyRegistryKeyJson(root.Get(), L"settings", settingsKey);
+    applyRegistryKeyJson(root.Get(), L"quickFolders", quickFoldersSubkey);
+    return layout;
+  }
+  auto layout = parseLayoutObject(root);
+  saveLayout(layout, file);
+  return layout;
 }
 }

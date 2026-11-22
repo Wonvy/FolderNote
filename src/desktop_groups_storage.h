@@ -12,7 +12,17 @@ std::wstring boxStoredItem(std::span<const std::wstring> roots, const std::wstri
 std::wstring storeBoxItem(std::span<const std::wstring> roots, const std::wstring &path);
 std::wstring restoreBoxItem(std::span<const std::wstring> roots, const std::wstring &path);
 std::wstring copyToBoxStorage(std::span<const std::wstring> roots, const std::wstring &source, HWND owner);
+std::wstring moveToBoxStorage(std::span<const std::wstring> roots, const std::wstring &source, HWND owner);
 std::wstring createShortcutInFolder(const std::wstring &targetPath, const std::wstring &destinationFolder);
 std::wstring createBoxShortcut(std::span<const std::wstring> roots, const std::wstring &targetPath);
+std::wstring createNewFolderIn(const std::wstring &parentFolder, const std::wstring &baseName);
+std::wstring createNewFolderInBox(std::span<const std::wstring> roots, const std::wstring &baseName);
+std::wstring createNewTextFileIn(const std::wstring &parentFolder, const std::wstring &baseName);
+std::wstring createNewTextFileInBox(std::span<const std::wstring> roots, const std::wstring &baseName);
+std::wstring saveHBitmapToPngInFolder(HBITMAP bitmap, const std::wstring &parentFolder, const std::wstring &prefix);
+std::wstring saveClipboardImageToFolder(const std::wstring &parentFolder, const std::wstring &prefix);
+std::wstring saveClipboardImageToBox(std::span<const std::wstring> roots, const std::wstring &prefix);
+bool clipboardHasBitmap();
+bool clipboardHasPasteableContent();
 bool rollbackBoxMove(const std::wstring &moved, const std::wstring &previous);
 }

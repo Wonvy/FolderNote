@@ -25,6 +25,7 @@
 #include "core.h"
 #include "language.h"
 #include "quick_folders.h"
+#include "quick_hit.h"
 #include "quick_popup.h"
 #include "quick_transfer.h"
 #include "resource.h"
@@ -81,6 +82,7 @@ constexpr UINT finishBoxGestureMessage = WM_APP + 42;
 constexpr UINT updatePagesMessage = WM_APP + 43, goToPageMessage = WM_APP + 44;
 constexpr UINT renameCreatedBoxMessage = WM_APP + 45;
 constexpr UINT beginItemRenameMessage = WM_APP + 46, commitItemRenameMessage = WM_APP + 47;
+constexpr UINT desktopDblClickMessage = WM_APP + 48;
 UINT appearanceMessage() {
   static const UINT message = RegisterWindowMessageW(L"FolderNote.DesktopGroups.Appearance.v2");
   return message;
@@ -92,7 +94,10 @@ enum Command { NewGroup = 1, RenameGroup, DeleteGroup, OpenItem, RemoveItem, Ren
                MapFolder, RemoveTab, IconView, ListViewMode, ManualSort, NameSort, TypeSort, ModifiedSort,
                BoxColor, ResetBoxColor, MoveTabLeft, MoveTabRight, BoxIcon, ClearBoxIcon,
                TitleText, TitleIcon, ScrollDisplay, PageDisplay,
-               ToggleBoxGlass, ToggleAutoCollapse };
+               ToggleBoxGlass, ToggleAutoCollapse,
+               CopyItems, CutItems, PasteIntoBox, DeleteItems, PermanentDeleteItems, ItemProperties,
+               NewBoxFolder, NewBoxTextFile, NavigateUp, ToggleBrowseInBox, EditAutoRule,
+               ToggleHideAllBoxes, ToggleDoubleClickHide, ExportBackup, ImportBackup };
 constexpr LRESULT resizeTitle = 0x100;
 using quick::popup::Branch;
 using quick::popup::Symbol;
@@ -250,6 +255,8 @@ struct BoxDialog {
   const wchar_t *title;
   std::wstring *name;
   std::wstring prompt;
+  bool allowEmpty = false;
+  size_t maxLength = groupNameLimit;
   ui::Theme theme;
   HFONT font = nullptr, heading = nullptr;
   HWND edit = nullptr;
@@ -291,7 +298,7 @@ INT_PTR CALLBACK boxDialog(HWND dialog, UINT message, WPARAM w, LPARAM l) {
         EndDialog(dialog, IDCANCEL);
         return TRUE;
       }
-      SendMessageW(state->edit, EM_SETLIMITTEXT, groupNameLimit, 0);
+      SendMessageW(state->edit, EM_SETLIMITTEXT, state->maxLength, 0);
     } else {
       control(L"STATIC", state->prompt.c_str(), SS_NOPREFIX, 24, 58, 308, 42, -1);
     }
@@ -304,7 +311,7 @@ INT_PTR CALLBACK boxDialog(HWND dialog, UINT message, WPARAM w, LPARAM l) {
       return TRUE;
     }
     SendMessageW(dialog, DM_SETDEFID, IDOK, 0);
-    if (state->name && state->name->find_first_not_of(L" \t\r\n") == std::wstring::npos)
+    if (state->name && !state->allowEmpty && state->name->find_first_not_of(L" \t\r\n") == std::wstring::npos)
       EnableWindow(confirm, FALSE);
     state->theme.apply(dialog);
     const DWMNCRENDERINGPOLICY frame = DWMNCRP_DISABLED;
@@ -349,19 +356,29 @@ INT_PTR CALLBACK boxDialog(HWND dialog, UINT message, WPARAM w, LPARAM l) {
       return TRUE;
     }
     if (LOWORD(w) == editId && HIWORD(w) == EN_CHANGE) {
-      wchar_t input[groupNameLimit + 1]{};
-      GetWindowTextW(state->edit, input, ARRAYSIZE(input));
-      EnableWindow(GetDlgItem(dialog, IDOK), std::wstring_view(input).find_first_not_of(L" \t\r\n") != std::wstring_view::npos);
+      if (state->allowEmpty) {
+        EnableWindow(GetDlgItem(dialog, IDOK), TRUE);
+      } else {
+        std::wstring input(state->maxLength + 1, L'\0');
+        const auto len = GetWindowTextW(state->edit, input.data(), static_cast<int>(input.size()));
+        input.resize(len > 0 ? static_cast<size_t>(len) : 0);
+        EnableWindow(GetDlgItem(dialog, IDOK), std::wstring_view(input).find_first_not_of(L" \t\r\n") != std::wstring_view::npos);
+      }
       return TRUE;
     }
     if (LOWORD(w) == IDOK) {
       if (state->name) {
-        wchar_t buffer[groupNameLimit + 1]{};
-        GetWindowTextW(state->edit, buffer, ARRAYSIZE(buffer));
+        std::wstring buffer(state->maxLength + 1, L'\0');
+        const auto len = GetWindowTextW(state->edit, buffer.data(), static_cast<int>(buffer.size()));
+        buffer.resize(len > 0 ? static_cast<size_t>(len) : 0);
         const std::wstring_view value(buffer);
         const auto start = value.find_first_not_of(L" \t\r\n");
-        if (start == value.npos) return TRUE;
-        *state->name = value.substr(start, value.find_last_not_of(L" \t\r\n") - start + 1);
+        if (start == value.npos) {
+          if (!state->allowEmpty) return TRUE;
+          state->name->clear();
+        } else {
+          *state->name = value.substr(start, value.find_last_not_of(L" \t\r\n") - start + 1);
+        }
       }
       EndDialog(dialog, IDOK);
       return TRUE;
@@ -380,7 +397,8 @@ INT_PTR CALLBACK boxDialog(HWND dialog, UINT message, WPARAM w, LPARAM l) {
   return FALSE;
 }
 
-bool showBoxDialog(HINSTANCE instance, HWND owner, const wchar_t *title, std::wstring *name, std::wstring prompt) {
+bool showBoxDialog(HINSTANCE instance, HWND owner, const wchar_t *title, std::wstring *name, std::wstring prompt,
+                   bool allowEmpty = false, size_t maxLength = groupNameLimit) {
   struct Template {
     DLGTEMPLATE dialog;
     WORD menu = 0, cls = 0, title[64]{};
@@ -390,7 +408,7 @@ bool showBoxDialog(HINSTANCE instance, HWND owner, const wchar_t *title, std::ws
   layout.dialog.dwExtendedStyle = WS_EX_TOOLWINDOW;
   layout.dialog.cx = 220;
   layout.dialog.cy = 110;
-  BoxDialog state{lang::text(title), name, std::move(prompt)};
+  BoxDialog state{lang::text(title), name, std::move(prompt), allowEmpty, maxLength};
   wcsncpy_s(reinterpret_cast<wchar_t *>(layout.title), ARRAYSIZE(layout.title), state.title, _TRUNCATE);
   const auto result = DialogBoxIndirectParamW(instance, &layout.dialog, owner, boxDialog, reinterpret_cast<LPARAM>(&state));
   if (result == -1) fn::fail(lang::text(L"无法打开桌面盒子。"));
@@ -409,16 +427,26 @@ std::wstring pickBoxIcon(HWND owner) {
   return GetOpenFileNameW(&dialog) ? std::wstring(path) : std::wstring{};
 }
 
-RECT visibleBounds(RECT bounds, HMONITOR target = nullptr) {
+RECT currentWorkArea(RECT bounds, HMONITOR target = nullptr) {
   MONITORINFO monitor{sizeof(monitor)};
   if (!target) target = MonitorFromRect(&bounds, MONITOR_DEFAULTTONEAREST);
-  if (!GetMonitorInfoW(target, &monitor)) return bounds;
-  const auto work = monitor.rcWork;
+  return GetMonitorInfoW(target, &monitor) ? monitor.rcWork : RECT{};
+}
+
+RECT visibleBounds(RECT bounds, HMONITOR target = nullptr) {
+  const auto work = currentWorkArea(bounds, target);
+  if (IsRectEmpty(&work)) return bounds;
   const auto width = std::clamp(bounds.right - bounds.left, 1L, work.right - work.left);
   const auto height = std::clamp(bounds.bottom - bounds.top, 1L, work.bottom - work.top);
   const auto x = std::clamp(bounds.left, work.left, work.right - width);
   const auto y = std::clamp(bounds.top, work.top, work.bottom - height);
   return {x, y, x + width, y + height};
+}
+
+RECT resolvedGroupBounds(const Group &group, HMONITOR target = nullptr) {
+  const auto work = currentWorkArea(group.bounds, target);
+  if (IsRectEmpty(&work)) return group.bounds;
+  return scaleBoundsToWorkArea(group.bounds, group.referenceWorkArea, work);
 }
 
 class Desktop;
@@ -496,6 +524,7 @@ struct Panel {
   RECT pageFooter() const;
   int firstPageDot() const;
   int visiblePageDots() const;
+  std::vector<std::wstring> browseStack;
   std::wstring mappedFolder;
   struct MappedItem { std::wstring path; ULONGLONG modified; DWORD attributes; };
   std::vector<MappedItem> mappedItems;
@@ -632,6 +661,14 @@ struct Panel {
   int shapeDiameter = 0;
   bool updateShape();
   bool mapped() const;
+  bool browsingSubfolder() const;
+  bool folderView() const;
+  std::wstring activeFolder() const;
+  void enterSubfolder(const std::wstring &folderPath);
+  bool navigateUp();
+  bool handleShortcut(UINT vk, bool ctrl, bool shift, bool alt);
+  std::vector<std::wstring> selectedResolvedPaths() const;
+  void selectAndRevealPath(const std::wstring &path, bool startRename = false);
   void readMappedFolder();
   void showTab(size_t tab, bool allowDuringDrag = false);
   std::optional<size_t> tabAt(POINT screen) const;
@@ -693,6 +730,8 @@ public:
   RECT dropMarker{};
   ULONGLONG lastDragScroll = 0;
   std::vector<std::wstring> dragItems;
+  std::vector<std::wstring> cutPaths;
+  bool boxesHidden = appearanceValue(L"DesktopGroupsHidden", 0) != 0;
   ULONGLONG lastFolderRefresh = 0;
   HWND host = nullptr;
   bool rebuilding = false;
@@ -742,6 +781,17 @@ public:
   void drag(Panel &panel, int index);
   bool assign(Panel &panel, std::span<const std::wstring> paths, POINT point, bool fromExplorer = false);
   bool assignCopyOrLink(Panel &panel, std::span<const std::wstring> paths, POINT point, DWORD effect);
+  void copySelection(Panel &panel, bool cut);
+  void pasteIntoPanel(Panel &panel);
+  void deleteSelection(Panel &panel, bool permanent);
+  void createNewItemInPanel(Panel &panel, bool isFolder);
+  void applyAutoRules();
+  void cleanupMovedCutItems();
+  void setAllBoxesHidden(bool hidden);
+  bool doubleClickHideEnabled() const;
+  void toggleDoubleClickHide();
+  void exportBackup(HWND owner);
+  void importBackup(HWND owner);
   static LRESULT CALLBACK proc(HWND window, UINT message, WPARAM w, LPARAM l);
 };
 
@@ -1183,7 +1233,7 @@ class DropTarget final : public IDropTarget {
   }
 
   DWORD externalEffect(DWORD keyState, DWORD allowed) const {
-    if (panel.mapped() || panel.desktop.editing || panel.desktop.quitting) return DROPEFFECT_NONE;
+    if (panel.folderView() || panel.desktop.editing || panel.desktop.quitting) return DROPEFFECT_NONE;
     if (files && !hasShellItems) {
       return applyModifierEffect(keyState, allowed, DROPEFFECT_MOVE);
     }
@@ -1196,13 +1246,12 @@ class DropTarget final : public IDropTarget {
     folder.clear();
     groupDrop = false;
     if (panel.desktop.editing || panel.desktop.quitting) return DROPEFFECT_NONE;
-    const auto &group = panel.desktop.groups[panel.index];
     if (panel.desktop.oleDragActive) {
       const auto &paths = panel.desktop.dragItems;
       const bool virtualItems = std::any_of(paths.begin(), paths.end(), isDesktopShellItem);
-      auto candidate = !panel.mapped() && virtualItems ? std::wstring{} : panel.desktop.dropFolder(&panel, screen);
-      if (candidate.empty() && panel.mapped() && !virtualItems) {
-        candidate = folderForTab(group, panel.activeTab);
+      auto candidate = !panel.folderView() && virtualItems ? std::wstring{} : panel.desktop.dropFolder(&panel, screen);
+      if (candidate.empty() && panel.folderView() && !virtualItems) {
+        candidate = panel.activeFolder();
       }
       if (!candidate.empty()) {
         const DWORD chosen = applyModifierEffect(keyState, allowed, DROPEFFECT_MOVE);
@@ -1212,7 +1261,7 @@ class DropTarget final : public IDropTarget {
         }
         return DROPEFFECT_NONE;
       }
-      if (panel.mapped()) return DROPEFFECT_NONE;
+      if (panel.folderView()) return DROPEFFECT_NONE;
       if (virtualItems) {
         if (!panel.desktop.oleDragFromMapped && (allowed & DROPEFFECT_MOVE)) {
           groupDrop = true;
@@ -1225,8 +1274,8 @@ class DropTarget final : public IDropTarget {
       groupDrop = chosen != DROPEFFECT_NONE;
       return chosen;
     }
-    if (panel.mapped() && files && !hasShellItems) {
-      folder = folderForTab(group, panel.activeTab);
+    if (panel.folderView() && files && !hasShellItems) {
+      folder = panel.activeFolder();
       return folder.empty() ? DROPEFFECT_NONE : applyModifierEffect(keyState, allowed, DROPEFFECT_MOVE);
     }
     return externalEffect(keyState, allowed);
@@ -1492,9 +1541,15 @@ void Panel::syncSurfaceHeader() {
   const auto &colors = desktop.theme.colors;
   std::vector<std::wstring> titles{group.name};
   for (const auto &tab : group.tabs) titles.push_back(tab.name);
+  if (browsingSubfolder() && activeTab < titles.size()) {
+    auto leaf = fn::fs::path(browseStack.back()).filename().wstring();
+    if (leaf.empty()) leaf = browseStack.back();
+    titles[activeTab] += L" › " + leaf;
+  }
   surface->header(titles, activeTab, collapsed(), headerActions, desktop.dropHighlight == window,
                   desktop.style.radius, colors.text, colors.muted, colors.border, colors.accent,
-                  titleHeightPreview ? titleHeightPreview : group.titleHeight, group.titleStyle, headerIcon());
+                  titleHeightPreview ? titleHeightPreview : group.titleHeight, group.titleStyle,
+                  headerIcon(), browsingSubfolder());
 }
 #endif
 
@@ -1529,6 +1584,122 @@ HICON Panel::headerIcon() {
 
 bool Panel::mapped() const {
   return !folderForTab(desktop.groups[index], activeTab).empty();
+}
+
+bool Panel::browsingSubfolder() const {
+  return !browseStack.empty();
+}
+
+std::wstring Panel::activeFolder() const {
+  if (!browseStack.empty()) return browseStack.back();
+  return folderForTab(desktop.groups[index], activeTab);
+}
+
+bool Panel::folderView() const {
+  return !activeFolder().empty();
+}
+
+std::vector<std::wstring> Panel::selectedResolvedPaths() const {
+  const bool inFolder = folderView();
+  std::vector<std::wstring> paths;
+  for (int row = -1; (row = ListView_GetNextItem(list, row, LVNI_SELECTED)) >= 0;) {
+    if (static_cast<size_t>(row) >= displayed.size()) continue;
+    auto resolved = inFolder ? displayed[row] : desktop.boxItem(displayed[row]);
+    if (!resolved.empty()) paths.push_back(std::move(resolved));
+  }
+  return paths;
+}
+
+void Panel::selectAndRevealPath(const std::wstring &path, bool startRename) {
+  if (path.empty()) return;
+  const auto found = std::find_if(orderedItems.begin(), orderedItems.end(),
+                                  [&](const auto &candidate) { return samePath(candidate, path); });
+  if (found == orderedItems.end()) return;
+  const int match = static_cast<int>(found - orderedItems.begin());
+  if (pageCount && pageCapacity && match / pageCapacity != currentPage) goToPage(match / pageCapacity);
+  const int row = match - (pageCount ? currentPage * pageCapacity : 0);
+  if (row < 0 || static_cast<size_t>(row) >= displayed.size()) return;
+  ListView_SetItemState(list, -1, 0, LVIS_SELECTED | LVIS_FOCUSED);
+  ListView_SetItemState(list, row, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+  ListView_EnsureVisible(list, row, FALSE);
+#ifdef FOLDERNOTE_WINUI
+  if (hasSurface()) {
+    surface->select({row});
+    surface->reveal(row);
+  }
+#endif
+  if (startRename) PostMessageW(window, beginItemRenameMessage, static_cast<WPARAM>(row), 0);
+}
+
+void Panel::enterSubfolder(const std::wstring &folderPath) {
+  const auto normalized = quick::normalize(folderPath);
+  if (normalized.empty() || !PathIsDirectoryW(normalized.c_str())) return;
+  if (!browseStack.empty() && samePath(browseStack.back(), normalized)) return;
+  browseStack.push_back(normalized);
+  currentPage = pageWheelRemainder = 0;
+  mappedFolder.clear();
+  mappedItems.clear();
+  mappedResult = {};
+#ifdef FOLDERNOTE_WINUI
+  syncSurfaceHeader();
+#endif
+  refresh(desktop.groups[index]);
+  // Synchronously populate mappedItems so drill-down feels instant without a 2s blank flash.
+  if (mappedResult.valid() && mappedResult.wait_for(std::chrono::milliseconds(180)) == std::future_status::ready) {
+    refresh(desktop.groups[index]);
+  }
+  InvalidateRect(window, nullptr, FALSE);
+  InvalidateRect(tabs, nullptr, FALSE);
+}
+
+bool Panel::navigateUp() {
+  if (browseStack.empty() || desktop.dragging || desktop.editing || desktop.menuOpen || desktop.quitting) return false;
+  const auto exited = std::move(browseStack.back());
+  browseStack.pop_back();
+  while (!browseStack.empty() && !PathIsDirectoryW(browseStack.back().c_str())) browseStack.pop_back();
+  currentPage = pageWheelRemainder = 0;
+  mappedFolder.clear();
+  mappedItems.clear();
+  mappedResult = {};
+#ifdef FOLDERNOTE_WINUI
+  syncSurfaceHeader();
+#endif
+  refresh(desktop.groups[index]);
+  if (folderView() && mappedResult.valid() &&
+      mappedResult.wait_for(std::chrono::milliseconds(180)) == std::future_status::ready) {
+    refresh(desktop.groups[index]);
+  }
+  selectAndRevealPath(exited, false);
+  InvalidateRect(window, nullptr, FALSE);
+  InvalidateRect(tabs, nullptr, FALSE);
+  return true;
+}
+
+bool Panel::handleShortcut(UINT vk, bool ctrl, bool shift, bool alt) {
+  if (desktop.dragging || desktop.editing || desktop.menuOpen || desktop.quitting || collapsed()) return false;
+  if (ctrl && !alt && !shift) {
+    if (vk == 'C') { PostMessageW(window, WM_COMMAND, CopyItems, 0); return true; }
+    if (vk == 'X') { PostMessageW(window, WM_COMMAND, CutItems, 0); return true; }
+    if (vk == 'V') { PostMessageW(window, WM_COMMAND, PasteIntoBox, 0); return true; }
+  }
+  if (!ctrl && !alt && vk == VK_DELETE) {
+    PostMessageW(window, WM_COMMAND, shift ? PermanentDeleteItems : DeleteItems, 0);
+    return true;
+  }
+  if (!ctrl && !shift && !alt && vk == VK_BACK) {
+    if (browsingSubfolder()) {
+      PostMessageW(window, WM_COMMAND, NavigateUp, 0);
+      return true;
+    }
+    return false;
+  }
+  if (alt && !ctrl && !shift && vk == VK_RETURN) {
+    if (selection() >= 0) {
+      PostMessageW(window, WM_COMMAND, ItemProperties, 0);
+      return true;
+    }
+  }
+  return false;
 }
 
 void Desktop::setAppearance(const Appearance &value) {
@@ -1581,6 +1752,7 @@ void Panel::readMappedFolder() {
 void Panel::showTab(size_t tab, bool allowDuringDrag) {
   if (tab > desktop.groups[index].tabs.size() || activeTab == tab || (!allowDuringDrag && desktop.dragging)) return;
   activeTab = tab;
+  browseStack.clear();
   currentPage = pageWheelRemainder = 0;
 #ifdef FOLDERNOTE_WINUI
   syncSurfaceHeader();
@@ -1998,7 +2170,12 @@ void Panel::paintTabs(const DRAWITEMSTRUCT &item) {
       }
     }
     if (showText) {
-      const auto &title = i ? group.tabs[i - 1].name : group.name;
+      std::wstring title = i ? group.tabs[i - 1].name : group.name;
+      if (selected && browsingSubfolder()) {
+        auto leaf = fn::fs::path(browseStack.back()).filename().wstring();
+        if (leaf.empty()) leaf = browseStack.back();
+        title = L"← " + title + L" › " + leaf;
+      }
       ui::text(dc, title, box, (selected || pressed) && colors.highContrast ? colors.onAccent :
                selected || hot || pressed ? colors.text : colors.muted,
                DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
@@ -2117,6 +2294,19 @@ LRESULT CALLBACK iconInput(HWND control, UINT message, WPARAM w, LPARAM l, UINT_
   if ((message == WM_SETFOCUS || message == WM_LBUTTONDOWN) && panel.desktop.previewKeys)
     panel.desktop.previewKeys->refresh();
   if (panel.findInput(message, w)) return 0;
+  if ((message == WM_KEYDOWN || message == WM_SYSKEYDOWN) && !panel.itemEdit) {
+    const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+    const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+    const bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
+    const bool win = ((GetKeyState(VK_LWIN) | GetKeyState(VK_RWIN)) & 0x8000) != 0;
+    if (!win) {
+      if (ctrl && !shift && !alt && w == 'A') {
+        ListView_SetItemState(control, -1, LVIS_SELECTED, LVIS_SELECTED);
+        return 0;
+      }
+      if (panel.handleShortcut(static_cast<UINT>(w), ctrl, shift, alt)) return 0;
+    }
+  }
   if (message == WM_LBUTTONDOWN) {
     SetForegroundWindow(GetAncestor(panel.window, GA_ROOT));
     SetFocus(control);
@@ -2504,7 +2694,15 @@ void Panel::paint(HDC dc, bool backgroundOnly) {
       DrawIconEx(dc, header.left, (header.bottom - px(18)) / 2, icon, px(18), px(18), 0, nullptr, DI_NORMAL);
       header.left += px(24);
     }
-    if (showsTitleText(group.titleStyle)) ui::text(dc, group.name, header, colors.text);
+    if (showsTitleText(group.titleStyle) || browsingSubfolder()) {
+      std::wstring label = showsTitleText(group.titleStyle) ? group.name : std::wstring{};
+      if (browsingSubfolder()) {
+        auto leaf = fn::fs::path(browseStack.back()).filename().wstring();
+        if (leaf.empty()) leaf = browseStack.back();
+        label = label.empty() ? (L"← " + leaf) : (L"← " + label + L" › " + leaf);
+      }
+      ui::text(dc, label, header, colors.text);
+    }
     paintTabInsertion(dc);
   }
   SetBkMode(dc, oldMode);
@@ -2596,8 +2794,9 @@ void Panel::setCollapsed() {
   if (collapsed) finishItemEdit(true);
   RECT current{};
   GetWindowRect(window, &current);
+  const auto resolved = resolvedGroupBounds(group);
   RECT bounds{current.left, current.top, current.right,
-              current.top + (collapsed ? headerHeight() : group.bounds.bottom - group.bounds.top)};
+              current.top + (collapsed ? headerHeight() : resolved.bottom - resolved.top)};
   bounds = visibleBounds(bounds);
   SetWindowTextW(toggle, lang::text(collapsed ? L"展开盒子" : L"折叠盒子"));
   if (collapsed && GetFocus() == list) SetFocus(toggle);
@@ -2923,15 +3122,24 @@ void Panel::finishGesture(bool accept) {
 }
 
 void Panel::refresh(const Group &group) {
-  if (activeTab > group.tabs.size()) activeTab = 0;
-  const auto &folder = folderForTab(group, activeTab);
+  if (activeTab > group.tabs.size()) {
+    activeTab = 0;
+    browseStack.clear();
+  }
+  while (!browseStack.empty() && !PathIsDirectoryW(browseStack.back().c_str())) {
+    browseStack.pop_back();
+#ifdef FOLDERNOTE_WINUI
+    syncSurfaceHeader();
+#endif
+  }
+  const auto folder = activeFolder();
   const bool folderMapped = !folder.empty();
   if (folder != mappedFolder) {
     mappedFolder = folder;
     mappedItems.clear();
     mappedResult = {};
   }
-  auto items = manualItems(group, activeTab);
+  auto items = folderMapped ? std::vector<std::wstring>{} : manualItems(group, activeTab);
   if (folderMapped) {
     if (mappedResult.valid() && mappedResult.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
       try { mappedItems = mappedResult.get(); } catch (...) {}
@@ -3098,7 +3306,7 @@ void Panel::renderPage(const Group &group) {
     const auto footer = pageFooter();
     InvalidateRect(window, &footer, FALSE);
   }
-  const bool folderMapped = mapped();
+  const bool folderMapped = folderView();
   const bool listMode = group.view == View::List;
   const auto view = listMode ? LV_VIEW_DETAILS : LV_VIEW_ICON;
   const int pixels = listMode ? 0 : MulDiv(group.iconSize, GetDpiForWindow(window), 96);
@@ -3419,7 +3627,7 @@ void Panel::contextMenu(POINT point, bool title) {
     bool rename = false;
     desktop.menuOpen = true;
     bool shown = false;
-    try { shown = showItemMenu(window, path, itemPoint, !mapped(), remove, rename); }
+    try { shown = showItemMenu(window, path, itemPoint, !folderView(), remove, rename); }
     catch (...) { desktop.menuOpen = false; throw; }
     desktop.menuOpen = false;
     if (desktop.quitting) return;
@@ -3428,11 +3636,15 @@ void Panel::contextMenu(POINT point, bool title) {
     if (shown) return;
     menuItem(*menu, OpenItem, L"打开", Symbol::Folder);
     menuItem(*menu, RenameItem, L"重命名", Symbol::Settings);
-    if (!mapped()) menuItem(*menu, RemoveItem, L"移出盒子", Symbol::Unpin);
+    if (!folderView()) menuItem(*menu, RemoveItem, L"移出盒子", Symbol::Unpin);
     separator(*menu);
   }
   const auto &group = desktop.groups[index];
   if (title) {
+    if (browsingSubfolder()) {
+      menuItem(*menu, NavigateUp, L"返回上一级", Symbol::Move);
+      separator(*menu);
+    }
     if (!desktop.theme.colors.highContrast) {
       const auto initial = group.tint;
       const auto hue = HueColor::fromRgb(backgroundColor(), desktop.theme.colors.dark);
@@ -3503,6 +3715,9 @@ void Panel::contextMenu(POINT point, bool title) {
     menuItem(*menu, TitleText, L"显示文字", Symbol::Window, showsTitleText(group.titleStyle));
     separator(*menu);
     menuItem(*menu, ToggleAutoCollapse, L"自动折叠隐藏", Symbol::Visibility, group.autoCollapse);
+    menuItem(*menu, ToggleBrowseInBox, L"盒内浏览子文件夹", Symbol::Folder, group.browseInBox);
+    if (group.folder.empty())
+      menuItem(*menu, EditAutoRule, L"自动归入规则...", Symbol::Settings, !group.autoRule.empty());
     separator(*menu);
     menuItem(*menu, MapFolder, L"映射文件夹", Symbol::Folder);
     const auto targetTab = selectedTab.value_or(activeTab);
@@ -3511,9 +3726,20 @@ void Panel::contextMenu(POINT point, bool title) {
     if (selectedTab && *selectedTab < group.tabs.size())
       menuItem(*menu, MoveTabRight, L"向右移动", Symbol::Move);
     separator(*menu);
+    menuItem(*menu, ToggleHideAllBoxes, L"隐藏全部盒子", Symbol::Visibility);
     menuItem(*menu, RenameGroup, L"重命名盒子", Symbol::Settings);
     menuItem(*menu, DeleteGroup, L"删除盒子", Symbol::Trash);
   } else {
+    if (row < 0) {
+      if (browsingSubfolder()) {
+        menuItem(*menu, NavigateUp, L"返回上一级", Symbol::Move);
+        separator(*menu);
+      }
+      menuItem(*menu, NewBoxFolder, L"新建文件夹", Symbol::AddFolder);
+      menuItem(*menu, NewBoxTextFile, L"新建文本文档", Symbol::Documents);
+      if (clipboardHasPasteableContent()) menuItem(*menu, PasteIntoBox, L"粘贴", Symbol::Folder);
+      separator(*menu);
+    }
     menuItem(*menu, IconView, L"图标", Symbol::Folder, group.view == View::Icons);
     menuItem(*menu, ListViewMode, L"列表", Symbol::Window, group.view == View::List);
     quick::popup::Item spacing;
@@ -3533,6 +3759,8 @@ void Panel::contextMenu(POINT point, bool title) {
     menuItem(*menu, NameSort, L"按名称", Symbol::Folder, group.sort == Sort::Name);
     menuItem(*menu, TypeSort, L"按类型", Symbol::Folder, group.sort == Sort::Type);
     menuItem(*menu, ModifiedSort, L"按修改时间", Symbol::History, group.sort == Sort::Modified);
+    separator(*menu);
+    menuItem(*menu, ToggleBrowseInBox, L"盒内浏览子文件夹", Symbol::Folder, group.browseInBox);
   }
   if (keyboard) {
     point = {12, 12};
@@ -3892,8 +4120,9 @@ LRESULT CALLBACK Panel::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
       GetWindowRect(window, &bounds);
       if (panel->collapsed()) bounds.bottom = bounds.top + (group.bounds.bottom - group.bounds.top);
       group.bounds = bounds;
+      group.referenceWorkArea = currentWorkArea(bounds);
       if (!desktop.commit(std::move(changed), window, false)) {
-        const auto saved = visibleBounds(desktop.groups[panel->index].bounds);
+        const auto saved = resolvedGroupBounds(desktop.groups[panel->index]);
         panel->place(saved);
         panel->setCollapsed();
       } else if (w) {
@@ -3952,18 +4181,22 @@ LRESULT CALLBACK Panel::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
       if (notification->code == LVN_GETEMPTYMARKUP) {
         auto markup = reinterpret_cast<NMLVEMPTYMARKUP *>(l);
         markup->dwFlags = EMF_CENTERED;
-      wcsncpy_s(markup->szMarkup, lang::text(panel->mapped() ? L"映射文件夹为空" :
-                   L"将桌面文件拖到这里"), _TRUNCATE);
+        wcsncpy_s(markup->szMarkup, lang::text(panel->folderView() ? L"映射文件夹为空" :
+                     L"将桌面文件拖到这里"), _TRUNCATE);
         return TRUE;
       }
-      if (notification->code == NM_DBLCLK && reinterpret_cast<NMITEMACTIVATE *>(l)->iItem >= 0)
-        PostMessageW(window, WM_COMMAND, OpenItem, 0);
+      if (notification->code == NM_DBLCLK) {
+        if (reinterpret_cast<NMITEMACTIVATE *>(l)->iItem >= 0)
+          PostMessageW(window, WM_COMMAND, OpenItem, 0);
+        else if (panel->browsingSubfolder())
+          PostMessageW(window, WM_COMMAND, NavigateUp, 0);
+      }
       if (notification->code == LVN_BEGINDRAG)
         PostMessageW(window, dragMessage, reinterpret_cast<NMLISTVIEW *>(l)->iItem, 0);
       if (notification->code == LVN_KEYDOWN) {
         const auto key = reinterpret_cast<NMLVKEYDOWN *>(l)->wVKey;
-        if (key == VK_RETURN || key == VK_DELETE)
-          PostMessageW(window, WM_COMMAND, key == VK_RETURN ? OpenItem : RemoveItem, 0);
+        if (key == VK_RETURN && (GetKeyState(VK_MENU) & 0x8000) == 0)
+          PostMessageW(window, WM_COMMAND, OpenItem, 0);
         else if (key == VK_F2)
           PostMessageW(window, beginItemRenameMessage, static_cast<WPARAM>(panel->selection()), 0);
       }
@@ -4099,6 +4332,15 @@ void Panel::openSurface() {
     PostMessageW(window, WM_COMMAND, OpenItem, 0);
   };
   events.rename = [this](int row) { PostMessageW(window, beginItemRenameMessage, static_cast<WPARAM>(row), 0); };
+  events.shortcut = [this](UINT vk, bool ctrl, bool shift, bool alt) {
+    return handleShortcut(vk, ctrl, shift, alt);
+  };
+  events.blankDoubleClick = [this] {
+    if (browsingSubfolder()) PostMessageW(window, WM_COMMAND, NavigateUp, 0);
+  };
+  events.navigateBack = [this] {
+    if (browsingSubfolder()) PostMessageW(window, WM_COMMAND, NavigateUp, 0);
+  };
   events.preview = [this](int row) { return preview(row); };
   events.previewAvailable = [] { return desktopPreviewAvailable(); };
   events.previewFocus = [this] { if (desktop.previewKeys) desktop.previewKeys->refresh(); };
@@ -4139,7 +4381,7 @@ bool Desktop::openPanel(size_t index) {
   const bool wasRebuilding = std::exchange(rebuilding, true);
   struct Restore { bool &value; bool previous; ~Restore() { value = previous; } } restore{rebuilding, wasRebuilding};
   auto panel = std::make_unique<Panel>(*this, index);
-  const auto bounds = visibleBounds(groups[index].bounds);
+  const auto bounds = resolvedGroupBounds(groups[index]);
   if (!IsWindow(host)) return false;
   DesktopDpiScope dpiScope(host);
   const auto create = [&](DWORD extendedStyle) {
@@ -4177,6 +4419,12 @@ bool Desktop::openPanel(size_t index) {
   panel->refresh(groups[index]);
   panel->setCollapsed();
   panel->windowPositionReady = true;
+  if (boxesHidden) {
+#ifdef FOLDERNOTE_WINUI
+    if (panel->hasSurface()) panel->surface->show(false);
+#endif
+    ShowWindow(handle, SW_HIDE);
+  }
   panels.push_back(std::move(panel));
   updateShadows();
   lower(handle);
@@ -4185,7 +4433,7 @@ bool Desktop::openPanel(size_t index) {
 
 void Panel::updateShadow() {
   const auto &style = desktop.style;
-  if (dockHidden || !style.shadow || !style.shadowOpacity || desktop.theme.colors.highContrast) {
+  if (desktop.boxesHidden || dockHidden || !style.shadow || !style.shadowOpacity || desktop.theme.colors.highContrast) {
     if (shadow) DestroyWindow(std::exchange(shadow, nullptr));
     shadowSize = {};
     return;
@@ -4371,7 +4619,9 @@ void Desktop::detachPanelTab(size_t index, size_t tab, RECT bounds) {
   auto changed = groups;
   const auto owner = panels[index]->window;
   const auto previous = groups;
-  if (!detachTab(changed, index, tab, bounds) || !commit(std::move(changed), owner)) return;
+  if (!detachTab(changed, index, tab, bounds)) return;
+  changed.back().referenceWorkArea = currentWorkArea(bounds);
+  if (!commit(std::move(changed), owner)) return;
   if (!openPanel(groups.size() - 1)) {
     commit(previous, owner);
     report(owner, lang::text(L"无法打开桌面盒子。"));
@@ -4432,6 +4682,7 @@ std::optional<PreviewTarget> Desktop::previewTarget() const {
 
 void Desktop::locateSearch() {
   if (!pendingSearch) return;
+  if (boxesHidden) setAllBoxesHidden(false);
   const auto &entry = *pendingSearch;
   if (quitting || rebuilding || editing || menuOpen || dragging || GetTickCount64() > searchDeadline ||
       !search::matches(groups, entry) || entry.group >= panels.size()) { pendingSearch.reset(); return; }
@@ -4487,30 +4738,32 @@ void Desktop::updateGlass(HWND raisedPanel) {
   std::vector<GlassArea> areas;
   std::map<int, std::shared_ptr<const WallpaperFrame>> frames;
 #ifdef FOLDERNOTE_WINUI
-  // Follow the sibling order that lower() will apply, including the newly
-  // raised box, so overlapping boxes retain their own blur on the first frame.
-  std::vector<Panel *> ordered;
-  for (auto child = GetTopWindow(host); child; child = GetWindow(child, GW_HWNDNEXT)) {
-    const auto found = std::find_if(panels.begin(), panels.end(), [child](const auto &p) { return p->window == child; });
-    if (found != panels.end()) ordered.push_back(found->get());
-  }
-  const auto raised = std::find_if(ordered.begin(), ordered.end(), [raisedPanel](auto p) { return p->window == raisedPanel; });
-  if (raised != ordered.end()) std::rotate(ordered.begin(), raised, raised + 1);
-  for (auto p : ordered) {
-    auto &panel = *p;
-    RECT bounds{};
-    if (panel.dockHidden || !GetWindowRect(panel.window, &bounds)) continue;
-    int strength = -1;
-    if (panel.hasSurface() && panel.surface->usesDesktopGlass() && panel.backgroundBlur() > 0) {
-      const int wanted = panel.backgroundBlur();
-      auto image = wallpaperBackdrop(wanted);
-      if (image) panel.renderedBlur = wanted;
-      strength = panel.renderedBlur;
-      if (!image) image = wallpaperBackdrop(strength);
-      auto &frame = frames[strength];
-      if (image) frame = std::move(image);
+  if (!boxesHidden) {
+    // Follow the sibling order that lower() will apply, including the newly
+    // raised box, so overlapping boxes retain their own blur on the first frame.
+    std::vector<Panel *> ordered;
+    for (auto child = GetTopWindow(host); child; child = GetWindow(child, GW_HWNDNEXT)) {
+      const auto found = std::find_if(panels.begin(), panels.end(), [child](const auto &p) { return p->window == child; });
+      if (found != panels.end()) ordered.push_back(found->get());
     }
-    areas.push_back({bounds, panel.cornerDiameter(), strength});
+    const auto raised = std::find_if(ordered.begin(), ordered.end(), [raisedPanel](auto p) { return p->window == raisedPanel; });
+    if (raised != ordered.end()) std::rotate(ordered.begin(), raised, raised + 1);
+    for (auto p : ordered) {
+      auto &panel = *p;
+      RECT bounds{};
+      if (panel.dockHidden || !GetWindowRect(panel.window, &bounds)) continue;
+      int strength = -1;
+      if (panel.hasSurface() && panel.surface->usesDesktopGlass() && panel.backgroundBlur() > 0) {
+        const int wanted = panel.backgroundBlur();
+        auto image = wallpaperBackdrop(wanted);
+        if (image) panel.renderedBlur = wanted;
+        strength = panel.renderedBlur;
+        if (!image) image = wallpaperBackdrop(strength);
+        auto &frame = frames[strength];
+        if (image) frame = std::move(image);
+      }
+      areas.push_back({bounds, panel.cornerDiameter(), strength});
+    }
   }
 #endif
   std::erase_if(glass, [&](const auto &layer) { return !frames.contains(layer.first); });
@@ -4523,7 +4776,7 @@ void Desktop::updateGlass(HWND raisedPanel) {
 
 void Desktop::lower(HWND raisedPanel) {
   updateGlass(raisedPanel);
-  if (!IsWindow(host) || panels.empty()) return;
+  if (boxesHidden || !IsWindow(host) || panels.empty()) return;
   std::vector<HWND> boxes;
   for (auto candidate = GetTopWindow(host); candidate; candidate = GetWindow(candidate, GW_HWNDNEXT)) {
     if (std::any_of(panels.begin(), panels.end(), [candidate](const auto &panel) { return panel->window == candidate; }))
@@ -4542,6 +4795,13 @@ void Desktop::manage() {
   menuOpen = true;
   auto menu = std::make_shared<Branch>();
   menuItem(*menu, NewGroup, L"新建盒子", Symbol::AddFolder);
+  if (!groups.empty()) {
+    menuItem(*menu, ToggleHideAllBoxes, boxesHidden ? L"显示全部盒子" : L"隐藏全部盒子", Symbol::Visibility);
+  }
+  menuItem(*menu, ToggleDoubleClickHide, L"双击桌面空白处隐藏盒子", Symbol::Visibility, doubleClickHideEnabled());
+  separator(*menu);
+  menuItem(*menu, ExportBackup, L"导出备份...", Symbol::Documents);
+  menuItem(*menu, ImportBackup, L"导入备份...", Symbol::Folder);
   POINT point{};
   GetCursorPos(&point);
   unsigned command = 0;
@@ -4550,17 +4810,25 @@ void Desktop::manage() {
   menuOpen = false;
   PostMessageW(window, WM_NULL, 0, 0);
   if (quitting) return;
-  if (command == NewGroup) createBox(point, window);
+  switch (command) {
+  case NewGroup: createBox(point, window); break;
+  case ToggleHideAllBoxes: setAllBoxesHidden(!boxesHidden); break;
+  case ToggleDoubleClickHide: toggleDoubleClickHide(); break;
+  case ExportBackup: exportBackup(window); break;
+  case ImportBackup: importBackup(window); break;
+  }
 }
 
 void Desktop::createBox(POINT point, HWND owner) {
   if (menuOpen || editing || dragging || quitting) return;
+  if (boxesHidden) setAllBoxesHidden(false);
   Group group;
   group.name = lang::text(L"新建盒子");
   const auto monitor = MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST);
   const auto dpi = GetDpiForSystem();
   group.bounds = visibleBounds({point.x, point.y, point.x + MulDiv(360, dpi, 96),
                                 point.y + MulDiv(254, dpi, 96)}, monitor);
+  group.referenceWorkArea = currentWorkArea(group.bounds, monitor);
   auto changed = groups;
   changed.push_back(std::move(group));
   if (!commit(std::move(changed), owner)) return;
@@ -4650,7 +4918,7 @@ void Desktop::renameItem(Panel &panel, std::wstring oldPath, std::wstring origin
 #endif
   };
 
-  if (panel.mapped()) {
+  if (panel.folderView()) {
     if (!newPath.empty()) {
       for (auto &item : panel.mappedItems) {
         if (samePath(item.path, oldPath)) item.path = newPath;
@@ -4813,6 +5081,83 @@ void Desktop::action(Panel *panel, Command command, size_t tabIndex) {
     }
     return;
   }
+  case ToggleBrowseInBox: {
+    auto changed = groups;
+    changed[index].browseInBox = !changed[index].browseInBox;
+    if (commit(std::move(changed), owner, false) && !groups[index].browseInBox && panel->browsingSubfolder()) {
+      panel->browseStack.clear();
+#ifdef FOLDERNOTE_WINUI
+      panel->syncSurfaceHeader();
+#endif
+      panel->refresh(groups[index]);
+    }
+    return;
+  }
+  case EditAutoRule: {
+    auto rule = groups[index].autoRule;
+    if (!showBoxDialog(instance, owner, L"自动归入规则", &rule,
+                       lang::text(L"示例：.png, .jpg, 截图*, *.pdf（留空关闭）"), true, 512) || quitting) return;
+    if (rule == groups[index].autoRule) return;
+    auto changed = groups;
+    changed[index].autoRule = std::move(rule);
+    if (commit(std::move(changed), owner, false) && !groups[index].autoRule.empty()) {
+      editing = false;
+      applyAutoRules();
+    }
+    return;
+  }
+  case ToggleHideAllBoxes:
+    setAllBoxesHidden(!boxesHidden);
+    return;
+  case NavigateUp:
+    editing = false;
+    panel->navigateUp();
+    return;
+  case CopyItems:
+    copySelection(*panel, false);
+    return;
+  case CutItems:
+    copySelection(*panel, true);
+    return;
+  case PasteIntoBox:
+    editing = false;
+    pasteIntoPanel(*panel);
+    return;
+  case DeleteItems:
+    editing = false;
+    deleteSelection(*panel, false);
+    return;
+  case PermanentDeleteItems:
+    editing = false;
+    deleteSelection(*panel, true);
+    return;
+  case ItemProperties:
+    if (selected >= 0 && static_cast<size_t>(selected) < panel->displayed.size()) {
+      const auto &item = panel->displayed[selected];
+      const auto path = panel->folderView() ? item : boxItem(item);
+      if (!path.empty()) {
+        PIDLIST_ABSOLUTE id = nullptr;
+        if (SUCCEEDED(SHParseDisplayName(path.c_str(), nullptr, &id, 0, nullptr)) && id) {
+          SHELLEXECUTEINFOW exec{sizeof(exec)};
+          exec.fMask = SEE_MASK_INVOKEIDLIST;
+          exec.hwnd = owner;
+          exec.lpVerb = L"properties";
+          exec.lpIDList = id;
+          exec.nShow = SW_SHOWNORMAL;
+          ShellExecuteExW(&exec);
+          CoTaskMemFree(id);
+        }
+      }
+    }
+    return;
+  case NewBoxFolder:
+    editing = false;
+    createNewItemInPanel(*panel, true);
+    return;
+  case NewBoxTextFile:
+    editing = false;
+    createNewItemInPanel(*panel, false);
+    return;
   case ToggleGroup: {
     auto changed = groups;
     changed[index].collapsed = !panel->collapsed();
@@ -4846,14 +5191,20 @@ void Desktop::action(Panel *panel, Command command, size_t tabIndex) {
   case OpenItem:
     if (selected >= 0 && static_cast<size_t>(selected) < panel->displayed.size()) {
       const auto &item = panel->displayed[selected];
-      const auto path = panel->mapped() ? item : boxItem(item);
+      const auto path = panel->folderView() ? item : boxItem(item);
+      if (!path.empty() && !isDesktopShellItem(path) && groups[index].browseInBox &&
+          (GetKeyState(VK_CONTROL) & 0x8000) == 0 && PathIsDirectoryW(path.c_str())) {
+        editing = false;
+        panel->enterSubfolder(path);
+        return;
+      }
       if (path.empty() ||
           reinterpret_cast<INT_PTR>(ShellExecuteW(owner, nullptr, path.c_str(), nullptr, nullptr, SW_SHOWNORMAL)) <= 32)
         report(owner, lang::text(L"无法打开此桌面项目。"));
     }
     return;
   case RemoveItem:
-    if (!panel->mapped() && selected >= 0 && static_cast<size_t>(selected) < panel->displayed.size()) {
+    if (!panel->folderView() && selected >= 0 && static_cast<size_t>(selected) < panel->displayed.size()) {
       ungroup(std::span(&panel->displayed[selected], 1), owner);
     }
     return;
@@ -4887,7 +5238,7 @@ void Desktop::clearDropFeedback() {
 void Desktop::drag(Panel &panel, int index) {
   const auto &items = panel.displayed;
   if (index < 0 || static_cast<size_t>(index) >= items.size() || editing || dragging || quitting) return;
-  const bool fromMapped = panel.mapped();
+  const bool fromMapped = panel.folderView();
   const auto resolvePath = [&](const std::wstring &candidate) {
     return fromMapped ? candidate : boxItem(candidate);
   };
@@ -5073,12 +5424,12 @@ void Desktop::drag(Panel &panel, int index) {
   if (effect == DROPEFFECT_NONE && GetCursorPos(&fallbackPoint)) {
     if (auto *target = panelAt(fallbackPoint)) {
       const bool virtualItems = std::any_of(paths.begin(), paths.end(), isDesktopShellItem);
-      const auto folder = !target->mapped() && virtualItems ? std::wstring{} : dropFolder(target, fallbackPoint);
+      const auto folder = !target->folderView() && virtualItems ? std::wstring{} : dropFolder(target, fallbackPoint);
       if (!folder.empty() && canMoveInto(paths, folder)) {
         moveInto(paths, folder, sourceWindow);
         return;
       }
-      if (!target->mapped()) {
+      if (!target->folderView()) {
         assign(*target, paths, fallbackPoint, fromMapped);
         return;
       }
@@ -5153,7 +5504,7 @@ std::wstring Desktop::dropFolder(Panel *panel, POINT point) const {
     }
     if (row >= 0 && static_cast<size_t>(row) < panel->displayed.size()) path = panel->displayed[row];
     if (path.empty() || isDesktopShellItem(path) || !PathIsDirectoryW(path.c_str())) {
-      return folderForTab(groups[panel->index], panel->activeTab);
+      return panel->activeFolder();
     }
   }
   return path;
@@ -5358,7 +5709,7 @@ void Panel::autoscroll(POINT point) {
 }
 
 bool Desktop::assign(Panel &panel, std::span<const std::wstring> paths, POINT point, bool fromExplorer) {
-  if (editing || quitting || panel.mapped()) return false;
+  if (editing || quitting || panel.folderView()) return false;
   auto changed = groups;
   BoxFileMoves moves(roots, panel.window, paths.size());
   bool rejected = false, moveFailed = false, accepted = false, updated = false;
@@ -5415,7 +5766,7 @@ bool Desktop::assign(Panel &panel, std::span<const std::wstring> paths, POINT po
 }
 
 bool Desktop::assignCopyOrLink(Panel &panel, std::span<const std::wstring> paths, POINT point, DWORD effect) {
-  if (editing || quitting || panel.mapped() || paths.empty()) return false;
+  if (editing || quitting || panel.folderView() || paths.empty()) return false;
   struct TransferScope {
     bool &active;
     explicit TransferScope(bool &flag) : active(flag) { active = true; }
@@ -5438,6 +5789,526 @@ bool Desktop::assignCopyOrLink(Panel &panel, std::span<const std::wstring> paths
   if (createdPaths.empty()) return false;
   return assign(panel, createdPaths, point, false);
 }
+
+void Desktop::copySelection(Panel &panel, bool cut) {
+  if (quitting) return;
+  const auto paths = panel.selectedResolvedPaths();
+  if (paths.empty()) return;
+  auto dataObject = createDragDataObject(panel.window, paths);
+  if (!dataObject) return;
+  const bool allVirtual = std::all_of(paths.begin(), paths.end(), isDesktopShellItem);
+  const DWORD effect = (cut && !allVirtual) ? DROPEFFECT_MOVE : DROPEFFECT_COPY;
+  setDropEffect(dataObject.Get(), CFSTR_PREFERREDDROPEFFECT, effect);
+  if (SUCCEEDED(OleSetClipboard(dataObject.Get()))) {
+    cutPaths.clear();
+    if (cut && !panel.folderView()) {
+      for (const auto &p : paths) {
+        if (!isDesktopShellItem(p)) cutPaths.push_back(p);
+      }
+    }
+  }
+}
+
+void Desktop::pasteIntoPanel(Panel &panel) {
+  if (editing || dragging || quitting) return;
+  Microsoft::WRL::ComPtr<IDataObject> clipData;
+  std::vector<std::wstring> paths;
+  bool isMove = false;
+  if (SUCCEEDED(OleGetClipboard(&clipData)) && clipData) {
+    paths = desktopDropPaths(clipData.Get());
+    if (paths.empty()) paths = desktopShellDropItems(clipData.Get());
+    if (!paths.empty()) {
+      const auto preferred = readDropEffect(clipData.Get(), CFSTR_PREFERREDDROPEFFECT);
+      isMove = preferred && (*preferred & DROPEFFECT_MOVE) != 0 && (*preferred & DROPEFFECT_COPY) == 0;
+    }
+  }
+
+  if (!paths.empty()) {
+    clipData.Reset();
+    if (panel.folderView()) {
+      const auto targetFolder = panel.activeFolder();
+      if (targetFolder.empty()) return;
+      moveInto(paths, targetFolder, panel.window, isMove ? DROPEFFECT_MOVE : DROPEFFECT_COPY);
+      if (isMove) {
+        OleSetClipboard(nullptr);
+        cleanupMovedCutItems();
+      }
+      panel.mappedResult = {};
+      panel.refresh(groups[panel.index]);
+      if (panel.mappedResult.valid() &&
+          panel.mappedResult.wait_for(std::chrono::milliseconds(180)) == std::future_status::ready) {
+        panel.refresh(groups[panel.index]);
+      }
+      return;
+    }
+
+    if (!isMove) {
+      assignCopyOrLink(panel, paths, {-1, -1}, DROPEFFECT_COPY);
+      return;
+    }
+
+    struct TransferScope {
+      bool &active;
+      explicit TransferScope(bool &flag) : active(flag) { active = true; }
+      ~TransferScope() { active = false; }
+    } scope(editing);
+
+    auto changed = groups;
+    std::vector<std::wstring> placed;
+    for (const auto &candidate : paths) {
+      if (candidate.empty()) continue;
+      if (isDesktopShellItem(candidate)) {
+        if (addItem(changed, panel.index, candidate, panel.activeTab)) placed.push_back(candidate);
+        continue;
+      }
+      std::wstring stored = boxStoredItem(roots, candidate);
+      if (stored.empty()) {
+        if (!boxDesktopItem(roots, candidate).empty()) stored = storeBoxItem(roots, candidate);
+        else stored = moveToBoxStorage(roots, candidate, panel.window);
+      }
+      if (stored.empty()) continue;
+      const auto removeOld = [&](std::vector<std::wstring> &entries) {
+        std::erase_if(entries, [&](const auto &item) { return samePath(item, candidate); });
+      };
+      for (auto &group : changed) {
+        removeOld(group.paths);
+        for (auto &tab : group.tabs) removeOld(tab.paths);
+      }
+      addItem(changed, panel.index, stored, panel.activeTab);
+      placed.push_back(std::move(stored));
+    }
+    if (!placed.empty() && commit(std::move(changed), panel.window)) {
+      cutPaths.clear();
+      OleSetClipboard(nullptr);
+      for (size_t i = 0; i < panels.size(); ++i) panels[i]->refresh(groups[i]);
+      panel.selectAndRevealPath(placed.back(), false);
+    }
+    return;
+  }
+  clipData.Reset();
+
+  if (!clipboardHasBitmap()) return;
+  struct TransferScope {
+    bool &active;
+    explicit TransferScope(bool &flag) : active(flag) { active = true; }
+    ~TransferScope() { active = false; }
+  } scope(editing);
+
+  const std::wstring prefix = lang::text(L"截图");
+  if (panel.folderView()) {
+    const auto saved = saveClipboardImageToFolder(panel.activeFolder(), prefix);
+    if (saved.empty()) return;
+    WIN32_FILE_ATTRIBUTE_DATA data{};
+    ULONGLONG mod = 0;
+    DWORD attr = FILE_ATTRIBUTE_NORMAL;
+    if (GetFileAttributesExW(saved.c_str(), GetFileExInfoStandard, &data)) {
+      mod = (static_cast<ULONGLONG>(data.ftLastWriteTime.dwHighDateTime) << 32) | data.ftLastWriteTime.dwLowDateTime;
+      attr = data.dwFileAttributes;
+    }
+    panel.mappedItems.push_back({saved, mod, attr});
+    panel.mappedResult = {};
+    panel.refresh(groups[panel.index]);
+    panel.selectAndRevealPath(saved, false);
+    return;
+  }
+
+  const auto saved = saveClipboardImageToBox(roots, prefix);
+  if (saved.empty()) return;
+  auto changed = groups;
+  if (addItem(changed, panel.index, saved, panel.activeTab) && commit(std::move(changed), panel.window, false)) {
+    panel.refresh(groups[panel.index]);
+    panel.selectAndRevealPath(saved, false);
+  }
+}
+
+void Desktop::deleteSelection(Panel &panel, bool permanent) {
+  if (editing || dragging || quitting) return;
+  const auto paths = panel.selectedResolvedPaths();
+  if (paths.empty()) return;
+
+  std::vector<std::wstring> virtualItems;
+  std::vector<std::wstring> fileItems;
+  for (const auto &path : paths) {
+    if (isDesktopShellItem(path)) virtualItems.push_back(path);
+    else fileItems.push_back(path);
+  }
+  if (!virtualItems.empty() && !panel.folderView()) {
+    ungroup(virtualItems, panel.window);
+  }
+  if (fileItems.empty() || quitting) return;
+
+  {
+    struct DeleteScope {
+      bool &active;
+      explicit DeleteScope(bool &flag) : active(flag) { active = true; }
+      ~DeleteScope() { active = false; }
+    } scope(editing);
+
+    using ItemId = std::unique_ptr<void, decltype(&CoTaskMemFree)>;
+    std::vector<ItemId> ownedIds;
+    std::vector<PCIDLIST_ABSOLUTE> ids;
+    ownedIds.reserve(fileItems.size());
+    ids.reserve(fileItems.size());
+    for (const auto &path : fileItems) {
+      PIDLIST_ABSOLUTE id = nullptr;
+      if (SUCCEEDED(SHParseDisplayName(path.c_str(), nullptr, &id, 0, nullptr)) && id) {
+        ownedIds.emplace_back(static_cast<void *>(id), CoTaskMemFree);
+        ids.push_back(id);
+      }
+    }
+    if (!ids.empty()) {
+      Microsoft::WRL::ComPtr<IShellItemArray> shellItems;
+      Microsoft::WRL::ComPtr<IFileOperation> op;
+      if (SUCCEEDED(SHCreateShellItemArrayFromIDLists(static_cast<UINT>(ids.size()), ids.data(), &shellItems)) &&
+          shellItems && SUCCEEDED(CoCreateInstance(CLSID_FileOperation, nullptr, CLSCTX_ALL, IID_PPV_ARGS(&op))) && op) {
+        op->SetOwnerWindow(panel.window);
+        op->SetOperationFlags(permanent ? FOF_WANTNUKEWARNING : FOF_ALLOWUNDO);
+        if (SUCCEEDED(op->DeleteItems(shellItems.Get()))) {
+          SetForegroundWindow(panel.window);
+          op->PerformOperations();
+        }
+      }
+    }
+  }
+  if (quitting) return;
+
+  const auto wasDeleted = [&](const std::wstring &candidate) {
+    return std::any_of(fileItems.begin(), fileItems.end(), [&](const std::wstring &deleted) {
+      return samePath(candidate, deleted) &&
+             GetFileAttributesW(deleted.c_str()) == INVALID_FILE_ATTRIBUTES &&
+             GetLastError() == ERROR_FILE_NOT_FOUND;
+    });
+  };
+  if (panel.folderView()) {
+    std::erase_if(panel.mappedItems, [&](const Panel::MappedItem &entry) { return wasDeleted(entry.path); });
+    panel.mappedResult = {};
+    panel.refresh(groups[panel.index]);
+    return;
+  }
+  auto changed = groups;
+  bool removed = false;
+  for (auto &group : changed) {
+    removed |= std::erase_if(group.paths, wasDeleted) != 0;
+    for (auto &tab : group.tabs) removed |= std::erase_if(tab.paths, wasDeleted) != 0;
+  }
+  if (removed) commit(std::move(changed), panel.window);
+  else panel.refresh(groups[panel.index]);
+}
+
+void Desktop::createNewItemInPanel(Panel &panel, bool isFolder) {
+  if (editing || dragging || quitting) return;
+  struct CreateScope {
+    bool &active;
+    explicit CreateScope(bool &flag) : active(flag) { active = true; }
+    ~CreateScope() { active = false; }
+  } scope(editing);
+
+  const std::wstring baseName = lang::text(isFolder ? L"新建文件夹" : L"新建文本文档");
+  if (panel.folderView()) {
+    const auto parent = panel.activeFolder();
+    const auto created = isFolder ? createNewFolderIn(parent, baseName)
+                                  : createNewTextFileIn(parent, baseName + L".txt");
+    if (created.empty()) return;
+    WIN32_FILE_ATTRIBUTE_DATA data{};
+    ULONGLONG mod = 0;
+    DWORD attr = isFolder ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;
+    if (GetFileAttributesExW(created.c_str(), GetFileExInfoStandard, &data)) {
+      mod = (static_cast<ULONGLONG>(data.ftLastWriteTime.dwHighDateTime) << 32) | data.ftLastWriteTime.dwLowDateTime;
+      attr = data.dwFileAttributes;
+    }
+    panel.mappedItems.push_back({created, mod, attr});
+    panel.mappedResult = {};
+    panel.refresh(groups[panel.index]);
+    editing = false;
+    panel.selectAndRevealPath(created, true);
+    return;
+  }
+
+  const auto created = isFolder ? createNewFolderInBox(roots, baseName)
+                                : createNewTextFileInBox(roots, baseName + L".txt");
+  if (created.empty()) return;
+  auto changed = groups;
+  if (addItem(changed, panel.index, created, panel.activeTab) && commit(std::move(changed), panel.window, false)) {
+    panel.refresh(groups[panel.index]);
+    editing = false;
+    panel.selectAndRevealPath(created, true);
+  }
+}
+
+void Desktop::cleanupMovedCutItems() {
+  if (cutPaths.empty() || editing || dragging || quitting) return;
+  std::vector<std::wstring> gone;
+  for (const auto &path : cutPaths) {
+    if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES && GetLastError() == ERROR_FILE_NOT_FOUND)
+      gone.push_back(path);
+  }
+  if (gone.empty()) return;
+  std::erase_if(cutPaths, [&](const std::wstring &p) {
+    return std::any_of(gone.begin(), gone.end(), [&](const std::wstring &g) { return samePath(p, g); });
+  });
+  auto changed = groups;
+  bool removed = false;
+  const auto matchGone = [&](const std::wstring &entry) {
+    return std::any_of(gone.begin(), gone.end(), [&](const std::wstring &g) { return samePath(entry, g); });
+  };
+  for (auto &group : changed) {
+    removed |= std::erase_if(group.paths, matchGone) != 0;
+    for (auto &tab : group.tabs) removed |= std::erase_if(tab.paths, matchGone) != 0;
+  }
+  if (removed) commit(std::move(changed), window);
+}
+
+void Desktop::applyAutoRules() {
+  if (editing || dragging || menuOpen || quitting || roots.empty()) return;
+  const bool hasAnyRule = std::any_of(groups.begin(), groups.end(), [](const Group &g) {
+    return !g.autoRule.empty() && g.folder.empty();
+  });
+  if (!hasAnyRule) return;
+
+  const auto personal = quick::normalize(roots.front());
+  if (personal.empty()) return;
+  const auto storageDir = boxStorageFolder(roots);
+
+  FILETIME nowFt{};
+  GetSystemTimeAsFileTime(&nowFt);
+  const ULONGLONG nowTicks = (static_cast<ULONGLONG>(nowFt.dwHighDateTime) << 32) | nowFt.dwLowDateTime;
+
+  const auto isGrouped = [&](const std::wstring &candidate) {
+    for (const auto &g : groups) {
+      for (const auto &p : g.paths) if (samePath(p, candidate)) return true;
+      for (const auto &t : g.tabs)
+        for (const auto &p : t.paths) if (samePath(p, candidate)) return true;
+    }
+    return false;
+  };
+
+  struct Match { size_t groupIndex; std::wstring path; };
+  std::vector<Match> matches;
+  std::error_code ec;
+  const fn::fs::directory_iterator end;
+  for (fn::fs::directory_iterator it(personal, ec); !ec && it != end; it.increment(ec)) {
+    const auto fullPath = quick::normalize(it->path().wstring());
+    if (fullPath.empty() || samePath(fullPath, storageDir)) continue;
+    const auto fileName = it->path().filename().wstring();
+    if (fileName.empty() || samePath(fileName, L"desktop.ini") || fileName.starts_with(L"~$")) continue;
+    const auto ext = it->path().extension().wstring();
+    if (!_wcsicmp(ext.c_str(), L".crdownload") || !_wcsicmp(ext.c_str(), L".part") ||
+        !_wcsicmp(ext.c_str(), L".partial") || !_wcsicmp(ext.c_str(), L".tmp") ||
+        !_wcsicmp(ext.c_str(), L".opdownload") || !_wcsicmp(ext.c_str(), L".download")) continue;
+
+    WIN32_FILE_ATTRIBUTE_DATA info{};
+    if (!GetFileAttributesExW(fullPath.c_str(), GetFileExInfoStandard, &info)) continue;
+    if (info.dwFileAttributes & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM)) continue;
+    const ULONGLONG writeTicks = (static_cast<ULONGLONG>(info.ftLastWriteTime.dwHighDateTime) << 32) |
+                                 info.ftLastWriteTime.dwLowDateTime;
+    // Wait at least 1.5s after last write so active downloads/screenshots finish closing.
+    if (nowTicks > writeTicks && nowTicks - writeTicks < 15'000'000ULL) continue;
+    if (isGrouped(fullPath)) continue;
+
+    const bool isShortcut = !_wcsicmp(ext.c_str(), L".lnk") || !_wcsicmp(ext.c_str(), L".url");
+    for (size_t gi = 0; gi < groups.size(); ++gi) {
+      const auto &g = groups[gi];
+      if (g.autoRule.empty() || !g.folder.empty()) continue;
+      if (isShortcut && !matchesAutoRule(L"x" + ext, g.autoRule)) {
+        // Avoid sweeping desktop app shortcuts into keyword rules unless .lnk/.url is matched.
+        std::wstring lowerRule = g.autoRule;
+        std::transform(lowerRule.begin(), lowerRule.end(), lowerRule.begin(), ::towlower);
+        if (lowerRule.find(L"lnk") == std::wstring::npos && lowerRule.find(L"url") == std::wstring::npos) continue;
+      }
+      if (matchesAutoRule(fileName, g.autoRule)) {
+        matches.push_back({gi, fullPath});
+        break;
+      }
+    }
+  }
+
+  if (matches.empty()) return;
+  auto changed = groups;
+  BoxFileMoves moves(roots, window, matches.size());
+  bool anyAdded = false;
+  for (const auto &m : matches) {
+    const auto &stored = moves.transfer(m.path, true);
+    if (stored.empty()) continue;
+    if (addItem(changed, m.groupIndex, stored, 0)) anyAdded = true;
+  }
+  if (anyAdded && commit(std::move(changed), window)) {
+    moves.keep();
+  }
+}
+
+void Desktop::setAllBoxesHidden(bool hidden) {
+  if (boxesHidden == hidden) return;
+  boxesHidden = hidden;
+  const DWORD value = hidden ? 1 : 0;
+  RegSetKeyValueW(HKEY_CURRENT_USER, desktopSettings, L"DesktopGroupsHidden", REG_DWORD, &value, sizeof(value));
+  for (const auto &panel : panels) {
+    if (!IsWindow(panel->window)) continue;
+    if (hidden) {
+      panel->finishTitleEdit(true);
+      panel->finishItemEdit(true);
+      if (panel->gestureEdge) panel->finishGesture(false);
+#ifdef FOLDERNOTE_WINUI
+      if (panel->hasSurface()) panel->surface->show(false);
+#endif
+      ShowWindow(panel->window, SW_HIDE);
+      panel->updateShadow();
+    } else {
+#ifdef FOLDERNOTE_WINUI
+      if (!panel->dockHidden && panel->hasSurface()) panel->surface->show(true);
+#endif
+      panel->updateShadow();
+    }
+  }
+  if (hidden) updateGlass();
+  else lower();
+}
+
+bool Desktop::doubleClickHideEnabled() const {
+  return appearanceValue(L"DesktopGroupsDoubleClickHide", 1) != 0;
+}
+
+void Desktop::toggleDoubleClickHide() {
+  const DWORD next = doubleClickHideEnabled() ? 0 : 1;
+  RegSetKeyValueW(HKEY_CURRENT_USER, desktopSettings, L"DesktopGroupsDoubleClickHide", REG_DWORD, &next, sizeof(next));
+}
+
+void Desktop::exportBackup(HWND owner) {
+  if (editing || dragging || quitting) return;
+  struct ExportScope {
+    bool &active;
+    explicit ExportScope(bool &flag) : active(flag) { active = true; }
+    ~ExportScope() { active = false; }
+  } scope(editing);
+
+  Microsoft::WRL::ComPtr<IFileSaveDialog> dialog;
+  if (FAILED(CoCreateInstance(CLSID_FileSaveDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog))) || !dialog)
+    return;
+  FILEOPENDIALOGOPTIONS options{};
+  if (SUCCEEDED(dialog->GetOptions(&options)))
+    dialog->SetOptions(options | FOS_FORCEFILESYSTEM | FOS_OVERWRITEPROMPT | FOS_PATHMUSTEXIST);
+  const COMDLG_FILTERSPEC filters[]{{L"JSON (*.json)", L"*.json"}};
+  dialog->SetFileTypes(ARRAYSIZE(filters), filters);
+  dialog->SetDefaultExtension(L"json");
+  dialog->SetFileName(L"FolderNote-Backup.json");
+  dialog->SetTitle(lang::text(L"导出备份"));
+  Microsoft::WRL::ComPtr<IShellItem> result;
+  PWSTR raw = nullptr;
+  if (FAILED(dialog->Show(owner)) || FAILED(dialog->GetResult(&result)) || !result ||
+      FAILED(result->GetDisplayName(SIGDN_FILESYSPATH, &raw)) || !raw) return;
+  const std::unique_ptr<wchar_t, decltype(&CoTaskMemFree)> storage(raw, CoTaskMemFree);
+  try {
+    exportDesktopBackup(raw);
+    ui::message(owner, lang::text(L"备份已导出。"), lang::text(L"桌面盒子"), MB_OK | MB_ICONINFORMATION);
+  } catch (const fn::Error &err) {
+    report(owner, err.message.c_str());
+  } catch (...) {
+    report(owner, lang::text(L"无法导出备份。"));
+  }
+}
+
+void Desktop::importBackup(HWND owner) {
+  if (editing || dragging || quitting) return;
+  Microsoft::WRL::ComPtr<IFileOpenDialog> dialog;
+  PWSTR raw = nullptr;
+  {
+    struct ImportScope {
+      bool &active;
+      explicit ImportScope(bool &flag) : active(flag) { active = true; }
+      ~ImportScope() { active = false; }
+    } scope(editing);
+    if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog))) || !dialog)
+      return;
+    FILEOPENDIALOGOPTIONS options{};
+    if (SUCCEEDED(dialog->GetOptions(&options)))
+      dialog->SetOptions(options | FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST | FOS_PATHMUSTEXIST);
+    const COMDLG_FILTERSPEC filters[]{{L"JSON (*.json)", L"*.json"}};
+    dialog->SetFileTypes(ARRAYSIZE(filters), filters);
+    dialog->SetTitle(lang::text(L"导入备份"));
+    Microsoft::WRL::ComPtr<IShellItem> result;
+    if (FAILED(dialog->Show(owner)) || FAILED(dialog->GetResult(&result)) || !result ||
+        FAILED(result->GetDisplayName(SIGDN_FILESYSPATH, &raw)) || !raw) return;
+  }
+  const std::unique_ptr<wchar_t, decltype(&CoTaskMemFree)> storage(raw, CoTaskMemFree);
+  if (quitting) return;
+  try {
+    auto layout = importDesktopBackup(raw);
+    groups = std::move(layout.groups);
+    invalidateWallpaperBackdrop();
+    theme.reset(ui::configuredTheme());
+    if (!previewingAppearance) style = configuredAppearance();
+    panels.clear();
+    glass.clear();
+    host = nullptr;
+    if (boxesHidden) setAllBoxesHidden(false);
+    ensureHost();
+    lower();
+    ui::message(owner, lang::text(L"备份已导入。"), lang::text(L"桌面盒子"), MB_OK | MB_ICONINFORMATION);
+  } catch (const fn::Error &err) {
+    report(owner, err.message.c_str());
+  } catch (...) {
+    report(owner, lang::text(L"无法导入备份。"));
+  }
+}
+
+class DesktopBlankClickWatcher {
+  static inline std::atomic<HWND> activeReceiver{nullptr};
+  DWORD threadId = 0;
+  std::thread worker;
+
+  static LRESULT CALLBACK mouseProc(int code, WPARAM wParam, LPARAM lParam) {
+    if (code == HC_ACTION && wParam == WM_LBUTTONDOWN && lParam) {
+      const auto &info = *reinterpret_cast<const MSLLHOOKSTRUCT *>(lParam);
+      if ((info.flags & LLMHF_INJECTED) == 0) {
+        thread_local DWORD lastTime = 0;
+        thread_local POINT lastPt{LONG_MIN, LONG_MIN};
+        const DWORD maxDt = GetDoubleClickTime();
+        const int maxDx = std::max(2, GetSystemMetrics(SM_CXDOUBLECLK) / 2);
+        const int maxDy = std::max(2, GetSystemMetrics(SM_CYDOUBLECLK) / 2);
+        if (lastTime != 0 && info.time - lastTime <= maxDt &&
+            std::abs(info.pt.x - lastPt.x) <= maxDx &&
+            std::abs(info.pt.y - lastPt.y) <= maxDy) {
+          lastTime = 0;
+          if (const HWND target = activeReceiver.load(std::memory_order_relaxed)) {
+            PostMessageW(target, desktopDblClickMessage,
+                         static_cast<WPARAM>(static_cast<INT_PTR>(info.pt.x)),
+                         static_cast<LPARAM>(info.pt.y));
+          }
+        } else {
+          lastTime = info.time ? info.time : 1;
+          lastPt = info.pt;
+        }
+      }
+    }
+    return CallNextHookEx(nullptr, code, wParam, lParam);
+  }
+
+public:
+  explicit DesktopBlankClickWatcher(HWND receiverWnd) {
+    activeReceiver.store(receiverWnd, std::memory_order_relaxed);
+    std::promise<DWORD> ready;
+    auto future = ready.get_future();
+    worker = std::thread([p = std::move(ready)]() mutable {
+      MSG msg{};
+      PeekMessageW(&msg, nullptr, WM_USER, WM_USER, PM_NOREMOVE);
+      const HHOOK hook = SetWindowsHookExW(WH_MOUSE_LL, mouseProc, GetModuleHandleW(nullptr), 0);
+      p.set_value(GetCurrentThreadId());
+      if (hook) {
+        while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
+          TranslateMessage(&msg);
+          DispatchMessageW(&msg);
+        }
+        UnhookWindowsHookEx(hook);
+      }
+    });
+    threadId = future.get();
+  }
+
+  ~DesktopBlankClickWatcher() {
+    activeReceiver.store(nullptr, std::memory_order_relaxed);
+    if (threadId) PostThreadMessageW(threadId, WM_QUIT, 0, 0);
+    if (worker.joinable()) worker.join();
+  }
+};
 
 LRESULT CALLBACK Desktop::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
   auto desktop = reinterpret_cast<Desktop *>(GetWindowLongPtrW(window, GWLP_USERDATA));
@@ -5502,6 +6373,15 @@ LRESULT CALLBACK Desktop::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
         if (const auto path = desktop->previewKeys->take()) previewDesktopItem(*path);
       }
       return 0;
+    case desktopDblClickMessage: {
+      if (desktop->quitting || desktop->editing || desktop->dragging || desktop->menuOpen ||
+          !desktop->doubleClickHideEnabled() || !IsWindow(desktop->host)) return 0;
+      const POINT pt{static_cast<LONG>(static_cast<INT_PTR>(w)), static_cast<LONG>(l)};
+      if (!desktop->panelAt(pt) && quick::detail::blankSurface(desktop->host, pt)) {
+        desktop->setAllBoxesHidden(!desktop->boxesHidden);
+      }
+      return 0;
+    }
     case WM_TIMER:
       if (desktop->rebuilding) return 0;
       if (w == headerTimer) {
@@ -5534,8 +6414,10 @@ LRESULT CALLBACK Desktop::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
             now - desktop->lastFolderRefresh > 2000) {
           desktop->lastFolderRefresh = now;
           for (const auto &panel : desktop->panels)
-            if (!panel->movingOrSizing && panel->mapped() && !panel->collapsed())
+            if (!panel->movingOrSizing && panel->folderView() && !panel->collapsed())
               panel->refresh(desktop->groups[panel->index]);
+          desktop->cleanupMovedCutItems();
+          desktop->applyAutoRules();
         }
       }
       return 0;
@@ -5546,7 +6428,7 @@ LRESULT CALLBACK Desktop::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
         if (panel->gestureEdge) panel->finishGesture(false);
       for (const auto &panel : desktop->panels) {
         panel->setDockSide(DockSide::None);
-        panel->place(visibleBounds(desktop->groups[panel->index].bounds));
+        panel->place(resolvedGroupBounds(desktop->groups[panel->index]));
         panel->setCollapsed();
         RedrawWindow(panel->window, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
       }
@@ -5723,6 +6605,7 @@ int run(HINSTANCE instance, bool manage, bool create, bool delegated) {
         desktop.ensureHost();
         desktop.previewKeys = std::make_unique<PreviewKeys>(desktop.window, previewSelectedMessage,
             [&desktop] { return desktop.previewTarget(); });
+        DesktopBlankClickWatcher blankClickWatcher(desktop.window);
         if (!SetTimer(desktop.window, 1, 400, nullptr)) throw 0;
         if (!SetTimer(desktop.window, headerTimer, 70, nullptr)) throw 0;
         if (!SetPropW(desktop.window, readyProperty, reinterpret_cast<HANDLE>(1))) throw 0;
@@ -5744,6 +6627,7 @@ int run(HINSTANCE instance, bool manage, bool create, bool delegated) {
         if (manage) report(nullptr, lang::text(L"无法打开桌面盒子。"));
         result = 1;
       }
+      OleFlushClipboard();
       OleUninitialize();
     } else if (enabled()) {
       if (manage) report(nullptr, lang::text(L"无法打开桌面盒子。"));
