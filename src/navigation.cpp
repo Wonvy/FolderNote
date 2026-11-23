@@ -1174,7 +1174,7 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     field(L"BUTTON", lang::text(L"置顶与历史 →"), WS_TABSTOP, 86, 402, 220, 28, 16);
     desktopGroupsCheck = field(L"BUTTON", lang::text(L"桌面盒子"), checkStyle, 40, 462, -40, 26, desktopGroupsToggle);
     SendMessageW(desktopGroupsCheck, BM_SETCHECK, desktop_groups::enabled() ? BST_CHECKED : BST_UNCHECKED, 0);
-    field(L"STATIC", lang::text(L"由 Windows 管理桌面图标。\n拖入盒子的桌面文件和文件夹会移到 FolderNote Boxes。"), 0, 86, 494, -40, 38, 0, true);
+    field(L"STATIC", lang::text(L"由 Windows 管理桌面图标。\n拖入盒子的桌面文件和文件夹会移到隐藏的 .desktop 目录。"), 0, 86, 494, -40, 38, 0, true);
     desktopGroupsGlassCheck = field(L"BUTTON", glassLabel.c_str(), checkStyle, 86, 538, 185, 26, desktopGroupsGlassToggle);
     SendMessageW(desktopGroupsGlassCheck, BM_SETCHECK, configuredDesktopGroupsGlass() ? BST_CHECKED : BST_UNCHECKED, 0);
     desktopGroupsManager = field(L"BUTTON", lang::text(L"管理桌面盒子"), WS_TABSTOP | BS_NOTIFY,

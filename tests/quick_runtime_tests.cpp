@@ -238,9 +238,9 @@ static void desktopTests(HWND dialog) {
     }
     simulatedForeground = shell; underPointer = workerView; quick::eligible = shell;
     const auto before = launches.size();
-    mouse(WM_MBUTTONDOWN); mouse(WM_MBUTTONUP); drain();
+    mouse(WM_MBUTTONDOWN); mouse(WM_MBUTTONUP); simulatedForeground = worker; drain();
     check(launches.size() == before + 1 && launches.back().first == shell,
-          "split WorkerW view uses foreground Progman as popup anchor");
+          "split WorkerW view uses foreground Progman and tolerates Progman/WorkerW focus handoff");
     simulatedForeground = ordinary; underPointer = workerView; quick::eligible = nullptr;
     mouse(WM_MBUTTONDOWN); simulatedForeground = shell; mouse(WM_MBUTTONUP); drain();
     check(launches.size() == before + 2, "first desktop click can activate the desktop from another app");
@@ -412,9 +412,9 @@ int main() {
       mouse(WM_MBUTTONDOWN); modifier = key; mouse(WM_MBUTTONUP); modifier = 0;
     }
     drain(); check(launches.size() == beforeRejects, "modifiers at press or release cancel the menu gesture");
-    const int jitter = std::min(3, GetSystemMetrics(SM_CXDRAG));
+    const int jitter = 7;
     mouse(WM_MBUTTONDOWN); mouse(WM_MOUSEMOVE, {20 + jitter, 20}); mouse(WM_MBUTTONUP, {20 + jitter, 20}); drain();
-    check(launches.size() == beforeRejects + 1, "ordinary three-pixel wheel press jitter is tolerated");
+    check(launches.size() == beforeRejects + 1, "wheel press finger jitter up to 9px is tolerated");
     const int drag = GetSystemMetrics(SM_CXDRAG) + 10;
     mouse(WM_MBUTTONDOWN); mouse(WM_MOUSEMOVE, {20 + drag, 20}); mouse(WM_MOUSEMOVE); mouse(WM_MBUTTONUP); drain();
     check(launches.size() == beforeRejects + 1, "large drag returning to origin still cancels the gesture");

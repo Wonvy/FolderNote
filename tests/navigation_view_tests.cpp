@@ -445,9 +445,12 @@ void middleInput(IsolatedSettings &settings) {
   send(WM_MBUTTONDOWN); send(WM_MBUTTONUP);
   send(WM_MBUTTONDBLCLK); send(WM_MBUTTONUP);
   check(menuLaunches == 2, "native middle double-click produces a second independent menu request");
-  const int jitter = std::min(3, GetSystemMetrics(SM_CXDRAG));
-  send(WM_MBUTTONDOWN); send(WM_MOUSEMOVE, 20 + jitter); send(WM_MBUTTONUP, 20 + jitter);
-  check(menuLaunches == 3, "three-pixel wheel press jitter remains a click");
+  const int jitter = 7;
+  send(WM_MBUTTONDOWN);
+  SendMessageW(surface.handle, WM_MOUSEWHEEL, MAKEWPARAM(MK_MBUTTON, WHEEL_DELTA), MAKELPARAM(20, 20));
+  send(WM_MOUSEMOVE, 20 + jitter);
+  send(WM_MBUTTONUP, 20 + jitter);
+  check(menuLaunches == 3, "wheel notch and 7px press jitter during middle-click still open the menu");
   const int drag = GetSystemMetrics(SM_CXDRAG) + 10;
   send(WM_MBUTTONDOWN); send(WM_MOUSEMOVE, 20 + drag); send(WM_MOUSEMOVE); send(WM_MBUTTONUP);
   send(WM_MBUTTONDOWN); send(WM_MBUTTONUP, 20 + drag);

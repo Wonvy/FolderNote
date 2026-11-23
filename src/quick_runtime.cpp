@@ -18,9 +18,10 @@ constexpr wchar_t helperClass[] = L"FolderNote.QuickFolders.Helper.v1";
 constexpr wchar_t readyProperty[] = L"FolderNote.QuickFolders.Ready.v2";
 constexpr wchar_t runKey[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 constexpr wchar_t runName[] = L"FolderNote.QuickFolders";
-constexpr UINT showMessage = WM_APP + 0x511, foregroundMessage = WM_APP + 0x512;
+constexpr UINT showMessage = WM_APP + 0x511, foregroundMessage = WM_APP + 0x512, rehookMessage = WM_APP + 0x513;
 constexpr UINT_PTR historyTimer = 2;
 std::atomic<HWND> eligible{nullptr};
+std::atomic<DWORD> activeHookThreadId{0};
 HWND receiver = nullptr;
 struct MenuRequest { HWND target; DWORD process; POINT point; bool desktopBox = false; };
 struct MiddleGesture {
@@ -50,6 +51,9 @@ bool classIs(HWND window, const wchar_t *name) {
 }
 bool desktopClass(HWND window) {
   return classIs(window, L"Progman") || classIs(window, L"WorkerW");
+}
+bool trayClass(HWND window) {
+  return classIs(window, L"Shell_TrayWnd") || classIs(window, L"SecondaryTrayWnd");
 }
 bool localInputSurface(HWND window, HWND frame) {
   // Tab bands own their middle-button gestures (tab close), even under a Shell root.
@@ -99,6 +103,11 @@ void updateTarget() {
   quick_find::external::target(searchTarget(window));
 }
 void CALLBACK foregroundEvent(HWINEVENTHOOK, DWORD event, HWND window, LONG, LONG, DWORD, DWORD) {
+  if (event == EVENT_SYSTEM_DESKTOPSWITCH) {
+    if (const DWORD tid = activeHookThreadId.load()) PostThreadMessageW(tid, rehookMessage, 0, 0);
+    if (receiver) PostMessageW(receiver, foregroundMessage, 0, 0);
+    return;
+  }
   if (event == EVENT_OBJECT_SHOW && (!window || GetAncestor(window, GA_ROOT) != GetForegroundWindow() ||
       !classIs(GetForegroundWindow(), L"#32770"))) return;
   if (receiver) PostMessageW(receiver, foregroundMessage, 0, 0);
@@ -135,15 +144,17 @@ LRESULT CALLBACK mouseHook(int code, WPARAM message, LPARAM parameter) {
       }
       if (middle.swallowed) return 1;
     } else if (middle.target) {
+      const int dragX = std::max(GetSystemMetrics(SM_CXDRAG), 9);
+      const int dragY = std::max(GetSystemMetrics(SM_CYDRAG), 9);
       middle.dragged = middle.dragged || !allowed ||
-          abs(mouse->pt.x - middle.down.x) > GetSystemMetrics(SM_CXDRAG) ||
-          abs(mouse->pt.y - middle.down.y) > GetSystemMetrics(SM_CYDRAG);
+          abs(mouse->pt.x - middle.down.x) > dragX ||
+          abs(mouse->pt.y - middle.down.y) > dragY;
       if (message == WM_MBUTTONUP) {
         const auto completed = middle; middle = {};
         DWORD process = 0; GetWindowThreadProcessId(foreground, &process);
-        // Explorer can keep Progman foreground while its desktop view lives
-        // under WorkerW. Use the actual foreground window as the popup anchor.
-        const bool desktop = desktopClass(completed.target) && desktopClass(foreground);
+        // Explorer can keep Progman or Shell_TrayWnd foreground while its desktop
+        // view lives under WorkerW. Use the foreground desktop when applicable.
+        const bool desktop = desktopClass(completed.target) && (desktopClass(foreground) || trayClass(foreground));
         const bool boxDesktop = completed.desktopBox && desktopClass(completed.target) &&
                                 desktopPanelSurface(under, root);
         if (!completed.dragged && root == completed.target &&
@@ -174,12 +185,42 @@ bool acquireHelperMutex(HANDLE mutex, DWORD timeout = 5000) {
 DWORD WINAPI hookThread(void *argument) {
   auto *state = static_cast<HookStart *>(argument);
   MSG msg; PeekMessageW(&msg, nullptr, WM_USER, WM_USER, PM_NOREMOVE);
-  state->hook = SetWindowsHookExW(WH_MOUSE_LL, mouseHook, GetModuleHandleW(nullptr), 0);
-  if (state->search) state->keyboard = SetWindowsHookExW(WH_KEYBOARD_LL, keyboardHook, GetModuleHandleW(nullptr), 0);
+  const auto module = GetModuleHandleW(nullptr);
+  state->hook = SetWindowsHookExW(WH_MOUSE_LL, mouseHook, module, 0);
+  if (state->search) state->keyboard = SetWindowsHookExW(WH_KEYBOARD_LL, keyboardHook, module, 0);
+  activeHookThreadId.store(GetCurrentThreadId());
   SetEvent(state->ready);
-  if (!state->hook) return 1;
-  while (GetMessageW(&msg, nullptr, 0, 0) > 0) { TranslateMessage(&msg); DispatchMessageW(&msg); }
-  UnhookWindowsHookEx(state->hook);
+  if (!state->hook) {
+    activeHookThreadId.store(0);
+    return 1;
+  }
+  const UINT_PTR refreshTimer = SetTimer(nullptr, 0, 5000, nullptr);
+  const auto refreshHooks = [&] {
+    if (middle.target == nullptr) {
+      if (HHOOK freshMouse = SetWindowsHookExW(WH_MOUSE_LL, mouseHook, module, 0)) {
+        if (state->hook) UnhookWindowsHookEx(state->hook);
+        state->hook = freshMouse;
+      }
+    }
+    if (state->search) {
+      if (HHOOK freshKey = SetWindowsHookExW(WH_KEYBOARD_LL, keyboardHook, module, 0)) {
+        if (state->keyboard) UnhookWindowsHookEx(state->keyboard);
+        state->keyboard = freshKey;
+      }
+    }
+  };
+  while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
+    if (msg.hwnd == nullptr &&
+        (msg.message == rehookMessage || (msg.message == WM_TIMER && msg.wParam == refreshTimer))) {
+      refreshHooks();
+      continue;
+    }
+    TranslateMessage(&msg);
+    DispatchMessageW(&msg);
+  }
+  activeHookThreadId.store(0);
+  if (refreshTimer) KillTimer(nullptr, refreshTimer);
+  if (state->hook) UnhookWindowsHookEx(state->hook);
   if (state->keyboard) UnhookWindowsHookEx(state->keyboard);
   return 0;
 }
@@ -196,6 +237,11 @@ LRESULT CALLBACK helperProc(HWND window, UINT message, WPARAM w, LPARAM l) {
     PostQuitMessage(0); return 0;
   }
   try {
+    if (message == WM_POWERBROADCAST && (w == PBT_APMRESUMEAUTOMATIC || w == PBT_APMRESUMESUSPEND)) {
+      if (const DWORD tid = activeHookThreadId.load()) PostThreadMessageW(tid, rehookMessage, 0, 0);
+      updateTarget();
+      return TRUE;
+    }
     if (message == WM_COPYDATA) {
       const bool accepted = legacy::receive(reinterpret_cast<const COPYDATASTRUCT *>(l), eligibleTarget);
       if (accepted) SetTimer(window, 1, 1000, nullptr);
@@ -206,12 +252,18 @@ LRESULT CALLBACK helperProc(HWND window, UINT message, WPARAM w, LPARAM l) {
     if (message == foregroundMessage) { updateTarget(); return 0; }
     if (message == showMessage) {
       std::unique_ptr<MenuRequest> request(reinterpret_cast<MenuRequest *>(l));
-      if (request && (request->desktopBox || request->target == GetForegroundWindow()) &&
+      const auto desktopActive = [&](HWND current) {
+        return desktopClass(request->target) && (isDesktop(current) || trayClass(current));
+      };
+      const HWND fgBefore = GetForegroundWindow();
+      if (request && (request->desktopBox || request->target == fgBefore || desktopActive(fgBefore)) &&
           eligibleTarget(request->target, request->process) &&
-          (!desktopClass(request->target) || isDesktop(GetAncestor(WindowFromPoint(request->point), GA_ROOT))) &&
-          (request->desktopBox || request->target == GetForegroundWindow())) {
-        eligible.store(request->target);
-        launchMenu(request->target, nullptr, request->point);
+          (!desktopClass(request->target) || isDesktop(GetAncestor(WindowFromPoint(request->point), GA_ROOT)))) {
+        const HWND fgAfter = GetForegroundWindow();
+        if (request->desktopBox || request->target == fgAfter || desktopActive(fgAfter)) {
+          eligible.store(request->target);
+          launchMenu(request->target, nullptr, request->point);
+        }
       }
       return 0;
     }
@@ -325,6 +377,18 @@ void syncHelper(const std::wstring &exe) {
   }
   fn::fail(lang::text(L"选项已保存，但无法启动文件夹后台组件"), ERROR_TIMEOUT);
 }
+void ensureHelperRunning() noexcept {
+  try {
+    if (!helperEnabled() || FindWindowExW(HWND_MESSAGE, nullptr, helperClass, nullptr)) return;
+    static std::atomic<ULONGLONG> lastAttempt{0};
+    const auto now = GetTickCount64();
+    auto previous = lastAttempt.load();
+    if (now - previous < 5000 || !lastAttempt.compare_exchange_strong(previous, now)) return;
+    const auto context = desktop_groups::desktopLaunchContext();
+    if (context.mode == desktop_groups::DesktopLaunchMode::Unavailable) return;
+    launchHelper(executable(), context);
+  } catch (...) {}
+}
 int helper(HINSTANCE instance, bool delegated) {
   if (!helperEnabled()) return 0;
   // Explorer and its router must have matching integrity levels. Inheriting
@@ -354,6 +418,7 @@ int helper(HINSTANCE instance, bool delegated) {
   const bool observe = quickMode || searchMode;
   const bool router = routeMode && tabs::routing::start(receiver);
   auto event = observe ? SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, nullptr, foregroundEvent, 0, 0, WINEVENT_OUTOFCONTEXT) : nullptr;
+  auto desktopSwitch = observe ? SetWinEventHook(EVENT_SYSTEM_DESKTOPSWITCH, EVENT_SYSTEM_DESKTOPSWITCH, nullptr, foregroundEvent, 0, 0, WINEVENT_OUTOFCONTEXT) : nullptr;
   auto shown = observe ? SetWinEventHook(EVENT_OBJECT_SHOW, EVENT_OBJECT_SHOW, nullptr, foregroundEvent, 0, 0, WINEVENT_OUTOFCONTEXT) : nullptr;
   if (observe) { updateTarget(); SetTimer(receiver, historyTimer, 250, nullptr); }
   HookStart hook{observe ? CreateEventW(nullptr, TRUE, FALSE, nullptr) : nullptr, nullptr, nullptr, searchMode};
@@ -372,6 +437,7 @@ int helper(HINSTANCE instance, bool delegated) {
   if (thread) { PostThreadMessageW(threadId, WM_QUIT, 0, 0); WaitForSingleObject(thread, INFINITE); CloseHandle(thread); }
   if (hook.ready) CloseHandle(hook.ready);
   if (event) UnhookWinEvent(event);
+  if (desktopSwitch) UnhookWinEvent(desktopSwitch);
   if (shown) UnhookWinEvent(shown);
   if (IsWindow(receiver)) DestroyWindow(receiver);
   receiver = nullptr;

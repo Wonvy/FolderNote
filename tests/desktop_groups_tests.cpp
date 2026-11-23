@@ -270,14 +270,17 @@ void exerciseBoxStorage(const fn::fs::path &root) {
 
   const std::vector<std::wstring> roots{personal.native(), shared.native()};
   const fn::fs::path folder(boxStorageFolder(roots));
-  check(folder.parent_path() == personal && !fn::fs::exists(folder), "choose a lazy personal Desktop folder");
+  check(folder.parent_path() == personal && folder.filename() == L".desktop" && !fn::fs::exists(folder),
+        "choose a lazy personal Desktop .desktop folder");
   check(storeBoxItem(roots, outside.native()).empty() && storeBoxItem(roots, nested.native()).empty() &&
         storeBoxItem(roots, personal.native()).empty() && !fn::fs::exists(folder),
         "reject paths outside the direct Desktop and leave it unchanged");
 
   const auto moved = storeBoxItem(roots, (personal / L"REPORT.txt").native());
   check(moved == (folder / document.filename()).native() && fn::fs::exists(moved) && !fn::fs::exists(document) &&
-        boxStoredItem(roots, moved) == moved, "move the actual document and preserve the original name");
+        boxStoredItem(roots, moved) == moved &&
+        (GetFileAttributesW(folder.c_str()) & FILE_ATTRIBUTE_HIDDEN) != 0,
+        "move the actual document into a hidden .desktop folder and preserve the original name");
   check(storeBoxItem(roots, folder.native()).empty() && storeBoxItem(roots, moved).empty() &&
         boxStoredItem(roots, folder.native()).empty(), "never organize the storage folder or move a stored item again");
 
@@ -898,12 +901,12 @@ void exerciseNewBoxEnhancements(const fn::fs::path &root) {
   const auto folder2 = createNewFolderInBox(roots, L"新建文件夹");
   check(!folder1.empty() && !folder2.empty() && folder1 != folder2 &&
         fn::fs::is_directory(folder1) && fn::fs::is_directory(folder2),
-        "create collision-safe new folders inside FolderNote Boxes");
+        "create collision-safe new folders inside .desktop");
   const auto txt1 = createNewTextFileInBox(roots, L"新建文本文档.txt");
   const auto txt2 = createNewTextFileInBox(roots, L"新建文本文档.txt");
   check(!txt1.empty() && !txt2.empty() && txt1 != txt2 &&
         fn::fs::is_regular_file(txt1) && fn::fs::is_regular_file(txt2),
-        "create collision-safe new text files inside FolderNote Boxes");
+        "create collision-safe new text files inside .desktop");
 
   BITMAPINFO bmi{};
   bmi.bmiHeader = {sizeof(BITMAPINFOHEADER), 16, -16, 1, 32, BI_RGB};

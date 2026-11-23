@@ -24,6 +24,7 @@
 #include "theme_scroll.h"
 #include "core.h"
 #include "language.h"
+#include "navigation.h"
 #include "quick_folders.h"
 #include "quick_hit.h"
 #include "quick_popup.h"
@@ -741,6 +742,9 @@ struct Panel {
   Insertion insertion(POINT point) const;
   void autoscroll(POINT point);
   void contextMenu(POINT point, bool title = false);
+  bool middleDown = false;
+  POINT middleDownPoint{};
+  void handleMiddleClick(POINT screen);
 #ifdef FOLDERNOTE_WINUI
   void openSurface();
 #endif
@@ -814,7 +818,9 @@ public:
   void updateGlass(HWND raisedPanel = nullptr);
   bool ensureHost();
 
-  explicit Desktop(HINSTANCE module) : instance(module), groups(load()) {}
+  explicit Desktop(HINSTANCE module) : instance(module), groups(load()) {
+    ensureHiddenBoxStorage(roots);
+  }
   ~Desktop() {
     quitting = true;
     previewKeys.reset();
@@ -2836,6 +2842,19 @@ LRESULT CALLBACK iconInput(HWND control, UINT message, WPARAM w, LPARAM l, UINT_
     }
     return DefSubclassProc(control, message, w, l);
   }
+  if (message == WM_MBUTTONDOWN || message == WM_MBUTTONDBLCLK) {
+    panel.middleDown = GetCursorPos(&panel.middleDownPoint) != FALSE;
+    return 0;
+  }
+  if (message == WM_MBUTTONUP && std::exchange(panel.middleDown, false)) {
+    POINT cursor{};
+    if (GetCursorPos(&cursor) &&
+        std::abs(cursor.x - panel.middleDownPoint.x) <= std::max(GetSystemMetrics(SM_CXDRAG), 9) &&
+        std::abs(cursor.y - panel.middleDownPoint.y) <= std::max(GetSystemMetrics(SM_CYDRAG), 9)) {
+      panel.handleMiddleClick(cursor);
+    }
+    return 0;
+  }
   if (message == WM_STYLECHANGED || message == WM_SHOWWINDOW)
     panel.queueScrollSync();
   return DefSubclassProc(control, message, w, l);
@@ -4134,6 +4153,17 @@ void Panel::scrollTo(int position, bool horizontal) {
   queueScrollSync();
 }
 
+void Panel::handleMiddleClick(POINT screen) {
+  if (desktop.dragging || desktop.quitting || desktop.menuOpen || desktop.editing || !navigation::quickEnabled()) return;
+  if ((GetAsyncKeyState(VK_CONTROL) | GetAsyncKeyState(VK_SHIFT) | GetAsyncKeyState(VK_MENU) |
+       GetAsyncKeyState(VK_LWIN) | GetAsyncKeyState(VK_RWIN)) & 0x8000)
+    return;
+  quick::ensureHelperRunning();
+  if (const HWND shell = GetShellWindow()) {
+    try { quick::launchMenu(shell, nullptr, screen); } catch (...) {}
+  }
+}
+
 void Panel::contextMenu(POINT point, bool title) {
   if (desktop.dragging || desktop.quitting || desktop.menuOpen || desktop.editing) return;
   const auto menu = std::make_shared<Branch>();
@@ -4813,6 +4843,23 @@ LRESULT CALLBACK Panel::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
     case WM_NCRBUTTONUP:
       panel->contextMenu({GET_X_LPARAM(l), GET_Y_LPARAM(l)});
       return 0;
+    case WM_MBUTTONDOWN:
+    case WM_MBUTTONDBLCLK:
+    case WM_NCMBUTTONDOWN:
+    case WM_NCMBUTTONDBLCLK:
+      panel->middleDown = GetCursorPos(&panel->middleDownPoint) != FALSE;
+      return 0;
+    case WM_MBUTTONUP:
+    case WM_NCMBUTTONUP:
+      if (std::exchange(panel->middleDown, false)) {
+        POINT cursor{};
+        if (GetCursorPos(&cursor) &&
+            std::abs(cursor.x - panel->middleDownPoint.x) <= std::max(GetSystemMetrics(SM_CXDRAG), 9) &&
+            std::abs(cursor.y - panel->middleDownPoint.y) <= std::max(GetSystemMetrics(SM_CYDRAG), 9)) {
+          panel->handleMiddleClick(cursor);
+        }
+      }
+      return 0;
     case WM_NOTIFY: {
       const auto notification = reinterpret_cast<NMHDR *>(l);
       if (notification->hwndFrom == panel->list && notification->code == NM_CUSTOMDRAW) {
@@ -4972,7 +5019,7 @@ LRESULT CALLBACK Panel::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
       }
       break;
     case rejectedMessage:
-      report(window, lang::text(w ? L"无法移动部分桌面项目。" : L"只能添加桌面或 FolderNote Boxes 中的文件和文件夹。"));
+      report(window, lang::text(w ? L"无法移动部分桌面项目。" : L"只能添加桌面或 .desktop 中的文件和文件夹。"));
       return 0;
     case WM_CLOSE:
       return 0;
@@ -5015,6 +5062,7 @@ void Panel::openSurface() {
   events.previewFocus = [this] { if (desktop.previewKeys) desktop.previewKeys->refresh(); };
   events.findInput = [this](UINT message, WPARAM key) { return findInput(message, key); };
   events.context = [this](POINT point) { contextMenu(point); };
+  events.middleClick = [this](POINT point) { handleMiddleClick(point); };
   events.zoom = [this](int delta) { zoom(delta); };
   events.wheel = [this](int delta) { return pageWheel(delta); };
   events.beginDrag = [this](int row) { PostMessageW(window, dragMessage, row, 0); };
@@ -5229,7 +5277,7 @@ public:
     for (auto move = moves.rbegin(); move != moves.rend(); ++move)
       restored &= rollbackBoxMove(move->second, move->first);
     if (!restored)
-      report(owner, lang::text(L"无法恢复原文件位置。请在桌面和 FolderNote Boxes 文件夹中查看文件。"));
+      report(owner, lang::text(L"无法恢复原文件位置。请在桌面和 .desktop 文件夹中查看文件。"));
   }
   const std::wstring &transfer(const std::wstring &path, bool intoBox) {
     auto original = path;
@@ -7800,6 +7848,7 @@ LRESULT CALLBACK Desktop::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
         if (!desktop->editing && !desktop->dragging && !desktop->menuOpen &&
             now - desktop->lastFolderRefresh > 2000) {
           desktop->lastFolderRefresh = now;
+          quick::ensureHelperRunning();
           for (const auto &panel : desktop->panels)
             if (!panel->movingOrSizing && panel->folderView() && !panel->collapsed())
               panel->refresh(desktop->groups[panel->index]);

@@ -17,7 +17,7 @@
 namespace desktop_groups {
 namespace {
 namespace fs = std::filesystem;
-constexpr wchar_t storageName[] = L"FolderNote Boxes";
+constexpr wchar_t storageName[] = L".desktop";
 
 std::wstring longSpelling(const std::wstring &path) {
   const auto normalized = quick::normalize(path);
@@ -47,6 +47,21 @@ bool safeDirectory(const std::wstring &folder) {
   FindClose(search);
   return (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) &&
          (!(data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) || !IsReparseTagNameSurrogate(data.dwReserved0));
+}
+
+void hideStorageDirectory(const std::wstring &folder) {
+  const auto attrs = GetFileAttributesW(folder.c_str());
+  if (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) && !(attrs & FILE_ATTRIBUTE_HIDDEN)) {
+    if (SetFileAttributesW(folder.c_str(), attrs | FILE_ATTRIBUTE_HIDDEN) && folder.size() < MAX_PATH)
+      SHChangeNotify(SHCNE_UPDATEITEM, SHCNF_PATHW | SHCNF_FLUSHNOWAIT, folder.c_str(), nullptr);
+  }
+}
+
+bool ensureStorageDirectory(const std::wstring &folder, bool &created) {
+  created = CreateDirectoryW(folder.c_str(), nullptr) != FALSE;
+  if (!safeDirectory(folder)) return false;
+  hideStorageDirectory(folder);
+  return true;
 }
 
 void notifyMove(const std::wstring &from, const std::wstring &to, bool directory) {
@@ -95,6 +110,11 @@ std::wstring boxStorageFolder(std::span<const std::wstring> roots) {
   return personal.empty() ? std::wstring{} : (fs::path(personal) / storageName).native();
 }
 
+void ensureHiddenBoxStorage(std::span<const std::wstring> roots) {
+  const auto folder = boxStorageFolder(roots);
+  if (safeDirectory(folder)) hideStorageDirectory(folder);
+}
+
 std::wstring boxDesktopItem(std::span<const std::wstring> roots, const std::wstring &path) {
   auto source = findItem(std::vector<std::wstring>(roots.begin(), roots.end()), path);
   if (source.empty()) return {};
@@ -116,8 +136,8 @@ std::wstring storeBoxItem(std::span<const std::wstring> roots, const std::wstrin
   const auto source = boxDesktopItem(roots, path);
   if (source.empty()) return {};
 
-  const bool created = CreateDirectoryW(folder.c_str(), nullptr) != FALSE;
-  if (!safeDirectory(folder)) return {};
+  bool created = false;
+  if (!ensureStorageDirectory(folder, created)) return {};
   auto moved = moveToFolder(source, folder);
   if (created) {
     if (moved.empty()) RemoveDirectoryW(folder.c_str());
@@ -220,8 +240,8 @@ std::wstring transferToBoxStorage(std::span<const std::wstring> roots, const std
   const auto folder = boxStorageFolder(roots);
   if (folder.empty()) return {};
   if (move && samePath(fs::path(source).parent_path().native(), folder)) return quick::normalize(source);
-  const bool created = CreateDirectoryW(folder.c_str(), nullptr) != FALSE;
-  if (!safeDirectory(folder)) return {};
+  bool created = false;
+  if (!ensureStorageDirectory(folder, created)) return {};
 
   auto movedPath = transferItemToFolder(source, folder, move, owner, true, onProgress);
   if (created) {
@@ -291,8 +311,8 @@ std::wstring createShortcutInFolder(const std::wstring &targetPath, const std::w
 std::wstring createBoxShortcut(std::span<const std::wstring> roots, const std::wstring &targetPath) {
   const auto folder = boxStorageFolder(roots);
   if (folder.empty()) return {};
-  const bool created = CreateDirectoryW(folder.c_str(), nullptr) != FALSE;
-  if (!safeDirectory(folder)) return {};
+  bool created = false;
+  if (!ensureStorageDirectory(folder, created)) return {};
   auto shortcut = createShortcutInFolder(targetPath, folder);
   if (created) {
     if (shortcut.empty()) RemoveDirectoryW(folder.c_str());
@@ -315,8 +335,8 @@ template<typename Fn>
 std::wstring withBoxStorageFolder(std::span<const std::wstring> roots, Fn &&createInside) {
   const auto folder = boxStorageFolder(roots);
   if (folder.empty()) return {};
-  const bool created = CreateDirectoryW(folder.c_str(), nullptr) != FALSE;
-  if (!safeDirectory(folder)) return {};
+  bool created = false;
+  if (!ensureStorageDirectory(folder, created)) return {};
   auto result = createInside(folder);
   if (created) {
     if (result.empty()) RemoveDirectoryW(folder.c_str());

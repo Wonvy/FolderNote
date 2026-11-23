@@ -278,10 +278,17 @@ int menu(HINSTANCE instance, HWND target, HWND view, POINT point) {
     }
     return false;
   }();
+  const auto trayWindow = [](HWND h) {
+    wchar_t cls[64]{};
+    return h && GetClassNameW(h, cls, ARRAYSIZE(cls)) &&
+           (!wcscmp(cls, L"Shell_TrayWnd") || !wcscmp(cls, L"SecondaryTrayWnd"));
+  };
   const HWND initialForeground = GetForegroundWindow();
   const auto foregroundOk = [&] {
     const HWND currentForeground = GetForegroundWindow();
-    return currentForeground == target || (inDesktopBox && currentForeground == initialForeground);
+    return currentForeground == target ||
+           (desktop && (isDesktop(currentForeground) || trayWindow(currentForeground))) ||
+           (inDesktopBox && currentForeground == initialForeground);
   };
   if (!foregroundOk()) return 0;
   DWORD targetPid = 0; GetWindowThreadProcessId(target, &targetPid);
@@ -327,7 +334,7 @@ int menu(HINSTANCE instance, HWND target, HWND view, POINT point) {
               // Read the active view's selection regardless of the click position,
               // then freeze it before the user chooses an operation/destination.
               selection = transfer::selectedItems(active.Get(), selectedCount);
-              if (!browserFor(target, view) || GetForegroundWindow() != target) { selection.Reset(); selectedCount = 0; }
+              if (!browserFor(target, view) || !foregroundOk()) { selection.Reset(); selectedCount = 0; }
             }
           } else current = dialog::currentPath(target);
           if (desktop) {

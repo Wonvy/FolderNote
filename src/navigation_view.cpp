@@ -247,11 +247,14 @@ struct CallbackGuard {
 };
 static LRESULT CALLBACK frameProc(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
 static LRESULT CALLBACK surfaceProc(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
-static void resetGesture(Controller *c) {
+static void resetDoubleClick(Controller *c) {
   c->pressed = nullptr;
-  c->middlePressed = nullptr;
   if (c->target)
     ++c->target->epoch;
+}
+static void resetGesture(Controller *c) {
+  c->middlePressed = nullptr;
+  resetDoubleClick(c);
 }
 static void clearView(Controller *c) {
   resetGesture(c);
@@ -454,17 +457,23 @@ static LRESULT CALLBACK surfaceProc(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PTR
       return 0;
     } else if (m == WM_MBUTTONUP && c->middlePressed == h) {
       POINT point{GET_X_LPARAM(l), GET_Y_LPARAM(l)}; ClientToScreen(h, &point);
+      const int dragX = std::max(GetSystemMetrics(SM_CXDRAG), 9);
+      const int dragY = std::max(GetSystemMetrics(SM_CYDRAG), 9);
       bool valid = !c->middleDragged && !c->stopped && !modifiers() && navigation::quickEnabled() &&
                    !navigation::dialogQuickEnabled() && GetForegroundWindow() == c->frame && IsWindowVisible(c->view) &&
-                   std::abs(point.x - c->middleDown.x) <= GetSystemMetrics(SM_CXDRAG) &&
-                   std::abs(point.y - c->middleDown.y) <= GetSystemMetrics(SM_CYDRAG);
+                   std::abs(point.x - c->middleDown.x) <= dragX &&
+                   std::abs(point.y - c->middleDown.y) <= dragY;
       resetGesture(c);
-      if (valid) quick::launchMenu(c->frame, c->view, point);
+      if (valid) {
+        try { quick::launchMenu(c->frame, c->view, point); } catch (...) {}
+      }
       return 0;
     } else if (m == WM_MOUSEMOVE && c->middlePressed == h) {
       POINT point{GET_X_LPARAM(l), GET_Y_LPARAM(l)}; ClientToScreen(h, &point);
-      if (std::abs(point.x - c->middleDown.x) > GetSystemMetrics(SM_CXDRAG) ||
-          std::abs(point.y - c->middleDown.y) > GetSystemMetrics(SM_CYDRAG)) c->middleDragged = true;
+      const int dragX = std::max(GetSystemMetrics(SM_CXDRAG), 9);
+      const int dragY = std::max(GetSystemMetrics(SM_CYDRAG), 9);
+      if (std::abs(point.x - c->middleDown.x) > dragX ||
+          std::abs(point.y - c->middleDown.y) > dragY) c->middleDragged = true;
     } else if (m == WM_LBUTTONDOWN || m == WM_LBUTTONDBLCLK) {
       if (!c->stopped && navigation::configuredAction() != navigation::Action::Off && !modifiers()) {
         c->pressed = h;
@@ -496,9 +505,10 @@ static LRESULT CALLBACK surfaceProc(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PTR
         c->pressed = nullptr;
       } else
         resetGesture(c);
-    } else if (m == WM_RBUTTONDOWN || m == WM_MBUTTONDOWN || m == WM_MBUTTONDBLCLK || m == WM_MOUSEWHEEL ||
-               m == WM_MOUSEHWHEEL || m == WM_CANCELMODE || m == WM_KEYDOWN ||
-               m == WM_SYSKEYDOWN) {
+    } else if (m == WM_MOUSEWHEEL || m == WM_MOUSEHWHEEL) {
+      resetDoubleClick(c);
+    } else if (m == WM_RBUTTONDOWN || m == WM_MBUTTONDOWN || m == WM_MBUTTONDBLCLK ||
+               m == WM_CANCELMODE || m == WM_KEYDOWN || m == WM_SYSKEYDOWN) {
       resetGesture(c);
     }
   } catch (...) {

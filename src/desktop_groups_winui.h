@@ -34,6 +34,7 @@ struct Events {
   std::function<void()> previewFocus;
   std::function<bool(UINT, WPARAM)> findInput;
   std::function<void(POINT)> context;
+  std::function<void(POINT)> middleClick;
   std::function<void(int)> zoom;
   std::function<void(int)> beginDrag;
   std::function<void(std::size_t)> tab;

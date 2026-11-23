@@ -31,6 +31,7 @@ void refreshManagerPage(HWND);
 // The helper handles the desktop whenever Quick Folders is enabled, and
 // Explorer/file dialogs only when file-dialog support is also enabled.
 void syncHelper(const std::wstring &exe);
+void ensureHelperRunning() noexcept;
 void configureStartup(const std::wstring &exe, bool enabled);
 bool stopHelper(bool removeStartup = true);
 int helper(HINSTANCE, bool delegated = false);

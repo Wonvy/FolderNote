@@ -483,6 +483,8 @@ struct Surface::State {
   int size = 0;
   bool details = false, synchronizing = false;
   bool previewSpaceDown = false;
+  bool middleDown = false;
+  POINT middleDownPoint{};
 
   ~State() {
     alive->store(false);
@@ -1899,6 +1901,32 @@ Surface::Surface(HWND parent, Events events, IDropTarget *dropTarget) : state(st
       if (state->events.context && GetCursorPos(&point)) state->events.context(point);
       args.Handled(true);
     });
+    state->root.AddHandler(ux::UIElement::PointerPressedEvent(),
+                           ::winrt::box_value(ux::Input::PointerEventHandler(
+                               [state = state.get()](auto const &, ux::Input::PointerRoutedEventArgs const &args) {
+                                 if (args.GetCurrentPoint(state->root).Properties().PointerUpdateKind() ==
+                                     ::winrt::Microsoft::UI::Input::PointerUpdateKind::MiddleButtonPressed) {
+                                   state->middleDown = GetCursorPos(&state->middleDownPoint) != FALSE;
+                                 }
+                               })),
+                           true);
+    state->root.AddHandler(ux::UIElement::PointerReleasedEvent(),
+                           ::winrt::box_value(ux::Input::PointerEventHandler(
+                               [state = state.get()](auto const &, ux::Input::PointerRoutedEventArgs const &args) {
+                                 if (!std::exchange(state->middleDown, false) || !state->events.middleClick) return;
+                                 if (args.GetCurrentPoint(state->root).Properties().PointerUpdateKind() !=
+                                     ::winrt::Microsoft::UI::Input::PointerUpdateKind::MiddleButtonReleased)
+                                   return;
+                                 POINT point{};
+                                 if (!GetCursorPos(&point)) return;
+                                 const int dragX = std::max(GetSystemMetrics(SM_CXDRAG), 9);
+                                 const int dragY = std::max(GetSystemMetrics(SM_CYDRAG), 9);
+                                 if (std::abs(point.x - state->middleDownPoint.x) <= dragX &&
+                                     std::abs(point.y - state->middleDownPoint.y) <= dragY) {
+                                   state->events.middleClick(point);
+                                 }
+                               })),
+                           true);
     state->titleBar.Background(solidBrush(0, 0));
     state->titleBar.PointerPressed([state = state.get()](auto const &, ux::Input::PointerRoutedEventArgs const &args) {
       POINT point{};

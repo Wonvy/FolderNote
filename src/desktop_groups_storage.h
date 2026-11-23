@@ -7,6 +7,7 @@
 namespace desktop_groups {
 // The personal Desktop must be the first root.
 std::wstring boxStorageFolder(std::span<const std::wstring> roots);
+void ensureHiddenBoxStorage(std::span<const std::wstring> roots);
 std::wstring boxDesktopItem(std::span<const std::wstring> roots, const std::wstring &path);
 std::wstring boxStoredItem(std::span<const std::wstring> roots, const std::wstring &path);
 // Return the new path, or an empty string when the original could not be moved.

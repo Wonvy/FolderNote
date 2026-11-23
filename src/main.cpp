@@ -2,6 +2,7 @@
 #include "language.h"
 #include "context_commands.h"
 #include "desktop_groups.h"
+#include "desktop_groups_process.h"
 #include "desktop_groups_visibility.h"
 #include "navigation.h"
 #include "quick_folders.h"
@@ -351,7 +352,17 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
     LocalFree(argv); CoUninitialize(); return result;
   }
   if ((argc == 2 || desktopDelegated) && std::wstring(argv[1]) == L"--quick-helper") {
-    LocalFree(argv); auto result = quick::helper(inst, desktopDelegated); CoUninitialize(); return result;
+    LocalFree(argv);
+    if (!desktopDelegated) {
+      for (int attempt = 0; attempt < 60 &&
+           desktop_groups::desktopLaunchContext().mode == desktop_groups::DesktopLaunchMode::Unavailable;
+           ++attempt) {
+        Sleep(500);
+      }
+    }
+    auto result = quick::helper(inst, desktopDelegated);
+    CoUninitialize();
+    return result;
   }
   if (argc == 2 && std::wstring(argv[1]) == L"--quick-manage") {
     LocalFree(argv); auto result = navigation::settings(inst, navigation::SettingsPage::QuickFolders); CoUninitialize(); return result;

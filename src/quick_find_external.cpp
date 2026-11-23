@@ -391,7 +391,11 @@ bool keyboard(WPARAM message, const KBDLLHOOKSTRUCT &key) {
 void mouse(WPARAM message, const MSLLHOOKSTRUCT &event) {
   if (message != WM_LBUTTONDOWN && message != WM_RBUTTONDOWN && message != WM_MBUTTONDOWN) return;
   const auto popup = candidateWindow.load();
+  if (!popup) {
+    if (candidatePending.load()) cancel();
+    return;
+  }
   const auto under = WindowFromPoint(event.pt);
-  if (!popup || (under != popup && !IsChild(popup, under))) cancel();
+  if (under != popup && !IsChild(popup, under)) cancel();
 }
 }

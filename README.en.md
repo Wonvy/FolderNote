@@ -51,7 +51,7 @@ FolderNote adds tools to Windows File Explorer. Collect desktop files into boxes
 
 ### Organized files, clear locations
 
-Windows continues to manage the native desktop icons and context menu. Dropping desktop files into a regular box moves them into **`FolderNote Boxes`** on your personal desktop. Drag them back or choose **Remove from box** to return them to the desktop. Mapped folders show their contents in the original location.
+Windows continues to manage the native desktop icons and context menu. Dropping desktop files into a regular box moves them into the hidden **`.desktop`** folder on your personal desktop. Drag them back or choose **Remove from box** to return them to the desktop. Mapped folders show their contents in the original location.
 
 Boxes have no separate taskbar buttons or tray icon and remain available when you use Win+D. Image thumbnails keep their full aspect ratio; **Ctrl + mouse wheel** changes icon size. With Seer running, select a file and press **Space** to preview it.
 
@@ -93,10 +93,10 @@ These screenshots illustrate the page layouts; available options follow the curr
 
 </details>
 
-## What's new in v1.9.12
+## What's new in v1.9.13
 
-- **macOS-style transfer progress & multi-level folder hover menus**: dropped or pasted files and large folders appear immediately at the drop slot with an asynchronous circular pie-ring progress overlay without blocking File Explorer, matched by outgoing progress rings on drag-out, ungroup, and delete; hovering non-empty folders opens a cascading multi-level submenu.
-- **Shortcuts, screenshot paste, automation, and multi-tab refinements**: adds `Ctrl+C/X/V`, `Delete`/`Shift+Delete`, `Alt+Enter`, blank-space New Folder/Text Document, direct clipboard screenshot PNG paste, zero-delay view switching with compact List rows and proper ellipsis (`…`), auto-grouping rules, double-click desktop hide, backup export/import, and per-tab box deletion on multi-tab context menus.
+- **Hidden `.desktop` box storage folder**: regular desktop boxes now store grouped items inside a hidden `.desktop` directory on your personal desktop, keeping the desktop clean and preventing accidental deletion.
+- **Self-healing middle-click hook & scroll-wheel press reliability**: eliminates unnecessary cross-window queries on ordinary clicks to prevent `LowLevelHooksTimeout` unhooking, adds periodic zero-gap hook refresh plus immediate rehook on sleep/resume, lock screen, and UAC switches, adds automatic helper watchdog recovery with in-box middle-click fallback, widens wheel-press jitter tolerance to `9px`, and ignores accidental wheel ticks during middle-clicks.
 
 Automated build and release completed. Published installers passed version, SHA-256, embedded-file, and application-icon checks. [Full changelog →](CHANGELOG.md)
 
@@ -107,7 +107,7 @@ Automated build and release completed. Published installers passed version, SHA-
 | Windows | Windows 10 / 11 **x64**; no ARM64 package. The main hands-on validation environment is Windows 10 22H2 |
 | Tabs | FolderNote's tab bar is for Windows 10; Windows 11 uses its built-in tabs |
 | Desktop UI | WinUI 3 requires Microsoft Windows App Runtime 1.8. Boxes fall back to Win32 if it is missing. [Runtime downloads](https://learn.microsoft.com/windows/apps/windows-app-sdk/downloads-archive) |
-| File locations | Regular boxes store files in the desktop's `FolderNote Boxes` folder. Mapped files stay in place. Notes are stored in each folder's `desktop.ini` |
+| File locations | Regular boxes store files in the hidden `.desktop` folder on your desktop. Mapped files stay in place. Notes are stored in each folder's `desktop.ini` |
 | Local data | Settings, pins, history, and box layouts stay on the computer. Update checks connect to GitHub |
 | Installation | Single EXE installers use the app icon. Upgrades and removal preserve user files and notes. Packages are currently unsigned; the Win11 first-level menu edition is for testing |
 
