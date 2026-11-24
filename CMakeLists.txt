@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(FolderNote VERSION 1.9.13 LANGUAGES CXX RC)
+project(FolderNote VERSION 1.9.14 LANGUAGES CXX RC)
 set(FOLDERNOTE_UPDATE_REPOSITORY "" CACHE STRING "Public GitHub repository for updates (owner/repo)")
 option(FOLDERNOTE_WINUI "Build the WinUI 3 desktop-group interface" ON)
 if(FOLDERNOTE_UPDATE_REPOSITORY AND NOT FOLDERNOTE_UPDATE_REPOSITORY MATCHES "^[A-Za-z0-9-]+/[A-Za-z0-9_.-]+$")
@@ -54,6 +54,7 @@ target_link_libraries(desktop_model PUBLIC quick_data runtimeobject)
 add_library(desktop_search STATIC src/desktop_groups_search.cpp)
 target_link_libraries(desktop_search PUBLIC desktop_model)
 add_library(desktop_groups STATIC src/desktop_groups.cpp
+  src/desktop_groups_panel.cpp src/desktop_groups_panel_view.cpp src/desktop_groups_actions.cpp src/desktop_groups_dragdrop.cpp
   src/desktop_groups_storage.cpp src/desktop_groups_icon_source.cpp src/desktop_groups_preview.cpp src/desktop_groups_preview_keys.cpp src/desktop_groups_zorder.cpp src/desktop_groups_wallpaper.cpp src/desktop_groups_glass.cpp
   src/desktop_groups_menu.cpp src/desktop_groups_item_menu.cpp
   src/desktop_groups_visibility.cpp src/desktop_groups_render.cpp src/desktop_groups_color_picker.cpp)

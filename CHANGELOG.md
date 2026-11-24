@@ -2,6 +2,13 @@
 
 项目版本以根目录 `CMakeLists.txt` 的 `project(... VERSION ...)` 为准。以下记录已实现的功能；自动测试和本机验证不代表所有 Windows 版本均已完成实机验收。
 
+## 1.9.14 · 2026-11-24
+
+- 修复使用 Deskflow（以及 Synergy、Barrier、Input Leap、Mouse Without Borders 等跨屏软件 KVM）从本机切到另一台电脑操作时，本机误触发快捷搜索并吞掉按键导致远端电脑无法输入字符的问题：自动识别跨屏输入捕获状态并即时放行键盘与中键事件，同时优化钩子保活策略，避免后台根据 `GetLastInputInfo` 周期性重挂 `WH_KEYBOARD_LL` 抢占跨屏工具的钩子顺位。
+- 修复 Windows 10 家庭版 22H2 等未预装 Windows App SDK 1.8 运行时（或关闭系统级“透明效果”）环境下，桌面盒子右键无法调整模糊强度和背景不透明度的问题：Win32 原生渲染模式完整开放「毛玻璃效果」「模糊强度」与「背景不透明度」右键设置并实时采样融合桌面壁纸模糊帧；WinUI 模式支持 Windows App Runtime 1.5–1.8 多版本引导、不受系统透明效果开关限制，并增加 `SPI_GETDESKWALLPAPER`／`TranscodedWallpaper`／`CachedFiles` 壁纸路径兜底。
+- 修复 Win32 渲染模式下鼠标移入桌面盒子时标题栏文字偶发消失的问题：为带有 `CS_PARENTDC` 属性的子控件（折叠与视图按钮、滚动条、角落填充块、标签栏）补齐严格的自身区域裁剪（`IntersectClipRect`），为盒子窗口 `WM_PAINT` 增加离屏双缓冲，并限制 `Theme::apply` 仅在标准非自绘控件上响应鼠标移动刷新。
+- 强化 `.desktop` 收纳目录保护（同时标记 `FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM`）、提取统一的中键容差头文件、同步更新 644 条多语言模板词条，并完成 `desktop_groups` 模块化拆分与全工程 `/W4` 零警告清理。
+
 ## 1.9.13 · 2026-11-23
 
 - 普通桌面盒子的收纳目录统一调整为个人桌面下的隐藏目录 `.desktop`（自动设置 `FILE_ATTRIBUTE_HIDDEN` 隐藏属性），保持桌面整洁并防止用户误删收纳目录。

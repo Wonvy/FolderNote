@@ -44,16 +44,17 @@ LRESULT CALLBACK controlProc(HWND window, UINT message, WPARAM w, LPARAM l, UINT
   auto &theme = *reinterpret_cast<Theme *>(data);
   wchar_t name[32]{}; GetClassNameW(window, name, ARRAYSIZE(name));
   const bool button = !wcscmp(name, L"Button"), combo = !wcscmp(name, L"ComboBox");
+  const bool customPaint = combo || (button && (GetWindowLongPtrW(window, GWL_STYLE) & BS_TYPEMASK) != BS_OWNERDRAW);
   if (message == WM_NCDESTROY) {
     RemoveWindowSubclass(window, controlProc, id);
     RemovePropW(window, surfaceKey); RemovePropW(window, mutedKey); RemovePropW(window, switchKey);
     return DefSubclassProc(window, message, w, l);
   }
-  if (message == WM_MOUSEMOVE) {
+  if (customPaint && message == WM_MOUSEMOVE) {
     TRACKMOUSEEVENT track{sizeof(track), TME_LEAVE, window, 0}; TrackMouseEvent(&track);
     InvalidateRect(window, nullptr, FALSE);
   }
-  if (message == WM_PAINT && (combo || (button && (GetWindowLongPtrW(window, GWL_STYLE) & BS_TYPEMASK) != BS_OWNERDRAW))) {
+  if (message == WM_PAINT && customPaint) {
     PAINTSTRUCT paint{}; HDC dc = BeginPaint(window, &paint);
     RECT rect{}; GetClientRect(window, &rect);
     auto oldFont = SelectObject(dc, reinterpret_cast<HFONT>(SendMessageW(window, WM_GETFONT, 0, 0)));
@@ -113,11 +114,13 @@ LRESULT CALLBACK controlProc(HWND window, UINT message, WPARAM w, LPARAM l, UINT
     SelectObject(dc, oldFont); EndPaint(window, &paint); return 0;
   }
   auto result = DefSubclassProc(window, message, w, l);
-  switch (message) {
-  case WM_MOUSELEAVE: case WM_ENABLE: case WM_SETFOCUS: case WM_KILLFOCUS:
-  case BM_SETCHECK: case BM_SETSTATE: case CB_SETCURSEL: case WM_SETTEXT:
-  case WM_LBUTTONDOWN: case WM_LBUTTONUP: case WM_KEYDOWN: case WM_KEYUP:
-  case WM_UPDATEUISTATE: InvalidateRect(window, nullptr, FALSE); break;
+  if (customPaint) {
+    switch (message) {
+    case WM_MOUSELEAVE: case WM_ENABLE: case WM_SETFOCUS: case WM_KILLFOCUS:
+    case BM_SETCHECK: case BM_SETSTATE: case CB_SETCURSEL: case WM_SETTEXT:
+    case WM_LBUTTONDOWN: case WM_LBUTTONUP: case WM_KEYDOWN: case WM_KEYUP:
+    case WM_UPDATEUISTATE: InvalidateRect(window, nullptr, FALSE); break;
+    }
   }
   return result;
 }

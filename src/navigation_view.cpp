@@ -1,6 +1,7 @@
 #include "navigation_view.h"
 #include "explorer_tabs.h"
 #include "quick_folders.h"
+#include "middle_click.h"
 #include <commctrl.h>
 #include <windowsx.h>
 #include <UIAutomation.h>
@@ -457,12 +458,9 @@ static LRESULT CALLBACK surfaceProc(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PTR
       return 0;
     } else if (m == WM_MBUTTONUP && c->middlePressed == h) {
       POINT point{GET_X_LPARAM(l), GET_Y_LPARAM(l)}; ClientToScreen(h, &point);
-      const int dragX = std::max(GetSystemMetrics(SM_CXDRAG), 9);
-      const int dragY = std::max(GetSystemMetrics(SM_CYDRAG), 9);
       bool valid = !c->middleDragged && !c->stopped && !modifiers() && navigation::quickEnabled() &&
                    !navigation::dialogQuickEnabled() && GetForegroundWindow() == c->frame && IsWindowVisible(c->view) &&
-                   std::abs(point.x - c->middleDown.x) <= dragX &&
-                   std::abs(point.y - c->middleDown.y) <= dragY;
+                   quick::middleClickWithin(c->middleDown, point);
       resetGesture(c);
       if (valid) {
         try { quick::launchMenu(c->frame, c->view, point); } catch (...) {}
@@ -470,10 +468,7 @@ static LRESULT CALLBACK surfaceProc(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PTR
       return 0;
     } else if (m == WM_MOUSEMOVE && c->middlePressed == h) {
       POINT point{GET_X_LPARAM(l), GET_Y_LPARAM(l)}; ClientToScreen(h, &point);
-      const int dragX = std::max(GetSystemMetrics(SM_CXDRAG), 9);
-      const int dragY = std::max(GetSystemMetrics(SM_CYDRAG), 9);
-      if (std::abs(point.x - c->middleDown.x) > dragX ||
-          std::abs(point.y - c->middleDown.y) > dragY) c->middleDragged = true;
+      if (!quick::middleClickWithin(c->middleDown, point)) c->middleDragged = true;
     } else if (m == WM_LBUTTONDOWN || m == WM_LBUTTONDBLCLK) {
       if (!c->stopped && navigation::configuredAction() != navigation::Action::Off && !modifiers()) {
         c->pressed = h;

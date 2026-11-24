@@ -148,6 +148,100 @@ static LRESULT mouse(UINT message, POINT point = {20, 20}) {
   MSLLHOOKSTRUCT data{}; data.pt = point;
   return quick::mouseHook(HC_ACTION, message, reinterpret_cast<LPARAM>(&data));
 }
+static void hookHealthTests() {
+  using quick::mouseHookNeedsRefresh;
+  int missed = 0;
+  check(!mouseHookNeedsRefresh(false, false, 100, 100, missed) && missed == 0,
+        "an idle pointer never forces a mouse rehook");
+  check(!mouseHookNeedsRefresh(false, true, 100, 100, missed) && missed == 1,
+        "a single missed pointer move waits one more interval before rehooking");
+  check(!mouseHookNeedsRefresh(false, true, 100, 250, missed) && missed == 0,
+        "a moving pointer seen by the hook stays healthy and resets missed count");
+  check(!mouseHookNeedsRefresh(false, true, 250, 250, missed) && missed == 1 &&
+        mouseHookNeedsRefresh(false, true, 250, 250, missed) && missed == 0,
+        "two consecutive uncaptured pointer moves missed by the hook trigger a rehook");
+  missed = 1;
+  check(!mouseHookNeedsRefresh(true, true, 250, 250, missed) && missed == 0,
+        "swallowed pointer warps during Deskflow remote capture never steal hook priority");
+  const DWORD before = quick::lastMouseCallback.load();
+  Sleep(20);
+  mouse(WM_MOUSEMOVE);
+  check(quick::lastMouseCallback.load() != before, "every mouse callback refreshes the health timestamp");
+  const int slop = quick::middleClickSlopX();
+  check(slop >= quick::middleClickMinimumSlop && quick::middleClickWithin({0, 0}, {slop, 0}) &&
+        !quick::middleClickWithin({0, 0}, {slop + 1, 0}) && quick::middleClickWithin({0, 0}, {0, -quick::middleClickSlopY()}),
+        "all middle-click paths share one inclusive wheel-press tolerance");
+}
+static void drain();
+static void remoteKvmCaptureTests(HWND target) {
+  check(quick::detail::kvmClassName(L"DeskflowDesk") && quick::detail::kvmClassName(L"SynergyDesk") &&
+        quick::detail::kvmClassName(L"BarrierDesk") && quick::detail::kvmClassName(L"InputLeapDesk") &&
+        !quick::detail::kvmClassName(L"CabinetWClass"),
+        "recognize software-KVM capture window class prefixes");
+  check(quick::detail::kvmExecutableName(L"deskflow-core.exe") &&
+        quick::detail::kvmExecutableName(L"deskflow-client.exe") &&
+        quick::detail::kvmExecutableName(L"input-leapc.exe") &&
+        !quick::detail::kvmExecutableName(L"explorer.exe"),
+        "recognize software-KVM executable names");
+
+  const auto instance = GetModuleHandleW(nullptr);
+  for (auto name : {L"DeskflowDesk", L"DeskflowGui", L"UnidentifiedServiceTrap"}) {
+    WNDCLASSW cls{};
+    cls.hInstance = instance;
+    cls.lpfnWndProc = DefWindowProcW;
+    cls.lpszClassName = name;
+    check(RegisterClassW(&cls) != 0, "register disposable KVM test window class");
+  }
+
+  HWND gui = CreateWindowExW(0, L"DeskflowGui", L"Deskflow Settings", WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                             80, 80, 360, 240, nullptr, nullptr, instance, nullptr);
+  HWND desk = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT, L"DeskflowDesk", L"",
+                              WS_POPUP | WS_DISABLED, 200, 200, 1, 1, nullptr, nullptr, instance, nullptr);
+  HWND serviceTrap = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT, L"UnidentifiedServiceTrap", L"",
+                                     WS_POPUP | WS_DISABLED, 240, 240, 1, 1, nullptr, nullptr, instance, nullptr);
+  HWND cornerOverlay = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT, L"UnidentifiedServiceTrap", L"",
+                                       WS_POPUP | WS_DISABLED, 0, 0, 1, 1, nullptr, nullptr, instance, nullptr);
+  check(gui && desk && serviceTrap && cornerOverlay, "create disposable KVM capture and GUI windows");
+
+  check(!quick::detail::isKvmCaptureWindow(gui, {100, 100}, true) && !quick::remoteInputCaptured(),
+        "visible Deskflow settings GUI window never blocks local Quick Search or middle-click");
+  check(!quick::detail::isKvmCaptureWindow(desk, {200, 200}, true),
+        "hidden DeskflowDesk window while controlling local PC does not report remote capture");
+
+  ShowWindow(serviceTrap, SW_SHOWNA);
+  ShowWindow(cornerOverlay, SW_SHOWNA);
+  check(quick::detail::isKvmCaptureWindow(serviceTrap, {240, 240}, true) &&
+        !quick::detail::isKvmCaptureWindow(serviceTrap, {500, 500}, true) &&
+        !quick::detail::isKvmCaptureWindow(cornerOverlay, {0, 0}, true),
+        "service-mode 1x1 cursor trap matches only away from (0,0) when cursor is parked on it");
+  ShowWindow(serviceTrap, SW_HIDE);
+  ShowWindow(cornerOverlay, SW_HIDE);
+
+  ShowWindow(desk, SW_SHOWNA);
+  check(quick::detail::isKvmCaptureWindow(desk, {200, 200}, true) && quick::remoteInputCaptured(),
+        "visible DeskflowDesk screen-leave trap activates remote capture guard");
+
+  simulatedForeground = underPointer = target;
+  quick::eligible = target;
+  const auto before = launches.size();
+  check(mouse(WM_MBUTTONDOWN) == 73 && mouse(WM_MBUTTONUP) == 73,
+        "middle-click passes straight through while Deskflow controls remote PC");
+  drain();
+  check(launches.size() == before, "remote middle-click never queues a local FolderNote popup");
+
+  ShowWindow(desk, SW_HIDE);
+  check(!quick::remoteInputCaptured(), "returning cursor to local PC clears remote capture guard");
+  check(mouse(WM_MBUTTONDOWN) == 1 && mouse(WM_MBUTTONUP) == 1,
+        "local middle-click interception resumes immediately after returning from remote PC");
+  drain();
+  check(launches.size() == before + 1 && launches.back().first == target,
+        "local middle-click opens FolderNote popup normally once back on local PC");
+
+  simulatedForeground = underPointer = nullptr;
+  quick::eligible = nullptr;
+  for (HWND w : {gui, desk, serviceTrap, cornerOverlay}) DestroyWindow(w);
+  for (auto name : {L"DeskflowDesk", L"DeskflowGui", L"UnidentifiedServiceTrap"}) UnregisterClassW(name, instance);
+}
 static void drain() {
   MSG message{};
   while (PeekMessageW(&message, quick::receiver, quick::showMessage, quick::showMessage, PM_REMOVE))
@@ -372,7 +466,7 @@ int main() {
   CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
   int result = 0;
   try {
-    Isolated settings; helperLifetimeTests(); helperLaunchTests();
+    Isolated settings; helperLifetimeTests(); helperLaunchTests(); hookHealthTests();
     WNDCLASSW shell{}; shell.hInstance = GetModuleHandleW(nullptr); shell.lpfnWndProc = DefWindowProcW; shell.lpszClassName = L"SHELLDLL_DefView";
     check(RegisterClassW(&shell) != 0, "register disposable file-dialog view");
     auto dialog = [&] {
@@ -474,6 +568,7 @@ int main() {
     check(acquired, "replacement helper waits for previous mutex owner and then takes over");
     CloseHandle(started); CloseHandle(mutex);
     desktopTests(first);
+    remoteKvmCaptureTests(first);
     legacyDialogTests();
     DestroyWindow(quick::receiver); quick::receiver = nullptr;
     DestroyWindow(first); DestroyWindow(second); DestroyWindow(ordinary); UnregisterClassW(shell.lpszClassName, shell.hInstance);

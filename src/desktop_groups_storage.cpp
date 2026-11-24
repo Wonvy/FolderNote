@@ -50,9 +50,12 @@ bool safeDirectory(const std::wstring &folder) {
 }
 
 void hideStorageDirectory(const std::wstring &folder) {
+  // Hidden + system keeps the folder out of Explorer even when "show hidden files" is on.
+  constexpr DWORD protectedFlags = FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM;
   const auto attrs = GetFileAttributesW(folder.c_str());
-  if (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) && !(attrs & FILE_ATTRIBUTE_HIDDEN)) {
-    if (SetFileAttributesW(folder.c_str(), attrs | FILE_ATTRIBUTE_HIDDEN) && folder.size() < MAX_PATH)
+  if (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) &&
+      (attrs & protectedFlags) != protectedFlags) {
+    if (SetFileAttributesW(folder.c_str(), attrs | protectedFlags) && folder.size() < MAX_PATH)
       SHChangeNotify(SHCNE_UPDATEITEM, SHCNF_PATHW | SHCNF_FLUSHNOWAIT, folder.c_str(), nullptr);
   }
 }

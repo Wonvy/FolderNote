@@ -432,13 +432,13 @@ struct Page {
       if (largeImages && ListView_GetItem(list, &image))
         ImageList_Draw(largeImages, image.iImage, item.hdc, center - px(40) / 2, iconTop, ILD_TRANSPARENT);
       RECT label{tile.left + px(4), iconTop + px(43), tile.right - px(4), tile.bottom};
-      const auto font = SelectObject(item.hdc, reinterpret_cast<HFONT>(SendMessageW(list, WM_GETFONT, 0, 0)));
+      const auto previousFont = SelectObject(item.hdc, reinterpret_cast<HFONT>(SendMessageW(list, WM_GETFONT, 0, 0)));
       const auto ink = selected && colors.highContrast ? colors.onAccent : colors.text;
       std::visit([&](const auto &entry) {
         ui::text(item.hdc, entry.name, label, ink,
             DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
       }, rows[size_t(index)].row);
-      SelectObject(item.hdc, font);
+      SelectObject(item.hdc, previousFont);
       return CDRF_SKIPDEFAULT;
     }
     if (draw.dwItemType != LVCDI_GROUP || item.dwDrawStage != CDDS_POSTPAINT ||

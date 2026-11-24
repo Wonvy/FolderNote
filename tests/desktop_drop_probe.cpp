@@ -24,6 +24,13 @@ int drops = 0;
 int liveTargets = 0;
 
 void log(const char *message) { std::cout << message << std::endl; std::ofstream(root / L"trace.txt", std::ios::app) << message << '\n'; }
+// Diagnostic output only contains ASCII test input; replace anything else.
+std::string ascii(std::wstring_view text) {
+  std::string result;
+  result.reserve(text.size());
+  for (const wchar_t c : text) result.push_back(c < 0x80 ? static_cast<char>(c) : '?');
+  return result;
+}
 class Source final : public Microsoft::WRL::RuntimeClass<Classic, IDropSource> {
 public:
   HRESULT STDMETHODCALLTYPE QueryContinueDrag(BOOL cancel, DWORD keys) override {
@@ -201,7 +208,7 @@ int main(int argc, char **argv) {
         PostMessageW(GetFocus(), WM_CHAR, L's', 1); pump(100);
         PostMessageW(GetFocus(), WM_CHAR, L'j', 1); pump(100);
         if (found != -1 || characters != L"sj" || query.query() != L"sj") {
-          std::cout << "query=" << std::string(query.query().begin(), query.query().end())
+          std::cout << "query=" << ascii(query.query())
                     << " focus=" << GetFocus() << " foreground=" << GetForegroundWindow()
                     << " root=" << GetAncestor(window, GA_ROOT) << '\n';
           log("FAIL: WinUI characters do not reach incremental find"); result = 8;
@@ -218,8 +225,8 @@ int main(int argc, char **argv) {
         PostMessageW(GetFocus(), WM_CHAR, L'c', 1); pump(100);
         PostMessageW(GetFocus(), WM_CHAR, L'q', 1); pump(100);
         if (found != 0 || query.query() != L"cq") {
-          std::cout << "found=" << found << " query=" << std::string(query.query().begin(), query.query().end())
-                    << " characters=" << std::string(characters.begin(), characters.end()) << '\n';
+          std::cout << "found=" << found << " query=" << ascii(query.query())
+                    << " characters=" << ascii(characters) << '\n';
           log("FAIL: WinUI find reset and polyphony"); result = 9;
         }
         press(VK_RETURN);

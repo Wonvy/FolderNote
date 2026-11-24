@@ -47,6 +47,27 @@ int main() {
       bar.configure(2, 20, 100, dpi);
       check(bar.position() == 0 && !(GetWindowLongPtrW(bar.window(), GWL_STYLE) & WS_VISIBLE), "hide unnecessary scrollbar after range shrinks");
     }
+    {
+      BITMAPINFO bmi{};
+      bmi.bmiHeader = {sizeof(BITMAPINFOHEADER), 300, -40, 1, 32, BI_RGB};
+      void *pixels = nullptr;
+      HDC dc = CreateCompatibleDC(nullptr);
+      HBITMAP dib = CreateDIBSection(dc, &bmi, DIB_RGB_COLORS, &pixels, nullptr, 0);
+      HGDIOBJ old = SelectObject(dc, dib);
+      auto *raw = static_cast<DWORD *>(pixels);
+      std::fill_n(raw, 300 * 40, 0x00112233u);
+      const int saved = SaveDC(dc);
+      IntersectClipRect(dc, 0, 0, 30, 24);
+      RECT parentArea{-260, -6, 40, 34};
+      SetDCBrushColor(dc, RGB(240, 240, 240));
+      FillRect(dc, &parentArea, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+      RestoreDC(dc, saved);
+      check(raw[10 * 300 + 20] != 0x00112233u && raw[10 * 300 + 100] == 0x00112233u,
+            "clipping child CS_PARENTDC background fills preserves title bar pixels outside the button");
+      SelectObject(dc, old);
+      DeleteObject(dib);
+      DeleteDC(dc);
+    }
     DestroyWindow(parent);
     {
       Registry isolated;

@@ -46,6 +46,7 @@
 #include <thread>
 #include <utility>
 #include <windowsx.h>
+#include "middle_click.h"
 
 namespace desktop_groups::winui {
 namespace {
@@ -343,8 +344,13 @@ Runtime::Runtime() : state(std::make_unique<State>()) {
     const auto shutdown = reinterpret_cast<decltype(&MddBootstrapShutdown)>(
         GetProcAddress(state->bootstrap, "MddBootstrapShutdown"));
     if (!initialize || !shutdown) return;
-    ::winrt::check_hresult(initialize(0x00010008, nullptr, PACKAGE_VERSION{},
-                                     MddBootstrapInitializeOptions_OnPackageIdentity_NOOP));
+    HRESULT bootstrapHr = E_FAIL;
+    for (const UINT32 majorMinor : {0x00010008u, 0x00010007u, 0x00010006u, 0x00010005u}) {
+      bootstrapHr = initialize(majorMinor, nullptr, PACKAGE_VERSION{},
+                               MddBootstrapInitializeOptions_OnPackageIdentity_NOOP);
+      if (SUCCEEDED(bootstrapHr)) break;
+    }
+    ::winrt::check_hresult(bootstrapHr);
     state->shutdown = shutdown;
     if (!dispatch::DispatcherQueue::GetForCurrentThread())
       state->queue = dispatch::DispatcherQueueController::CreateOnCurrentThread();
@@ -1022,8 +1028,8 @@ struct Surface::State {
 
   void positionHeader() {
     RECT area{};
-    GetClientRect(islandWindow, &area);
-    const double scale = GetDpiForWindow(islandWindow) / 96.0;
+    if (!GetClientRect(parent, &area) || area.right <= 0) GetClientRect(islandWindow, &area);
+    const double scale = GetDpiForWindow(parent ? parent : islandWindow) / 96.0;
     if (scale <= 0) return;
     const double width = area.right / scale;
     const auto place = [](HeaderControl &control, double left, double width, double height) {
@@ -1919,10 +1925,7 @@ Surface::Surface(HWND parent, Events events, IDropTarget *dropTarget) : state(st
                                    return;
                                  POINT point{};
                                  if (!GetCursorPos(&point)) return;
-                                 const int dragX = std::max(GetSystemMetrics(SM_CXDRAG), 9);
-                                 const int dragY = std::max(GetSystemMetrics(SM_CYDRAG), 9);
-                                 if (std::abs(point.x - state->middleDownPoint.x) <= dragX &&
-                                     std::abs(point.y - state->middleDownPoint.y) <= dragY) {
+                                 if (quick::middleClickWithin(state->middleDownPoint, point)) {
                                    state->events.middleClick(point);
                                  }
                                })),
@@ -2227,9 +2230,7 @@ void Surface::appearance(bool dark, bool highContrast, COLORREF tint, BYTE opaci
     constexpr int minimumAcrylicOpacity = 64;
     DWORD rootProcess = 0;
     GetWindowThreadProcessId(GetAncestor(state->parent, GA_ROOT), &rootProcess);
-    bool effects = true;
-    try { effects = ::winrt::Windows::UI::ViewManagement::UISettings{}.AdvancedEffectsEnabled(); } catch (...) {}
-    state->wallpaperGlass = glass && !highContrast && effects && opacity >= minimumAcrylicOpacity &&
+    state->wallpaperGlass = glass && !highContrast &&
         rootProcess && rootProcess != GetCurrentProcessId();
     if (state->wallpaperGlass) {
       if (state->acrylicAttached) {

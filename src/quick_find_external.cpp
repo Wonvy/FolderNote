@@ -3,6 +3,7 @@
 #include "quick_find_popup.h"
 #include "quick_dialog_history.h"
 #include "desktop_groups_search.h"
+#include "remote_input.h"
 #include <objbase.h>
 #include <UIAutomation.h>
 #include <wrl/client.h>
@@ -305,7 +306,7 @@ void run() {
               icons.emplace_back(quick::icons::Source::file(entry->second.path));
             else icons.emplace_back();
           }
-          if (!current(input)) { candidatePending = false; continue; }
+          if (!current(input) || quick::remoteInputCaptured()) { candidatePending = false; continue; }
           popup.begin(input.focus, contents.labels, [&, input](int row) { locate(ui.Get(), input, list.Get(), contents, row); }, std::move(icons), matchLabels);
         }
         // Include typing that arrived while virtualized items were enumerated.
@@ -343,10 +344,10 @@ bool start() {
   try { stopping = false; worker = std::thread(run); return true; }
   catch (...) { stopping = true; return false; }
 }
-void cancel() { ++epoch; candidatePending = false; std::lock_guard lock(mutex); pending.clear(); }
+void cancel() { ++epoch; candidatePending = false; { std::lock_guard lock(mutex); pending.clear(); } wake.notify_one(); }
 void target(HWND window) { if (currentTarget.exchange(window) != window) cancel(); }
 void stop() {
-  currentTarget = nullptr; stopping = true; cancel(); wake.notify_one();
+  currentTarget = nullptr; stopping = true; cancel();
   if (worker.joinable()) worker.join();
 }
 bool keyboard(WPARAM message, const KBDLLHOOKSTRUCT &key) {
@@ -359,6 +360,7 @@ bool keyboard(WPARAM message, const KBDLLHOOKSTRUCT &key) {
   if (key.vkCode == VK_SHIFT || key.vkCode == VK_LSHIFT || key.vkCode == VK_RSHIFT || key.vkCode == VK_CAPITAL) return false;
   const auto root = currentTarget.load();
   if (!root || root != GetForegroundWindow() || stopping) return false;
+  if (quick::remoteInputCaptured()) { cancel(); return false; }
   const bool letter = (key.vkCode >= 'A' && key.vkCode <= 'Z') || (key.vkCode >= '0' && key.vkCode <= '9');
   const auto popup = candidateWindow.load();
   const bool choosing = candidatePending || (popup && IsWindowVisible(popup));

@@ -1,9 +1,11 @@
 #include "desktop_groups_wallpaper.h"
+#include <shlobj.h>
 #include <wincodec.h>
 #include <wrl/client.h>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <filesystem>
 #include <future>
 #include <deque>
 #include <map>
@@ -75,27 +77,69 @@ Image decode(IWICImagingFactory *factory, const std::wstring &path) {
       reinterpret_cast<BYTE *>(result.pixels.data())))) return {};
   return result;
 }
+std::wstring fallbackWallpaperPath() {
+  wchar_t spiPath[MAX_PATH]{};
+  if (SystemParametersInfoW(SPI_GETDESKWALLPAPER, ARRAYSIZE(spiPath), spiPath, 0) && spiPath[0] &&
+      GetFileAttributesW(spiPath) != INVALID_FILE_ATTRIBUTES) {
+    return spiPath;
+  }
+  PWSTR appData = nullptr;
+  std::wstring result;
+  if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, KF_FLAG_DEFAULT, nullptr, &appData)) && appData) {
+    const std::filesystem::path themes = std::filesystem::path(appData) / L"Microsoft" / L"Windows" / L"Themes";
+    CoTaskMemFree(appData);
+    const auto transcoded = themes / L"TranscodedWallpaper";
+    if (GetFileAttributesW(transcoded.c_str()) != INVALID_FILE_ATTRIBUTES) return transcoded.wstring();
+    std::error_code ec;
+    const auto cachedDir = themes / L"CachedFiles";
+    std::filesystem::file_time_type newestTime{};
+    for (const auto &entry : std::filesystem::directory_iterator(cachedDir, ec)) {
+      if (ec || !entry.is_regular_file(ec)) continue;
+      const auto t = entry.last_write_time(ec);
+      if (result.empty() || t > newestTime) {
+        newestTime = t;
+        result = entry.path().wstring();
+      }
+    }
+  }
+  return result;
+}
 std::shared_ptr<const WallpaperFrame> render() {
   const auto initialized = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
   if (FAILED(initialized)) return {};
   struct Apartment { ~Apartment() { CoUninitialize(); } } apartment;
   ComPtr<IDesktopWallpaper> wallpaper; ComPtr<IWICImagingFactory> factory;
-  if (FAILED(CoCreateInstance(CLSID_DesktopWallpaper, nullptr, CLSCTX_ALL, IID_PPV_ARGS(&wallpaper))) ||
-      FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory)))) return {};
+  if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory)))) return {};
+  CoCreateInstance(CLSID_DesktopWallpaper, nullptr, CLSCTX_ALL, IID_PPV_ARGS(&wallpaper));
   struct Monitor { RECT bounds; std::wstring path; };
   std::vector<Monitor> monitors;
-  UINT count = 0; wallpaper->GetMonitorDevicePathCount(&count);
-  if (!count || count > 32) return {};
   RECT desktop{};
-  for (UINT i = 0; i < count; ++i) {
-    LPWSTR id = nullptr, path = nullptr; RECT bounds{};
-    if (FAILED(wallpaper->GetMonitorDevicePathAt(i, &id))) continue;
-    const auto result = wallpaper->GetMonitorRECT(id, &bounds);
-    wallpaper->GetWallpaper(id, &path);
-    if (SUCCEEDED(result) && bounds.right > bounds.left && bounds.bottom > bounds.top) {
-      monitors.push_back({bounds, path ? path : L""}); UnionRect(&desktop, &desktop, &bounds);
+  if (wallpaper) {
+    UINT count = 0; wallpaper->GetMonitorDevicePathCount(&count);
+    if (count <= 128) {
+      for (UINT i = 0; i < count; ++i) {
+        LPWSTR id = nullptr, path = nullptr; RECT bounds{};
+        if (FAILED(wallpaper->GetMonitorDevicePathAt(i, &id))) continue;
+        const auto result = wallpaper->GetMonitorRECT(id, &bounds);
+        wallpaper->GetWallpaper(id, &path);
+        if (SUCCEEDED(result) && bounds.right > bounds.left && bounds.bottom > bounds.top) {
+          monitors.push_back({bounds, path ? path : L""}); UnionRect(&desktop, &desktop, &bounds);
+        }
+        CoTaskMemFree(path); CoTaskMemFree(id);
+      }
     }
-    CoTaskMemFree(path); CoTaskMemFree(id);
+  }
+  const std::wstring fallbackPath = fallbackWallpaperPath();
+  if (monitors.empty()) {
+    struct EnumCtx { std::vector<Monitor> *list; RECT *total; std::wstring path; } ctx{&monitors, &desktop, fallbackPath};
+    EnumDisplayMonitors(nullptr, nullptr, [](HMONITOR, HDC, LPRECT rect, LPARAM data) -> BOOL {
+      auto &c = *reinterpret_cast<EnumCtx *>(data);
+      if (rect && rect->right > rect->left && rect->bottom > rect->top) {
+        c.list->push_back({*rect, c.path});
+        UnionRect(c.total, c.total, rect);
+      }
+      return TRUE;
+    }, reinterpret_cast<LPARAM>(&ctx));
   }
   const int width = desktop.right - desktop.left, height = desktop.bottom - desktop.top;
   if (width <= 0 || height <= 0) return {};
@@ -103,15 +147,23 @@ std::shared_ptr<const WallpaperFrame> render() {
   const int step = std::max(4, int(std::ceil(std::max(width, height) / 3072.0)));
   auto output = std::make_shared<WallpaperFrame>();
   output->screen = desktop; output->width = (width + step - 1) / step; output->height = (height + step - 1) / step;
-  COLORREF background = 0; wallpaper->GetBackgroundColor(&background);
+  COLORREF background = GetSysColor(COLOR_DESKTOP);
+  if (wallpaper) wallpaper->GetBackgroundColor(&background);
   const DWORD color = 0xff000000 | (DWORD(GetRValue(background)) << 16) | (DWORD(GetGValue(background)) << 8) | GetBValue(background);
   output->pixels.assign(size_t(output->width) * output->height, color);
-  DESKTOP_WALLPAPER_POSITION position = DWPOS_FILL; wallpaper->GetPosition(&position);
+  DESKTOP_WALLPAPER_POSITION position = DWPOS_FILL;
+  if (wallpaper) wallpaper->GetPosition(&position);
   std::map<std::wstring, Image> images;
   for (const auto &monitor : monitors) {
-    const auto path = position == DWPOS_SPAN || position == DWPOS_TILE ? monitors.front().path : monitor.path;
+    auto path = position == DWPOS_SPAN || position == DWPOS_TILE ? monitors.front().path : monitor.path;
+    if (path.empty() || GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) path = fallbackPath;
     auto [entry, inserted] = images.try_emplace(path);
-    if (inserted) entry->second = decode(factory.Get(), path);
+    if (inserted) {
+      entry->second = decode(factory.Get(), path);
+      if (entry->second.pixels.empty() && !fallbackPath.empty() && path != fallbackPath) {
+        entry->second = decode(factory.Get(), fallbackPath);
+      }
+    }
     const auto &image = entry->second;
     if (image.pixels.empty()) continue;
     const auto area = position == DWPOS_SPAN || position == DWPOS_TILE ? desktop : monitor.bounds;

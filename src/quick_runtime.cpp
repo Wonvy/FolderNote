@@ -7,6 +7,8 @@
 #include "navigation.h"
 #include "core.h"
 #include "desktop_groups_process.h"
+#include "middle_click.h"
+#include "remote_input.h"
 #include <atomic>
 #include <memory>
 #include <new>
@@ -22,7 +24,24 @@ constexpr UINT showMessage = WM_APP + 0x511, foregroundMessage = WM_APP + 0x512,
 constexpr UINT_PTR historyTimer = 2;
 std::atomic<HWND> eligible{nullptr};
 std::atomic<DWORD> activeHookThreadId{0};
+// Tick count of the most recent mouse callback. Windows silently removes a
+// low-level hook after a timeout; consecutive missed pointer moves signal it.
+std::atomic<DWORD> lastMouseCallback{0};
 HWND receiver = nullptr;
+// Pure decision, kept separate so it can be verified without real hooks.
+// Never compare GetLastInputInfo against keyboard callbacks: upstream KVM
+// hooks (Deskflow, Synergy, Barrier, Input Leap) legitimately swallow keys
+// when redirecting input, which would otherwise make us rehook ahead of them.
+bool mouseHookNeedsRefresh(bool remoteCaptured, bool cursorMoved,
+                           DWORD mouseSeen, DWORD mouseNow, int &missedChecks) {
+  if (remoteCaptured || !cursorMoved || mouseNow != mouseSeen) {
+    missedChecks = 0;
+    return false;
+  }
+  if (++missedChecks < 2) return false;
+  missedChecks = 0;
+  return true;
+}
 struct MenuRequest { HWND target; DWORD process; POINT point; bool desktopBox = false; };
 struct MiddleGesture {
   HWND target = nullptr;
@@ -113,7 +132,10 @@ void CALLBACK foregroundEvent(HWINEVENTHOOK, DWORD event, HWND window, LONG, LON
   if (receiver) PostMessageW(receiver, foregroundMessage, 0, 0);
 }
 LRESULT CALLBACK mouseHook(int code, WPARAM message, LPARAM parameter) {
-  if (code == HC_ACTION) quick_find::external::mouse(message, *reinterpret_cast<const MSLLHOOKSTRUCT *>(parameter));
+  if (code == HC_ACTION) {
+    lastMouseCallback.store(GetTickCount(), std::memory_order_relaxed);
+    quick_find::external::mouse(message, *reinterpret_cast<const MSLLHOOKSTRUCT *>(parameter));
+  }
   if (code == HC_ACTION && (message == WM_MBUTTONDOWN || message == WM_MBUTTONDBLCLK ||
                             message == WM_MBUTTONUP || (message == WM_MOUSEMOVE && middle.target))) {
     const auto *mouse = reinterpret_cast<MSLLHOOKSTRUCT *>(parameter);
@@ -133,6 +155,7 @@ LRESULT CALLBACK mouseHook(int code, WPARAM message, LPARAM parameter) {
     HWND foreground = GetForegroundWindow();
     if (message == WM_MBUTTONDOWN || message == WM_MBUTTONDBLCLK) {
       middle = {};
+      if (remoteInputCaptured()) return CallNextHookEx(nullptr, code, message, parameter);
       // These cheap checks run on the hook thread. Process identity, dialog
       // contents and integrity are checked on the helper thread before launch.
       const bool inBox = root && desktopClass(root) && desktopPanelSurface(under, root);
@@ -144,11 +167,7 @@ LRESULT CALLBACK mouseHook(int code, WPARAM message, LPARAM parameter) {
       }
       if (middle.swallowed) return 1;
     } else if (middle.target) {
-      const int dragX = std::max(GetSystemMetrics(SM_CXDRAG), 9);
-      const int dragY = std::max(GetSystemMetrics(SM_CYDRAG), 9);
-      middle.dragged = middle.dragged || !allowed ||
-          abs(mouse->pt.x - middle.down.x) > dragX ||
-          abs(mouse->pt.y - middle.down.y) > dragY;
+      middle.dragged = middle.dragged || !allowed || !middleClickWithin(middle.down, mouse->pt);
       if (message == WM_MBUTTONUP) {
         const auto completed = middle; middle = {};
         DWORD process = 0; GetWindowThreadProcessId(foreground, &process);
@@ -194,14 +213,26 @@ DWORD WINAPI hookThread(void *argument) {
     activeHookThreadId.store(0);
     return 1;
   }
-  const UINT_PTR refreshTimer = SetTimer(nullptr, 0, 5000, nullptr);
-  const auto refreshHooks = [&] {
+  // Check health every 2 seconds and reinstall the mouse hook only after
+  // consecutive uncaptured pointer moves went unseen. Never periodically
+  // reinstall WH_KEYBOARD_LL, or we would steal hook-chain priority ahead of
+  // software KVMs (Deskflow, Synergy, Barrier, Input Leap).
+  const UINT_PTR healthTimer = SetTimer(nullptr, 0, 2000, nullptr);
+  POINT seenCursor{};
+  GetCursorPos(&seenCursor);
+  DWORD seenMouse = lastMouseCallback.load();
+  int missedMouseChecks = 0;
+  bool pendingFullRehook = false;
+  const auto refreshMouseHook = [&] {
     if (middle.target == nullptr) {
       if (HHOOK freshMouse = SetWindowsHookExW(WH_MOUSE_LL, mouseHook, module, 0)) {
         if (state->hook) UnhookWindowsHookEx(state->hook);
         state->hook = freshMouse;
       }
     }
+  };
+  const auto refreshAllHooks = [&] {
+    refreshMouseHook();
     if (state->search) {
       if (HHOOK freshKey = SetWindowsHookExW(WH_KEYBOARD_LL, keyboardHook, module, 0)) {
         if (state->keyboard) UnhookWindowsHookEx(state->keyboard);
@@ -209,17 +240,37 @@ DWORD WINAPI hookThread(void *argument) {
       }
     }
   };
+  const auto checkHealth = [&] {
+    const bool captured = remoteInputCaptured();
+    if (pendingFullRehook && !captured) {
+      pendingFullRehook = false;
+      missedMouseChecks = 0;
+      refreshAllHooks();
+    } else {
+      POINT cursor{};
+      const bool haveCursor = GetCursorPos(&cursor) != FALSE;
+      const bool moved = haveCursor && (cursor.x != seenCursor.x || cursor.y != seenCursor.y);
+      if (mouseHookNeedsRefresh(captured, moved, seenMouse, lastMouseCallback.load(), missedMouseChecks))
+        refreshMouseHook();
+      if (haveCursor) seenCursor = cursor;
+    }
+    seenMouse = lastMouseCallback.load();
+  };
   while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
-    if (msg.hwnd == nullptr &&
-        (msg.message == rehookMessage || (msg.message == WM_TIMER && msg.wParam == refreshTimer))) {
-      refreshHooks();
+    if (msg.hwnd == nullptr && msg.message == rehookMessage) {
+      if (remoteInputCaptured()) pendingFullRehook = true;
+      else { pendingFullRehook = false; missedMouseChecks = 0; refreshAllHooks(); }
+      continue;
+    }
+    if (msg.hwnd == nullptr && msg.message == WM_TIMER && msg.wParam == healthTimer) {
+      checkHealth();
       continue;
     }
     TranslateMessage(&msg);
     DispatchMessageW(&msg);
   }
   activeHookThreadId.store(0);
-  if (refreshTimer) KillTimer(nullptr, refreshTimer);
+  if (healthTimer) KillTimer(nullptr, healthTimer);
   if (state->hook) UnhookWindowsHookEx(state->hook);
   if (state->keyboard) UnhookWindowsHookEx(state->keyboard);
   return 0;

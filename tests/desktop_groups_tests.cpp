@@ -279,8 +279,9 @@ void exerciseBoxStorage(const fn::fs::path &root) {
   const auto moved = storeBoxItem(roots, (personal / L"REPORT.txt").native());
   check(moved == (folder / document.filename()).native() && fn::fs::exists(moved) && !fn::fs::exists(document) &&
         boxStoredItem(roots, moved) == moved &&
-        (GetFileAttributesW(folder.c_str()) & FILE_ATTRIBUTE_HIDDEN) != 0,
-        "move the actual document into a hidden .desktop folder and preserve the original name");
+        (GetFileAttributesW(folder.c_str()) & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM)) ==
+            (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM),
+        "move the actual document into a hidden system .desktop folder and preserve the original name");
   check(storeBoxItem(roots, folder.native()).empty() && storeBoxItem(roots, moved).empty() &&
         boxStoredItem(roots, folder.native()).empty(), "never organize the storage folder or move a stored item again");
 
@@ -923,6 +924,37 @@ void exerciseNewBoxEnhancements(const fn::fs::path &root) {
   const unsigned char expectedPng[8]{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A};
   check(pngIn.gcount() == 8 && std::memcmp(header, expectedPng, 8) == 0, "written screenshot has valid PNG header");
 }
+
+void exerciseTransferProgress(const fn::fs::path &root) {
+  using namespace desktop_groups;
+  const HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+  const auto source = root / L"source";
+  const auto target = root / L"target";
+  fn::fs::create_directories(source);
+  fn::fs::create_directories(target);
+  const auto file = source / L"进度.txt";
+  {
+    std::ofstream out(file, std::ios::binary);
+    const std::string block(4096, 'x');
+    for (int i = 0; i < 64; ++i) out << block;
+  }
+  std::vector<double> reports;
+  const auto copied = transferItemToFolder(file.native(), target.native(), false, nullptr, true,
+                                           [&](double ratio) { reports.push_back(ratio); });
+  check(!copied.empty() && fn::fs::equivalent(copied, target / file.filename()) && fn::fs::exists(file),
+        "copy keeps the source and reports the destination path");
+  check(std::all_of(reports.begin(), reports.end(), [](double ratio) { return ratio >= 0.0 && ratio <= 1.0; }),
+        "transfer progress ratios stay within 0..1");
+  const auto renamed = transferItemToFolder(file.native(), target.native(), false, nullptr, true);
+  check(!renamed.empty() && !fn::fs::equivalent(renamed, copied) && fn::fs::exists(renamed),
+        "a copy into an occupied name is renamed instead of overwriting");
+  const auto moved = transferItemToFolder(file.native(), target.native(), true, nullptr, true);
+  check(!moved.empty() && fn::fs::exists(moved) && !fn::fs::exists(file),
+        "a move removes the source and lands in the destination");
+  check(transferItemToFolder((source / L"missing.txt").native(), target.native(), false, nullptr, true).empty(),
+        "a missing source reports no destination");
+  if (SUCCEEDED(com)) CoUninitialize();
+}
 }
 
 int main() {
@@ -934,6 +966,7 @@ int main() {
     exercise(files.root);
     exerciseBoxStorage(files.root / L"storage-test");
     exerciseNewBoxEnhancements(files.root / L"enhancements-test");
+    exerciseTransferProgress(files.root / L"transfer-test");
     exerciseShadow();
     exerciseThumbnailMask();
     exerciseThumbnailFit(files.root);

@@ -228,9 +228,9 @@ int main(int count, char **arguments) {
         while (GetTickCount64() < deadline);
         if (!sameShellTestPath(actualPath, destination)) {
           for (size_t i = 0; i < contents.labels.size(); ++i) if (contents.labels[i] == L"素材") {
-            BSTR type = nullptr; contents.items[i].element->get_CurrentItemType(&type);
-            std::wcerr << L"folder type=" << (type ? type : L"<null>") << L" path=" << actualPath << std::endl;
-            SysFreeString(type);
+            BSTR itemType = nullptr; contents.items[i].element->get_CurrentItemType(&itemType);
+            std::wcerr << L"folder type=" << (itemType ? itemType : L"<null>") << L" path=" << actualPath << std::endl;
+            SysFreeString(itemType);
           }
         }
         require(sameShellTestPath(actualPath, destination), "folder candidate navigates inside the existing picker");
