@@ -633,6 +633,43 @@ void contextCommands() {
   check(RegGetValueW(HKEY_CURRENT_USER, registration, L"MUIVerb", RRF_RT_REG_SZ, nullptr, name, &bytes) == ERROR_FILE_NOT_FOUND,
         "disabling removes Shell menu entries");
 }
+void updateConfirmationDialog() {
+  using namespace navigation;
+  Hub hub;
+  updater::Release release{
+      L"9.9.9",
+      L"https://github.com/Wonvy/FolderNote/releases/download/v9.9.9/FolderNote-Setup-x64.exe",
+      std::wstring(64, L'a'),
+      false,
+      true,
+      L"修复与优化\r\n• 修复纯色桌面下盒子显示旧壁纸\r\n• 新增更新内容确认弹窗"};
+  const auto prompt = formatUpdatePrompt(release);
+  check(prompt.find(L"9.9.9") != std::wstring::npos &&
+        prompt.find(L"修复纯色桌面下盒子显示旧壁纸") != std::wstring::npos,
+        "formatted update prompt includes target version and release notes");
+
+  UpdateConfirmDialogState acceptState;
+  HWND acceptDlg = createUpdateConfirmDialog(hub.window, release, acceptState);
+  check(acceptDlg != nullptr, "create themed update confirmation dialog");
+  check(windowText(GetDlgItem(acceptDlg, updateDialogHeading)).find(L"9.9.9") != std::wstring::npos,
+        "update confirmation dialog heading displays new version");
+  check(windowText(GetDlgItem(acceptDlg, updateDialogNotesEdit)).find(L"修复纯色桌面下盒子显示旧壁纸") != std::wstring::npos,
+        "update confirmation dialog displays release notes inside scrollable edit box");
+  SendMessageW(acceptDlg, WM_COMMAND, MAKEWPARAM(IDYES, BN_CLICKED), 0);
+  check(acceptState.closed && acceptState.confirmed && !IsWindow(acceptDlg),
+        "clicking confirm button accepts the update and closes dialog");
+
+  updater::Release emptyNotesRelease = release;
+  emptyNotesRelease.notes.clear();
+  UpdateConfirmDialogState cancelState;
+  HWND cancelDlg = createUpdateConfirmDialog(hub.window, emptyNotesRelease, cancelState);
+  check(cancelDlg != nullptr, "create update confirmation dialog for release without body");
+  check(windowText(GetDlgItem(cancelDlg, updateDialogNotesEdit)) == L"暂无详细更新说明。",
+        "empty release notes fall back to default placeholder text");
+  SendMessageW(cancelDlg, WM_COMMAND, MAKEWPARAM(IDNO, BN_CLICKED), 0);
+  check(cancelState.closed && !cancelState.confirmed && !IsWindow(cancelDlg),
+        "clicking cancel button declines the update and closes dialog");
+}
 }
 int main(int argc, char **argv) {
   CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
@@ -649,7 +686,7 @@ int main(int argc, char **argv) {
         if (!IsDialogMessageW(preview.window, &message)) { TranslateMessage(&message); DispatchMessageW(&message); }
       }
     } else {
-      quickSearchSettings(); automaticUpdates(); scenarios(); languages(); desktopFenceMenu(); contextInventory(); contextCommands();
+      quickSearchSettings(); automaticUpdates(); updateConfirmationDialog(); scenarios(); languages(); desktopFenceMenu(); contextInventory(); contextCommands();
       std::cout << "PASS " << checks << " settings, language and context menu assertions\n";
     }
   }

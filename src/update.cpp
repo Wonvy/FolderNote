@@ -122,6 +122,18 @@ std::wstring jsonString(IJsonObject *object, const wchar_t *name) {
   return std::wstring(data, length);
 }
 
+std::wstring optionalJsonString(IJsonObject *object, const wchar_t *name) {
+  ComPtr<IJsonValue> val;
+  if (!object || FAILED(object->GetNamedValue(HStringReference(name).Get(), &val)) || !val) return {};
+  JsonValueType type = JsonValueType_Null;
+  if (FAILED(val->get_ValueType(&type)) || type != JsonValueType_String) return {};
+  HString str;
+  if (FAILED(val->GetString(str.GetAddressOf()))) return {};
+  unsigned length = 0;
+  const auto data = str.GetRawBuffer(&length);
+  return data ? std::wstring(data, length) : std::wstring{};
+}
+
 std::wstring wideUtf8(const std::string &value) {
   const auto size = static_cast<int>(value.size());
   const auto chars = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), size, nullptr, 0);
@@ -249,6 +261,76 @@ void extract(const fn::fs::path &directory, bool win11Package) {
 }
 } // namespace
 
+std::wstring formatReleaseNotes(std::wstring_view markdown) {
+  std::wstring result;
+  bool lastWasBlank = true;
+  size_t pos = 0;
+  while (pos < markdown.size()) {
+    size_t end = markdown.find(L'\n', pos);
+    if (end == std::wstring_view::npos) end = markdown.size();
+    std::wstring_view rawLine = markdown.substr(pos, end - pos);
+    pos = end + 1;
+    while (!rawLine.empty() && (rawLine.back() == L'\r' || rawLine.back() == L' ' || rawLine.back() == L'\t')) {
+      rawLine.remove_suffix(1);
+    }
+    size_t indent = 0;
+    while (indent < rawLine.size() && (rawLine[indent] == L' ' || rawLine[indent] == L'\t')) ++indent;
+    std::wstring_view trimmed = rawLine.substr(indent);
+    if (trimmed.empty()) {
+      if (!lastWasBlank && !result.empty()) {
+        result += L"\r\n";
+        lastWasBlank = true;
+      }
+      continue;
+    }
+
+    std::wstring line;
+    if (trimmed.starts_with(L"#")) {
+      size_t hashes = 0;
+      while (hashes < trimmed.size() && trimmed[hashes] == L'#') ++hashes;
+      auto heading = trimmed.substr(hashes);
+      while (!heading.empty() && (heading.front() == L' ' || heading.front() == L'\t')) heading.remove_prefix(1);
+      if (heading.empty()) continue;
+      line = std::wstring(heading);
+    } else if (trimmed.starts_with(L"- ") || trimmed.starts_with(L"* ")) {
+      if (indent >= 2) line += L"  ";
+      line += L"• ";
+      line.append(trimmed.substr(2));
+    } else {
+      if (indent >= 2) line += L"  ";
+      line.append(trimmed);
+    }
+
+    std::wstring cleaned;
+    cleaned.reserve(line.size());
+    for (size_t i = 0; i < line.size();) {
+      if (i + 1 < line.size() && line[i] == L'*' && line[i + 1] == L'*') {
+        i += 2;
+        continue;
+      }
+      if (line[i] == L'`') {
+        ++i;
+        continue;
+      }
+      cleaned.push_back(line[i]);
+      ++i;
+    }
+
+    if (cleaned.starts_with(L"下载 FolderNote-Setup") ||
+        cleaned == L"ZIP 用于兼容旧版在线更新。") {
+      continue;
+    }
+
+    if (!result.empty()) result += L"\r\n";
+    result += cleaned;
+    lastWasBlank = false;
+  }
+  while (result.size() >= 2 && result.ends_with(L"\r\n")) {
+    result.resize(result.size() - 2);
+  }
+  return result;
+}
+
 std::optional<Release> check(const std::wstring &repository, const std::wstring &currentVersion, bool win11Package) {
   if (!repositoryName(repository)) throw fn::Error{lang::text(L"当前构建没有有效的 GitHub 更新仓库。")};
   std::string content;
@@ -275,6 +357,11 @@ std::optional<Release> parseRelease(const std::string &content, const std::wstri
   if (!tag.starts_with(L'v')) throw fn::Error{lang::text(invalidRelease)};
   const auto version = tag.substr(1);
   if (versionParts(version) <= versionParts(currentVersion)) return {};
+  auto notes = formatReleaseNotes(optionalJsonString(object.Get(), L"body"));
+  if (notes.empty()) {
+    const auto title = formatReleaseNotes(optionalJsonString(object.Get(), L"name"));
+    if (!title.empty() && title != tag && title != version) notes = title;
+  }
   ComPtr<IJsonArray> assets;
   ComPtr<ABI::Windows::Foundation::Collections::IVector<IJsonValue *>> entries;
   unsigned count = 0;
@@ -295,7 +382,7 @@ std::optional<Release> parseRelease(const std::string &content, const std::wstri
     auto digest = jsonString(asset.Get(), L"digest");
     if (!digest.starts_with(L"sha256:") || !validDigest(std::wstring_view(digest).substr(7)))
       throw fn::Error{lang::text(L"GitHub 发布缺少有效的 SHA-256 校验值。")};
-    return Release{version, std::move(url), digest.substr(7), win11Package, standalone};
+    return Release{version, std::move(url), digest.substr(7), win11Package, standalone, std::move(notes)};
    }
   }
   throw fn::Error{lang::text(L"GitHub 发布缺少适用的安装包。")};

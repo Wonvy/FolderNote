@@ -9,7 +9,11 @@ struct Release {
   std::wstring sha256;
   bool win11Package = false;
   bool standaloneInstaller = false;
+  std::wstring notes;
 };
+
+// Format raw GitHub release Markdown into clean plain text for the update confirmation dialog.
+std::wstring formatReleaseNotes(std::wstring_view markdown);
 
 // Parse release metadata separately so package selection can be verified offline.
 std::optional<Release> parseRelease(const std::string &content, const std::wstring &repository,

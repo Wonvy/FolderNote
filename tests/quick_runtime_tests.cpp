@@ -570,6 +570,17 @@ int main() {
     desktopTests(first);
     remoteKvmCaptureTests(first);
     legacyDialogTests();
+    quick::publishHookInstallState(true, true);
+    mouse(WM_MOUSEMOVE, {20, 20});
+    quick::recordHookRehook(quick::HookRehookReason::MissedMouseMove, true, true);
+    const auto hookDiag = quick::queryHookDiagnostics(quick::receiver);
+    check(hookDiag.helperRunning && hookDiag.mouseHookInstalled && hookDiag.keyboardHookInstalled &&
+          hookDiag.rehookCount == 1 &&
+          hookDiag.lastRehookReason == quick::HookRehookReason::MissedMouseMove &&
+          hookDiag.msSinceLastMouseCallback < 5000 &&
+          hookDiag.msSinceLastRehook < 5000 &&
+          std::wstring_view(quick::hookRehookReasonText(hookDiag.lastRehookReason)) == L"指针移动未收到回调",
+          "hook diagnostics publish install state, callback ticks, rehook count, and last rehook reason");
     DestroyWindow(quick::receiver); quick::receiver = nullptr;
     DestroyWindow(first); DestroyWindow(second); DestroyWindow(ordinary); UnregisterClassW(shell.lpszClassName, shell.hInstance);
     std::cout << "PASS " << checks << " quick runtime assertions: foreground race, per-click targets, queued coordinates, gesture filtering, helper handoff\n";

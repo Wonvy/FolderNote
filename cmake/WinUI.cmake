@@ -77,7 +77,7 @@ function(foldernote_add_winui target application)
   target_sources(${target} PRIVATE src/desktop_groups_winui.cpp)
   target_include_directories(${target} PRIVATE "${generated}" "${foundation}/include" "${interactive}/include"
                                             "${winui}/include" "${sdk_root}/Include/${sdk_version}/cppwinrt")
-  target_compile_definitions(${target} PRIVATE FOLDERNOTE_WINUI=1)
+  target_compile_definitions(${target} PUBLIC FOLDERNOTE_WINUI=1)
   target_link_libraries(${target} PRIVATE oleaut32 windowscodecs)
 
   set(bootstrap "${foundation}/runtimes/win-${architecture}/native/Microsoft.WindowsAppRuntime.Bootstrap.dll")

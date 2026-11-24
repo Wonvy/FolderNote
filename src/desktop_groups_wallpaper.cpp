@@ -53,7 +53,30 @@ int wallpaperBlurRadius(const WallpaperFrame &frame, int strength) {
   const double step = double(frame.screen.right - frame.screen.left) / frame.width;
   return std::clamp(int(std::lround(std::clamp(strength, 0, 100) * 0.64 / step)), 1, 32);
 }
+bool isSolidColorWallpaper(std::wstring_view spiWallpaperPath, DWORD backgroundType) noexcept {
+  if (backgroundType == 1) return true;
+  for (const wchar_t ch : spiWallpaperPath) {
+    if (ch != L' ' && ch != L'\t' && ch != L'\r' && ch != L'\n') return false;
+  }
+  return true;
+}
 namespace {
+DWORD configuredWallpaperBackgroundType() noexcept {
+  DWORD bgType = 0, cb = sizeof(bgType);
+  if (RegGetValueW(HKEY_CURRENT_USER,
+                   L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Wallpapers",
+                   L"BackgroundType", RRF_RT_REG_DWORD, nullptr, &bgType, &cb) == ERROR_SUCCESS) {
+    return bgType;
+  }
+  return 0;
+}
+std::wstring spiDesktopWallpaperPath() {
+  wchar_t spiPath[MAX_PATH]{};
+  if (SystemParametersInfoW(SPI_GETDESKWALLPAPER, ARRAYSIZE(spiPath), spiPath, 0) && spiPath[0]) {
+    return spiPath;
+  }
+  return {};
+}
 struct Image { SIZE original{}; UINT width = 0, height = 0; std::vector<DWORD> pixels; };
 Image decode(IWICImagingFactory *factory, const std::wstring &path) {
   Image result;
@@ -77,10 +100,9 @@ Image decode(IWICImagingFactory *factory, const std::wstring &path) {
       reinterpret_cast<BYTE *>(result.pixels.data())))) return {};
   return result;
 }
-std::wstring fallbackWallpaperPath() {
-  wchar_t spiPath[MAX_PATH]{};
-  if (SystemParametersInfoW(SPI_GETDESKWALLPAPER, ARRAYSIZE(spiPath), spiPath, 0) && spiPath[0] &&
-      GetFileAttributesW(spiPath) != INVALID_FILE_ATTRIBUTES) {
+std::wstring fallbackWallpaperPath(const std::wstring &spiPath, DWORD backgroundType) {
+  if (isSolidColorWallpaper(spiPath, backgroundType)) return {};
+  if (GetFileAttributesW(spiPath.c_str()) != INVALID_FILE_ATTRIBUTES) {
     return spiPath;
   }
   PWSTR appData = nullptr;
@@ -111,6 +133,9 @@ std::shared_ptr<const WallpaperFrame> render() {
   ComPtr<IDesktopWallpaper> wallpaper; ComPtr<IWICImagingFactory> factory;
   if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory)))) return {};
   CoCreateInstance(CLSID_DesktopWallpaper, nullptr, CLSCTX_ALL, IID_PPV_ARGS(&wallpaper));
+  const DWORD backgroundType = configuredWallpaperBackgroundType();
+  const std::wstring spiPath = spiDesktopWallpaperPath();
+  const bool solidColor = isSolidColorWallpaper(spiPath, backgroundType);
   struct Monitor { RECT bounds; std::wstring path; };
   std::vector<Monitor> monitors;
   RECT desktop{};
@@ -121,15 +146,15 @@ std::shared_ptr<const WallpaperFrame> render() {
         LPWSTR id = nullptr, path = nullptr; RECT bounds{};
         if (FAILED(wallpaper->GetMonitorDevicePathAt(i, &id))) continue;
         const auto result = wallpaper->GetMonitorRECT(id, &bounds);
-        wallpaper->GetWallpaper(id, &path);
+        if (!solidColor) wallpaper->GetWallpaper(id, &path);
         if (SUCCEEDED(result) && bounds.right > bounds.left && bounds.bottom > bounds.top) {
-          monitors.push_back({bounds, path ? path : L""}); UnionRect(&desktop, &desktop, &bounds);
+          monitors.push_back({bounds, (!solidColor && path) ? path : L""}); UnionRect(&desktop, &desktop, &bounds);
         }
         CoTaskMemFree(path); CoTaskMemFree(id);
       }
     }
   }
-  const std::wstring fallbackPath = fallbackWallpaperPath();
+  const std::wstring fallbackPath = fallbackWallpaperPath(spiPath, backgroundType);
   if (monitors.empty()) {
     struct EnumCtx { std::vector<Monitor> *list; RECT *total; std::wstring path; } ctx{&monitors, &desktop, fallbackPath};
     EnumDisplayMonitors(nullptr, nullptr, [](HMONITOR, HDC, LPRECT rect, LPARAM data) -> BOOL {
@@ -148,9 +173,12 @@ std::shared_ptr<const WallpaperFrame> render() {
   auto output = std::make_shared<WallpaperFrame>();
   output->screen = desktop; output->width = (width + step - 1) / step; output->height = (height + step - 1) / step;
   COLORREF background = GetSysColor(COLOR_DESKTOP);
-  if (wallpaper) wallpaper->GetBackgroundColor(&background);
+  if (wallpaper && FAILED(wallpaper->GetBackgroundColor(&background))) {
+    background = GetSysColor(COLOR_DESKTOP);
+  }
   const DWORD color = 0xff000000 | (DWORD(GetRValue(background)) << 16) | (DWORD(GetGValue(background)) << 8) | GetBValue(background);
   output->pixels.assign(size_t(output->width) * output->height, color);
+  if (solidColor) return output;
   DESKTOP_WALLPAPER_POSITION position = DWPOS_FILL;
   if (wallpaper) wallpaper->GetPosition(&position);
   std::map<std::wstring, Image> images;

@@ -15,6 +15,7 @@ struct WallpaperPlacement { double left, top, width, height; };
 WallpaperPlacement placeWallpaper(SIZE image, RECT screen, DESKTOP_WALLPAPER_POSITION position);
 void blurWallpaper(WallpaperFrame &frame, int radius);
 int wallpaperBlurRadius(const WallpaperFrame &frame, int strength);
+bool isSolidColorWallpaper(std::wstring_view spiWallpaperPath, DWORD backgroundType) noexcept;
 // UI-thread cache. File decoding/blur happens on a worker; movement never reads files.
 std::shared_ptr<const WallpaperFrame> wallpaperBackdrop(int strength = defaultBlurStrength);
 void invalidateWallpaperBackdrop();

@@ -18,6 +18,13 @@ namespace quick {
 namespace {
 constexpr wchar_t helperClass[] = L"FolderNote.QuickFolders.Helper.v1";
 constexpr wchar_t readyProperty[] = L"FolderNote.QuickFolders.Ready.v2";
+constexpr wchar_t propMouseHook[] = L"FolderNote.QuickFolders.MouseHook.v1";
+constexpr wchar_t propKeyboardHook[] = L"FolderNote.QuickFolders.KeyboardHook.v1";
+constexpr wchar_t propRehookCount[] = L"FolderNote.QuickFolders.RehookCount.v1";
+constexpr wchar_t propRehookReason[] = L"FolderNote.QuickFolders.RehookReason.v1";
+constexpr wchar_t propRehookTick[] = L"FolderNote.QuickFolders.RehookTick.v1";
+constexpr wchar_t propMouseTick[] = L"FolderNote.QuickFolders.MouseTick.v1";
+constexpr wchar_t propKeyboardTick[] = L"FolderNote.QuickFolders.KeyboardTick.v1";
 constexpr wchar_t runKey[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 constexpr wchar_t runName[] = L"FolderNote.QuickFolders";
 constexpr UINT showMessage = WM_APP + 0x511, foregroundMessage = WM_APP + 0x512, rehookMessage = WM_APP + 0x513;
@@ -27,7 +34,31 @@ std::atomic<DWORD> activeHookThreadId{0};
 // Tick count of the most recent mouse callback. Windows silently removes a
 // low-level hook after a timeout; consecutive missed pointer moves signal it.
 std::atomic<DWORD> lastMouseCallback{0};
+std::atomic<unsigned> hookRehookCount{0};
+std::atomic<unsigned> lastRehookReasonCode{0};
+std::atomic<DWORD> lastRehookTick{0};
 HWND receiver = nullptr;
+void publishHookInstallState(bool mouseInstalled, bool keyboardInstalled) noexcept {
+  if (!receiver) return;
+  if (mouseInstalled) SetPropW(receiver, propMouseHook, reinterpret_cast<HANDLE>(1));
+  else RemovePropW(receiver, propMouseHook);
+  if (keyboardInstalled) SetPropW(receiver, propKeyboardHook, reinterpret_cast<HANDLE>(1));
+  else RemovePropW(receiver, propKeyboardHook);
+}
+void recordHookRehook(HookRehookReason reason, bool mouseInstalled, bool keyboardInstalled) noexcept {
+  const unsigned count = ++hookRehookCount;
+  const unsigned code = static_cast<unsigned>(reason);
+  const DWORD now = GetTickCount();
+  const DWORD tick = now ? now : 1;
+  lastRehookReasonCode.store(code, std::memory_order_relaxed);
+  lastRehookTick.store(tick, std::memory_order_relaxed);
+  if (receiver) {
+    publishHookInstallState(mouseInstalled, keyboardInstalled);
+    SetPropW(receiver, propRehookCount, reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(count)));
+    SetPropW(receiver, propRehookReason, reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(code)));
+    SetPropW(receiver, propRehookTick, reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(tick)));
+  }
+}
 // Pure decision, kept separate so it can be verified without real hooks.
 // Never compare GetLastInputInfo against keyboard callbacks: upstream KVM
 // hooks (Deskflow, Synergy, Barrier, Input Leap) legitimately swallow keys
@@ -123,7 +154,8 @@ void updateTarget() {
 }
 void CALLBACK foregroundEvent(HWINEVENTHOOK, DWORD event, HWND window, LONG, LONG, DWORD, DWORD) {
   if (event == EVENT_SYSTEM_DESKTOPSWITCH) {
-    if (const DWORD tid = activeHookThreadId.load()) PostThreadMessageW(tid, rehookMessage, 0, 0);
+    if (const DWORD tid = activeHookThreadId.load())
+      PostThreadMessageW(tid, rehookMessage, static_cast<WPARAM>(HookRehookReason::DesktopSwitch), 0);
     if (receiver) PostMessageW(receiver, foregroundMessage, 0, 0);
     return;
   }
@@ -133,7 +165,15 @@ void CALLBACK foregroundEvent(HWINEVENTHOOK, DWORD event, HWND window, LONG, LON
 }
 LRESULT CALLBACK mouseHook(int code, WPARAM message, LPARAM parameter) {
   if (code == HC_ACTION) {
-    lastMouseCallback.store(GetTickCount(), std::memory_order_relaxed);
+    const DWORD now = GetTickCount();
+    lastMouseCallback.store(now, std::memory_order_relaxed);
+    static DWORD publishedTick = 0;
+    static HWND publishedReceiver = nullptr;
+    if (receiver && (!publishedTick || publishedReceiver != receiver || now - publishedTick >= 250)) {
+      publishedTick = now ? now : 1;
+      publishedReceiver = receiver;
+      SetPropW(receiver, propMouseTick, reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(publishedTick)));
+    }
     quick_find::external::mouse(message, *reinterpret_cast<const MSLLHOOKSTRUCT *>(parameter));
   }
   if (code == HC_ACTION && (message == WM_MBUTTONDOWN || message == WM_MBUTTONDBLCLK ||
@@ -191,6 +231,14 @@ LRESULT CALLBACK mouseHook(int code, WPARAM message, LPARAM parameter) {
 }
 LRESULT CALLBACK keyboardHook(int code, WPARAM message, LPARAM parameter) {
   if (code == HC_ACTION) {
+    const DWORD now = GetTickCount();
+    static DWORD publishedTick = 0;
+    static HWND publishedReceiver = nullptr;
+    if (receiver && (!publishedTick || publishedReceiver != receiver || now - publishedTick >= 250)) {
+      publishedTick = now ? now : 1;
+      publishedReceiver = receiver;
+      SetPropW(receiver, propKeyboardTick, reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(publishedTick)));
+    }
     try { if (quick_find::external::keyboard(message, *reinterpret_cast<KBDLLHOOKSTRUCT *>(parameter))) return 1; } catch (...) {}
   }
   // Candidate navigation stays in the popup; ordinary application input passes through.
@@ -207,6 +255,7 @@ DWORD WINAPI hookThread(void *argument) {
   const auto module = GetModuleHandleW(nullptr);
   state->hook = SetWindowsHookExW(WH_MOUSE_LL, mouseHook, module, 0);
   if (state->search) state->keyboard = SetWindowsHookExW(WH_KEYBOARD_LL, keyboardHook, module, 0);
+  publishHookInstallState(state->hook != nullptr, state->keyboard != nullptr);
   activeHookThreadId.store(GetCurrentThreadId());
   SetEvent(state->ready);
   if (!state->hook) {
@@ -223,43 +272,56 @@ DWORD WINAPI hookThread(void *argument) {
   DWORD seenMouse = lastMouseCallback.load();
   int missedMouseChecks = 0;
   bool pendingFullRehook = false;
-  const auto refreshMouseHook = [&] {
+  HookRehookReason pendingReason = HookRehookReason::DesktopSwitch;
+  const auto refreshMouseHook = [&](HookRehookReason reason, bool record) {
     if (middle.target == nullptr) {
       if (HHOOK freshMouse = SetWindowsHookExW(WH_MOUSE_LL, mouseHook, module, 0)) {
         if (state->hook) UnhookWindowsHookEx(state->hook);
         state->hook = freshMouse;
       }
     }
+    if (record) recordHookRehook(reason, state->hook != nullptr, state->keyboard != nullptr);
   };
-  const auto refreshAllHooks = [&] {
-    refreshMouseHook();
+  const auto refreshAllHooks = [&](HookRehookReason reason) {
+    refreshMouseHook(reason, false);
     if (state->search) {
       if (HHOOK freshKey = SetWindowsHookExW(WH_KEYBOARD_LL, keyboardHook, module, 0)) {
         if (state->keyboard) UnhookWindowsHookEx(state->keyboard);
         state->keyboard = freshKey;
       }
     }
+    recordHookRehook(reason, state->hook != nullptr, state->keyboard != nullptr);
   };
   const auto checkHealth = [&] {
     const bool captured = remoteInputCaptured();
     if (pendingFullRehook && !captured) {
       pendingFullRehook = false;
       missedMouseChecks = 0;
-      refreshAllHooks();
+      refreshAllHooks(pendingReason);
     } else {
       POINT cursor{};
       const bool haveCursor = GetCursorPos(&cursor) != FALSE;
       const bool moved = haveCursor && (cursor.x != seenCursor.x || cursor.y != seenCursor.y);
       if (mouseHookNeedsRefresh(captured, moved, seenMouse, lastMouseCallback.load(), missedMouseChecks))
-        refreshMouseHook();
+        refreshMouseHook(HookRehookReason::MissedMouseMove, true);
       if (haveCursor) seenCursor = cursor;
     }
     seenMouse = lastMouseCallback.load();
   };
   while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
     if (msg.hwnd == nullptr && msg.message == rehookMessage) {
-      if (remoteInputCaptured()) pendingFullRehook = true;
-      else { pendingFullRehook = false; missedMouseChecks = 0; refreshAllHooks(); }
+      const auto reason = msg.wParam >= static_cast<WPARAM>(HookRehookReason::MissedMouseMove) &&
+                          msg.wParam <= static_cast<WPARAM>(HookRehookReason::PowerResume)
+                              ? static_cast<HookRehookReason>(msg.wParam)
+                              : HookRehookReason::DesktopSwitch;
+      if (remoteInputCaptured()) {
+        pendingFullRehook = true;
+        pendingReason = reason;
+      } else {
+        pendingFullRehook = false;
+        missedMouseChecks = 0;
+        refreshAllHooks(reason);
+      }
       continue;
     }
     if (msg.hwnd == nullptr && msg.message == WM_TIMER && msg.wParam == healthTimer) {
@@ -280,7 +342,10 @@ LRESULT CALLBACK helperProc(HWND window, UINT message, WPARAM w, LPARAM l) {
   if (tabs::routing::message(window, message, w, l, routingResult)) return routingResult;
   if (message == WM_CLOSE) { DestroyWindow(window); return 0; }
   if (message == WM_DESTROY) {
-    RemovePropW(window, readyProperty);
+    for (const auto *prop : {readyProperty, propMouseHook, propKeyboardHook, propRehookCount,
+                             propRehookReason, propRehookTick, propMouseTick, propKeyboardTick}) {
+      RemovePropW(window, prop);
+    }
     tabs::routing::stop(); KillTimer(window, 1); KillTimer(window, historyTimer); legacy::shutdown(); dialog::stopHistory();
     MSG pending{};
     while (PeekMessageW(&pending, window, showMessage, showMessage, PM_REMOVE))
@@ -289,7 +354,8 @@ LRESULT CALLBACK helperProc(HWND window, UINT message, WPARAM w, LPARAM l) {
   }
   try {
     if (message == WM_POWERBROADCAST && (w == PBT_APMRESUMEAUTOMATIC || w == PBT_APMRESUMESUSPEND)) {
-      if (const DWORD tid = activeHookThreadId.load()) PostThreadMessageW(tid, rehookMessage, 0, 0);
+      if (const DWORD tid = activeHookThreadId.load())
+        PostThreadMessageW(tid, rehookMessage, static_cast<WPARAM>(HookRehookReason::PowerResume), 0);
       updateTarget();
       return TRUE;
     }
@@ -321,6 +387,41 @@ LRESULT CALLBACK helperProc(HWND window, UINT message, WPARAM w, LPARAM l) {
   } catch (...) { }
   return DefWindowProcW(window, message, w, l);
 }
+}
+const wchar_t *hookRehookReasonText(HookRehookReason reason) noexcept {
+  switch (reason) {
+  case HookRehookReason::None: return L"无（初始挂载）";
+  case HookRehookReason::MissedMouseMove: return L"指针移动未收到回调";
+  case HookRehookReason::DesktopSwitch: return L"系统桌面/锁屏切换";
+  case HookRehookReason::PowerResume: return L"系统睡眠唤醒";
+  }
+  return L"未知";
+}
+HookDiagnostics queryHookDiagnostics(HWND helperWindow) noexcept {
+  HookDiagnostics diag{};
+  HWND target = helperWindow ? helperWindow : FindWindowExW(HWND_MESSAGE, nullptr, helperClass, nullptr);
+  if (!target && receiver && IsWindow(receiver)) target = receiver;
+  if (!target || !IsWindow(target)) return diag;
+  diag.helperRunning = GetPropW(target, readyProperty) != nullptr || target == receiver;
+  diag.mouseHookInstalled = GetPropW(target, propMouseHook) != nullptr;
+  diag.keyboardHookInstalled = GetPropW(target, propKeyboardHook) != nullptr;
+  diag.rehookCount = static_cast<unsigned>(reinterpret_cast<ULONG_PTR>(GetPropW(target, propRehookCount)));
+  const auto rawReason = static_cast<unsigned>(reinterpret_cast<ULONG_PTR>(GetPropW(target, propRehookReason)));
+  if (rawReason <= static_cast<unsigned>(HookRehookReason::PowerResume)) {
+    diag.lastRehookReason = static_cast<HookRehookReason>(rawReason);
+  }
+  const DWORD now = GetTickCount();
+  const DWORD nowTick = now ? now : 1;
+  if (const auto mouseTick = static_cast<DWORD>(reinterpret_cast<ULONG_PTR>(GetPropW(target, propMouseTick)))) {
+    diag.msSinceLastMouseCallback = nowTick - mouseTick;
+  }
+  if (const auto keyTick = static_cast<DWORD>(reinterpret_cast<ULONG_PTR>(GetPropW(target, propKeyboardTick)))) {
+    diag.msSinceLastKeyboardCallback = nowTick - keyTick;
+  }
+  if (const auto rehookTick = static_cast<DWORD>(reinterpret_cast<ULONG_PTR>(GetPropW(target, propRehookTick)))) {
+    diag.msSinceLastRehook = nowTick - rehookTick;
+  }
+  return diag;
 }
 bool isDesktop(HWND window) {
   if (!window || !desktopClass(window) || GetAncestor(window, GA_ROOT) != window) return false;

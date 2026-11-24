@@ -2,6 +2,196 @@
 #include "desktop_groups_internal.h"
 
 namespace desktop_groups::detail {
+std::wstring pickFolder(HWND owner) {
+  Microsoft::WRL::ComPtr<IFileOpenDialog> dialog;
+  if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog)))) return {};
+  FILEOPENDIALOGOPTIONS options{};
+  if (FAILED(dialog->GetOptions(&options)) ||
+      FAILED(dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST))) return {};
+  dialog->SetTitle(lang::text(L"选择要映射的文件夹"));
+  Microsoft::WRL::ComPtr<IShellItem> item;
+  PWSTR path = nullptr;
+  if (FAILED(dialog->Show(owner)) || FAILED(dialog->GetResult(&item)) ||
+      FAILED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) return {};
+  const std::unique_ptr<wchar_t, decltype(&CoTaskMemFree)> storage(path, CoTaskMemFree);
+  return quick::normalize(path);
+}
+
+struct BoxDialog {
+  const wchar_t *title;
+  std::wstring *name;
+  std::wstring prompt;
+  bool allowEmpty = false;
+  size_t maxLength = groupNameLimit;
+  ui::Theme theme;
+  HFONT font = nullptr, heading = nullptr;
+  HWND edit = nullptr;
+
+  ~BoxDialog() {
+    if (font) DeleteObject(font);
+    if (heading) DeleteObject(heading);
+  }
+};
+
+static INT_PTR CALLBACK boxDialog(HWND dialog, UINT message, WPARAM w, LPARAM l) {
+  constexpr int editId = 100, dialogWidth = 356, cornerRadius = 12;
+  auto *state = reinterpret_cast<BoxDialog *>(GetWindowLongPtrW(dialog, DWLP_USER));
+  const auto px = [dialog](int value) { return MulDiv(value, GetDpiForWindow(dialog), 96); };
+  const auto field = [&] { return RECT{px(24), px(79), px(332), px(119)}; };
+  switch (message) {
+  case WM_INITDIALOG: {
+    state = reinterpret_cast<BoxDialog *>(l);
+    SetWindowLongPtrW(dialog, DWLP_USER, l);
+    const auto work = ui::mouseWorkArea();
+    const int height = state->name ? 180 : 164;
+    ui::centerLogical(dialog, work, dialogWidth, height);
+    const auto dpi = GetDpiForWindow(dialog);
+    state->font = ui::makeFont(dpi);
+    state->heading = ui::makeFont(dpi, 21, FW_SEMIBOLD);
+    const auto control = [&](const wchar_t *cls, const wchar_t *text, DWORD style,
+                             int x, int y, int width, int height, INT_PTR id) {
+      const auto child = CreateWindowExW(0, cls, text, WS_CHILD | WS_VISIBLE | style,
+          px(x), px(y), px(width), px(height), dialog, reinterpret_cast<HMENU>(id), nullptr, nullptr);
+      if (child) SendMessageW(child, WM_SETFONT, reinterpret_cast<WPARAM>(state->font), FALSE);
+      return child;
+    };
+    if (state->name) {
+      if (const auto label = control(L"STATIC", state->prompt.c_str(), SS_NOPREFIX, 24, 58, 308, 19, -1))
+        ui::muted(label);
+      state->edit = control(L"EDIT", state->name->c_str(), ES_AUTOHSCROLL | WS_TABSTOP, 36, 88, 284, 22, editId);
+      if (!state->edit) {
+        EndDialog(dialog, IDCANCEL);
+        return TRUE;
+      }
+      SendMessageW(state->edit, EM_SETLIMITTEXT, state->maxLength, 0);
+    } else {
+      control(L"STATIC", state->prompt.c_str(), SS_NOPREFIX, 24, 58, 308, 42, -1);
+    }
+    const int buttonTop = height - 52;
+    const auto cancel = control(L"BUTTON", lang::text(L"取消"), WS_TABSTOP, 140, buttonTop, 92, 32, IDCANCEL);
+    const auto confirm = control(L"BUTTON", state->name ? lang::text(L"确定") : state->title,
+                                 BS_DEFPUSHBUTTON | WS_TABSTOP, 240, buttonTop, 92, 32, IDOK);
+    if (!cancel || !confirm) {
+      EndDialog(dialog, IDCANCEL);
+      return TRUE;
+    }
+    SendMessageW(dialog, DM_SETDEFID, IDOK, 0);
+    if (state->name && !state->allowEmpty && state->name->find_first_not_of(L" \t\r\n") == std::wstring::npos)
+      EnableWindow(confirm, FALSE);
+    state->theme.apply(dialog);
+    const DWMNCRENDERINGPOLICY frame = DWMNCRP_DISABLED;
+    DwmSetWindowAttribute(dialog, DWMWA_NCRENDERING_POLICY, &frame, sizeof(frame));
+    RECT area{};
+    GetClientRect(dialog, &area);
+    if (const auto region = createBoxRegion(area.right, area.bottom, px(cornerRadius * 2)))
+      if (!SetWindowRgn(dialog, region, FALSE)) DeleteObject(region);
+    SetWindowPos(dialog, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    SetFocus(state->edit ? state->edit : cancel);
+    if (state->edit) SendMessageW(state->edit, EM_SETSEL, 0, -1);
+    return FALSE;
+  }
+  case WM_PAINT:
+    if (state) {
+      PAINTSTRUCT paint{};
+      const auto dc = BeginPaint(dialog, &paint);
+      RECT area{};
+      GetClientRect(dialog, &area);
+      const auto &colors = state->theme.colors;
+      FillRect(dc, &area, state->theme.background);
+      if (const auto outline = createBoxRegion(area.right, area.bottom, px(cornerRadius * 2))) {
+        const auto previousColor = SetDCBrushColor(dc, colors.border);
+        FrameRgn(dc, outline, reinterpret_cast<HBRUSH>(GetStockObject(DC_BRUSH)), 1, 1);
+        SetDCBrushColor(dc, previousColor);
+        DeleteObject(outline);
+      }
+      if (state->edit)
+        ui::rounded(dc, field(), colors.field, GetFocus() == state->edit ? colors.accent : colors.border, px(8));
+      const auto previous = SelectObject(dc, state->heading);
+      ui::text(dc, state->title, {px(24), px(18), px(332), px(50)}, colors.text);
+      SelectObject(dc, previous);
+      EndPaint(dialog, &paint);
+      return TRUE;
+    }
+    break;
+  case WM_COMMAND:
+    if (!state) break;
+    if (LOWORD(w) == editId && (HIWORD(w) == EN_SETFOCUS || HIWORD(w) == EN_KILLFOCUS)) {
+      const auto bounds = field();
+      InvalidateRect(dialog, &bounds, FALSE);
+      return TRUE;
+    }
+    if (LOWORD(w) == editId && HIWORD(w) == EN_CHANGE) {
+      if (state->allowEmpty) {
+        EnableWindow(GetDlgItem(dialog, IDOK), TRUE);
+      } else {
+        std::wstring input(state->maxLength + 1, L'\0');
+        const auto len = GetWindowTextW(state->edit, input.data(), static_cast<int>(input.size()));
+        input.resize(len > 0 ? static_cast<size_t>(len) : 0);
+        EnableWindow(GetDlgItem(dialog, IDOK), std::wstring_view(input).find_first_not_of(L" \t\r\n") != std::wstring_view::npos);
+      }
+      return TRUE;
+    }
+    if (LOWORD(w) == IDOK) {
+      if (state->name) {
+        std::wstring buffer(state->maxLength + 1, L'\0');
+        const auto len = GetWindowTextW(state->edit, buffer.data(), static_cast<int>(buffer.size()));
+        buffer.resize(len > 0 ? static_cast<size_t>(len) : 0);
+        const std::wstring_view value(buffer);
+        const auto start = value.find_first_not_of(L" \t\r\n");
+        if (start == value.npos) {
+          if (!state->allowEmpty) return TRUE;
+          state->name->clear();
+        } else {
+          *state->name = value.substr(start, value.find_last_not_of(L" \t\r\n") - start + 1);
+        }
+      }
+      EndDialog(dialog, IDOK);
+      return TRUE;
+    }
+    if (LOWORD(w) != IDCANCEL) break;
+    [[fallthrough]];
+  case WM_CLOSE:
+    EndDialog(dialog, IDCANCEL);
+    return TRUE;
+  }
+  LRESULT result{};
+  if (state && state->theme.handle(dialog, message, w, l, result)) {
+    if (message >= WM_CTLCOLORMSGBOX && message <= WM_CTLCOLORSTATIC) return result;
+    return TRUE;
+  }
+  return FALSE;
+}
+
+bool showBoxDialog(HINSTANCE instance, HWND owner, const wchar_t *title, std::wstring *name, std::wstring prompt,
+                   bool allowEmpty, size_t maxLength) {
+  struct Template {
+    DLGTEMPLATE dialog;
+    WORD menu = 0, cls = 0, title[64]{};
+  };
+  alignas(DWORD) Template layout{};
+  layout.dialog.style = WS_POPUP | WS_CLIPCHILDREN | DS_CENTER;
+  layout.dialog.dwExtendedStyle = WS_EX_TOOLWINDOW;
+  layout.dialog.cx = 220;
+  layout.dialog.cy = 110;
+  BoxDialog state{lang::text(title), name, std::move(prompt), allowEmpty, maxLength};
+  wcsncpy_s(reinterpret_cast<wchar_t *>(layout.title), ARRAYSIZE(layout.title), state.title, _TRUNCATE);
+  const auto result = DialogBoxIndirectParamW(instance, &layout.dialog, owner, boxDialog, reinterpret_cast<LPARAM>(&state));
+  if (result == -1) fn::fail(lang::text(L"无法打开桌面盒子。"));
+  return result == IDOK;
+}
+
+std::wstring pickBoxIcon(HWND owner) {
+  wchar_t path[32768]{};
+  OPENFILENAMEW dialog{sizeof(dialog)};
+  dialog.hwndOwner = owner;
+  dialog.lpstrFile = path;
+  dialog.nMaxFile = ARRAYSIZE(path);
+  dialog.lpstrTitle = lang::text(L"更换图标");
+  dialog.lpstrFilter = L"Icon (*.ico)\0*.ico\0All files (*.*)\0*.*\0\0";
+  dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+  return GetOpenFileNameW(&dialog) ? std::wstring(path) : std::wstring{};
+}
+
 bool Desktop::openPanel(size_t index) {
   const bool wasRebuilding = std::exchange(rebuilding, true);
   struct Restore { bool &value; bool previous; ~Restore() { value = previous; } } restore{rebuilding, wasRebuilding};
@@ -173,7 +363,7 @@ bool Desktop::desktopDropAt(POINT point) const {
 
 bool Desktop::commit(std::vector<Group> changed, HWND owner, bool refreshContents) {
   try {
-    save(changed);
+    save(changed, layoutFile);
     groups = std::move(changed);
     if (refreshContents) PostMessageW(window, refreshMessage, 0, 0);
     return true;
@@ -729,7 +919,7 @@ void Desktop::action(Panel *panel, Command command, size_t tabIndex) {
     panel->renderPage(groups[index]);
     for (const auto button : panel->viewButtons) InvalidateRect(button, nullptr, FALSE);
     try {
-      save(groups);
+      save(groups, layoutFile);
     } catch (const fn::Error &error) {
       groups[index].view = previousView;
       groups[index].iconSize = previousSize;
@@ -756,7 +946,7 @@ void Desktop::action(Panel *panel, Command command, size_t tabIndex) {
     panel->renderPage(groups[index]);
     for (const auto button : panel->viewButtons) InvalidateRect(button, nullptr, FALSE);
     try {
-      save(groups);
+      save(groups, layoutFile);
     } catch (const fn::Error &error) {
       groups[index].view = previousView;
       panel->renderPage(groups[index]);

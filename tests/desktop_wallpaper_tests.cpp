@@ -39,6 +39,11 @@ int main(int argc, char **argv) {
     WallpaperFrame quarter{{0,0,480,320},120,80,{}};
     check(wallpaperBlurRadius(quarter, 0) == 0 && wallpaperBlurRadius(quarter, defaultBlurStrength) == 4 &&
           wallpaperBlurRadius(quarter, 100) == 16, "slider covers zero through stronger blur and retains the old default");
+    check(isSolidColorWallpaper(L"", 0) && isSolidColorWallpaper(L"   ", 0) &&
+          isSolidColorWallpaper(L"C:\\Windows\\Web\\Wallpaper\\Windows\\img0.jpg", 1) &&
+          !isSolidColorWallpaper(L"C:\\Windows\\Web\\Wallpaper\\Windows\\img0.jpg", 0) &&
+          !isSolidColorWallpaper(L"C:\\Users\\Test\\AppData\\Roaming\\Microsoft\\Windows\\Themes\\TranscodedWallpaper", 2),
+          "solid color desktop mode is detected when SPI wallpaper path is empty or BackgroundType is 1");
     {
       const auto host = CreateWindowExW(WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW, L"STATIC", L"", WS_POPUP,
           -32000, -32000, 800, 600, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);

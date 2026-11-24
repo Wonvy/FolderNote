@@ -35,6 +35,24 @@ void ensureHelperRunning() noexcept;
 void configureStartup(const std::wstring &exe, bool enabled);
 bool stopHelper(bool removeStartup = true);
 int helper(HINSTANCE, bool delegated = false);
+enum class HookRehookReason : unsigned {
+  None = 0,
+  MissedMouseMove = 1,
+  DesktopSwitch = 2,
+  PowerResume = 3,
+};
+struct HookDiagnostics {
+  bool helperRunning = false;
+  bool mouseHookInstalled = false;
+  bool keyboardHookInstalled = false;
+  unsigned rehookCount = 0;
+  HookRehookReason lastRehookReason = HookRehookReason::None;
+  DWORD msSinceLastMouseCallback = MAXDWORD;
+  DWORD msSinceLastKeyboardCallback = MAXDWORD;
+  DWORD msSinceLastRehook = MAXDWORD;
+};
+const wchar_t *hookRehookReasonText(HookRehookReason reason) noexcept;
+HookDiagnostics queryHookDiagnostics(HWND helperWindow = nullptr) noexcept;
 bool isFileDialog(HWND);
 bool isExplorer(HWND);
 bool isDesktop(HWND);

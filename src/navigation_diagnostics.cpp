@@ -3,6 +3,7 @@
 #include "app_version.h"
 #include "explorer_tabs.h"
 #include "quick_find_external.h"
+#include "quick_folders.h"
 #include <tlhelp32.h>
 #include <set>
 #include <sstream>
@@ -73,6 +74,10 @@ std::wstring diagnostics() {
   std::wostringstream text;
   const auto search = quick_find::settings();
   constexpr auto windowsKey = L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion";
+  const auto hookDiag = quick::queryHookDiagnostics();
+  const auto formatAge = [](DWORD ms) -> std::wstring {
+    return ms == MAXDWORD ? L"尚无回调" : (std::to_wstring(ms) + L" ms 前");
+  };
   text << L"FolderNote " << app::version << L" 诊断\r\n"
        << L"Windows 版本：" << stringValue(HKEY_LOCAL_MACHINE, windowsKey, L"DisplayVersion")
        << L"；内部版本：" << stringValue(HKEY_LOCAL_MACHINE, windowsKey, L"CurrentBuildNumber") << L"\r\n"
@@ -81,6 +86,15 @@ std::wstring diagnostics() {
        << L"；文件对话框：" << (dialogQuickEnabled() ? L"开启" : L"关闭")
        << L"；中文首字母定位：" << (quick_find::external::enabled() ? L"开启" : L"关闭")
        << L"；后台组件：" << (FindWindowExW(HWND_MESSAGE, nullptr, L"FolderNote.QuickFolders.Helper.v1", nullptr) ? L"运行中" : L"未运行") << L"\r\n"
+       << L"中键钩子状态：鼠标钩子=" << (hookDiag.mouseHookInstalled ? L"已挂载" : L"未挂载")
+       << L"，键盘钩子=" << (hookDiag.keyboardHookInstalled ? L"已挂载" : L"未挂载")
+       << L"；重挂次数：" << hookDiag.rehookCount
+       << L"；最近重挂原因：" << quick::hookRehookReasonText(hookDiag.lastRehookReason);
+  if (hookDiag.msSinceLastRehook != MAXDWORD) {
+    text << L"（" << hookDiag.msSinceLastRehook << L" ms 前）";
+  }
+  text << L"；上次鼠标回调：" << formatAge(hookDiag.msSinceLastMouseCallback)
+       << L"；上次键盘回调：" << formatAge(hookDiag.msSinceLastKeyboardCallback) << L"\r\n"
        << L"双击导航：" << (configuredAction() == Action::Parent ? L"上一级" :
                               configuredAction() == Action::Back ? L"后退" : L"关闭") << L"\r\n"
        << L"自动加载入口：" << (keyExists(HKEY_LOCAL_MACHINE, navreg::machineKey) ? L"存在" : L"缺失/不可读") << L"\r\n";

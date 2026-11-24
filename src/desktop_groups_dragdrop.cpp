@@ -2,6 +2,793 @@
 #include "desktop_groups_internal.h"
 
 namespace desktop_groups::detail {
+std::vector<std::wstring> desktopDropPaths(IDataObject *data) {
+  auto paths = desktopShellDropItems(data);
+  FORMATETC format{CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+  struct Medium {
+    STGMEDIUM data{};
+    ~Medium() { if (data.tymed != TYMED_NULL) ReleaseStgMedium(&data); }
+  } medium;
+  if (SUCCEEDED(data->GetData(&format, &medium.data)) && medium.data.tymed == TYMED_HGLOBAL) {
+    const auto files = static_cast<HDROP>(medium.data.hGlobal);
+    const auto count = DragQueryFileW(files, 0xffffffff, nullptr, 0);
+    bool readFile = false;
+    for (UINT i = 0; i < count; ++i) {
+      std::wstring path(static_cast<size_t>(DragQueryFileW(files, i, nullptr, 0)) + 1, L'\0');
+      path.resize(DragQueryFileW(files, i, path.data(), static_cast<UINT>(path.size())));
+      if (path.empty()) continue;
+      if (!readFile) {
+        // Prefer the explicit file paths when the source provides them. A
+        // Shell list may use a second spelling of the same files.
+        std::erase_if(paths, [](const auto &item) { return !isDesktopShellItem(item); });
+        readFile = true;
+      }
+      paths.push_back(std::move(path));
+    }
+  }
+  return paths;
+}
+
+void setDropEffect(IDataObject *data, const wchar_t *name, DWORD effect) {
+  const auto formatId = RegisterClipboardFormatW(name);
+  if (!formatId) return;
+  STGMEDIUM medium{};
+  medium.tymed = TYMED_HGLOBAL;
+  medium.hGlobal = GlobalAlloc(GMEM_MOVEABLE, sizeof(effect));
+  if (!medium.hGlobal) return;
+  if (auto *value = static_cast<DWORD *>(GlobalLock(medium.hGlobal))) {
+    *value = effect;
+    GlobalUnlock(medium.hGlobal);
+    FORMATETC format{static_cast<CLIPFORMAT>(formatId), nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+    if (SUCCEEDED(data->SetData(&format, &medium, TRUE))) return;
+  }
+  GlobalFree(medium.hGlobal);
+}
+
+std::optional<DWORD> readDropEffect(IDataObject *data, const wchar_t *name) {
+  if (!data) return std::nullopt;
+  const auto formatId = RegisterClipboardFormatW(name);
+  if (!formatId) return std::nullopt;
+  FORMATETC format{static_cast<CLIPFORMAT>(formatId), nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+  STGMEDIUM medium{};
+  if (FAILED(data->GetData(&format, &medium)) || medium.tymed != TYMED_HGLOBAL || !medium.hGlobal) return std::nullopt;
+  std::optional<DWORD> result;
+  if (GlobalSize(medium.hGlobal) >= sizeof(DWORD)) {
+    if (const auto *value = static_cast<const DWORD *>(GlobalLock(medium.hGlobal))) {
+      result = *value;
+      GlobalUnlock(medium.hGlobal);
+    }
+  }
+  ReleaseStgMedium(&medium);
+  return result;
+}
+
+std::wstring recycleBinDisplayName() {
+  Microsoft::WRL::ComPtr<IShellItem> item;
+  PWSTR raw = nullptr;
+  if (SUCCEEDED(SHGetKnownFolderItem(FOLDERID_RecycleBinFolder, KF_FLAG_DEFAULT, nullptr, IID_PPV_ARGS(&item))) &&
+      item && SUCCEEDED(item->GetDisplayName(SIGDN_NORMALDISPLAY, &raw)) && raw) {
+    std::wstring name(raw);
+    CoTaskMemFree(raw);
+    if (!name.empty()) return name;
+  }
+  return std::wstring(lang::text(L"回收站"));
+}
+
+std::optional<CLSID> readTargetClsid(IDataObject *data) {
+  if (!data) return std::nullopt;
+  const auto formatId = RegisterClipboardFormatW(CFSTR_TARGETCLSID);
+  if (!formatId) return std::nullopt;
+  FORMATETC format{static_cast<CLIPFORMAT>(formatId), nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+  STGMEDIUM medium{};
+  if (FAILED(data->GetData(&format, &medium)) || medium.tymed != TYMED_HGLOBAL || !medium.hGlobal) return std::nullopt;
+  std::optional<CLSID> result;
+  if (GlobalSize(medium.hGlobal) >= sizeof(CLSID)) {
+    if (const auto *value = static_cast<const CLSID *>(GlobalLock(medium.hGlobal))) {
+      result = *value;
+      GlobalUnlock(medium.hGlobal);
+    }
+  }
+  ReleaseStgMedium(&medium);
+  return result;
+}
+
+bool desktopIconAt(HWND view, POINT point) {
+  using Microsoft::WRL::ComPtr;
+  const HWND under = WindowFromPoint(point);
+  if (!view || !IsWindowVisible(view) || !under || !IsWindowVisible(under) ||
+      (under != view && !IsChild(view, under))) {
+    return false;
+  }
+  ComPtr<IUIAutomation> ui;
+  ComPtr<IUIAutomation2> options;
+  if (FAILED(CoCreateInstance(CLSID_CUIAutomation8, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&ui))) || !ui ||
+      FAILED(ui.As(&options)) || !options || FAILED(options->put_ConnectionTimeout(120)) ||
+      FAILED(options->put_TransactionTimeout(120))) {
+    return false;
+  }
+  ComPtr<IUIAutomationElement> root, element;
+  ComPtr<IUIAutomationTreeWalker> walker;
+  if (FAILED(ui->ElementFromHandle(view, &root)) || !root ||
+      FAILED(ui->ElementFromPoint(point, &element)) || !element ||
+      FAILED(ui->get_RawViewWalker(&walker)) || !walker) {
+    return false;
+  }
+  for (unsigned depth = 0; element && depth < 12; ++depth) {
+    BOOL equal = FALSE;
+    if (SUCCEEDED(ui->CompareElements(root.Get(), element.Get(), &equal)) && equal) return false;
+    CONTROLTYPEID type{};
+    if (FAILED(element->get_CurrentControlType(&type))) return false;
+    if (type == UIA_ListItemControlTypeId || type == UIA_DataItemControlTypeId) return true;
+    ComPtr<IUIAutomationElement> parent;
+    if (FAILED(walker->GetParentElement(element.Get(), &parent))) return false;
+    element = std::move(parent);
+  }
+  return false;
+}
+
+Microsoft::WRL::ComPtr<IDataObject> createDragDataObject(HWND owner, std::span<const std::wstring> paths) {
+  if (paths.empty()) return nullptr;
+  using ItemId = std::unique_ptr<void, decltype(&CoTaskMemFree)>;
+  std::vector<ItemId> ownedIds;
+  std::vector<PCIDLIST_ABSOLUTE> ids;
+  ownedIds.reserve(paths.size());
+  ids.reserve(paths.size());
+  for (const auto &path : paths) {
+    PIDLIST_ABSOLUTE id = nullptr;
+    if (FAILED(SHParseDisplayName(path.c_str(), nullptr, &id, 0, nullptr)) || !id) continue;
+    ownedIds.emplace_back(static_cast<void *>(id), CoTaskMemFree);
+    ids.push_back(id);
+  }
+  if (ids.empty()) return nullptr;
+  Microsoft::WRL::ComPtr<IDataObject> dataObject;
+  Microsoft::WRL::ComPtr<IShellItemArray> shellItems;
+  if (SUCCEEDED(SHCreateShellItemArrayFromIDLists(static_cast<UINT>(ids.size()), ids.data(), &shellItems)) && shellItems) {
+    shellItems->BindToHandler(nullptr, BHID_DataObject, IID_PPV_ARGS(&dataObject));
+  }
+  if (!dataObject && ids.size() == 1) {
+    Microsoft::WRL::ComPtr<IShellFolder> folder;
+    PCUITEMID_CHILD child = nullptr;
+    if (SUCCEEDED(SHBindToParent(ids.front(), IID_PPV_ARGS(&folder), &child)) && folder && child) {
+      folder->GetUIObjectOf(owner, 1, &child, IID_IDataObject, nullptr,
+                            reinterpret_cast<void **>(dataObject.GetAddressOf()));
+    }
+  }
+  if (dataObject) {
+    Microsoft::WRL::ComPtr<IDataObjectAsyncCapability> async;
+    if (SUCCEEDED(dataObject.As(&async)) && async) async->SetAsyncMode(VARIANT_FALSE);
+  }
+  return dataObject;
+}
+
+void attachDragImage(IDataObject *data, HICON icon, SIZE iconSize, POINT iconAnchor,
+                     const std::wstring &label, size_t itemCount, UINT dpi) {
+  if (!data || !icon || iconSize.cx <= 0 || iconSize.cy <= 0) return;
+  Microsoft::WRL::ComPtr<IDragSourceHelper> helper;
+  if (FAILED(CoCreateInstance(CLSID_DragDropHelper, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&helper))) || !helper)
+    return;
+  Microsoft::WRL::ComPtr<IDragSourceHelper2> helper2;
+  if (SUCCEEDED(helper.As(&helper2)) && helper2) helper2->SetFlags(DSH_ALLOWDROPDESCRIPTIONTEXT);
+
+  const bool showLabel = itemCount <= 1 && !label.empty();
+  const bool multiStack = itemCount > 1;
+  const LONG stackOffset = multiStack ? std::max(4L, static_cast<LONG>(MulDiv(6, dpi, 96))) : 0;
+  const LONG textGap = showLabel ? std::max(2L, static_cast<LONG>(MulDiv(4, dpi, 96))) : 0;
+  const LONG textHeight = showLabel ? std::max(24L, static_cast<LONG>(MulDiv(34, dpi, 96))) : 0;
+  const LONG canvasW = showLabel
+      ? std::max<LONG>(iconSize.cx + MulDiv(36, dpi, 96), MulDiv(104, dpi, 96))
+      : iconSize.cx + stackOffset * 2;
+  const LONG canvasH = showLabel ? (iconSize.cy + textGap + textHeight) : (iconSize.cy + stackOffset * 2);
+  const LONG iconLeft = showLabel ? (canvasW - iconSize.cx) / 2 : stackOffset;
+  const LONG iconTop = showLabel ? 0 : stackOffset;
+
+  BITMAPINFO info{};
+  info.bmiHeader = {sizeof(BITMAPINFOHEADER), canvasW, -canvasH, 1, 32, BI_RGB};
+  void *pixels = nullptr;
+  HBITMAP bitmap = CreateDIBSection(nullptr, &info, DIB_RGB_COLORS, &pixels, nullptr, 0);
+  if (!bitmap || !pixels) {
+    if (bitmap) DeleteObject(bitmap);
+    return;
+  }
+
+  const auto drawIconToArgb = [](HICON hIcon, LONG w, LONG h, std::vector<DWORD> &out) -> bool {
+    out.assign(static_cast<size_t>(w) * h, 0);
+    BITMAPINFO bi{};
+    bi.bmiHeader = {sizeof(BITMAPINFOHEADER), w, -h, 1, 32, BI_RGB};
+    void *buf = nullptr;
+    HBITMAP tmp = CreateDIBSection(nullptr, &bi, DIB_RGB_COLORS, &buf, nullptr, 0);
+    if (!tmp || !buf) {
+      if (tmp) DeleteObject(tmp);
+      return false;
+    }
+    HDC mem = CreateCompatibleDC(nullptr);
+    bool ok = false;
+    if (mem) {
+      const auto prev = SelectObject(mem, tmp);
+      if (prev && prev != HGDI_ERROR) {
+        auto *raw = static_cast<DWORD *>(buf);
+        const size_t total = static_cast<size_t>(w) * h;
+        std::fill_n(raw, total, 0);
+        ok = DrawIconEx(mem, 0, 0, hIcon, w, h, 0, nullptr, DI_NORMAL) != FALSE;
+        if (ok) {
+          const bool hasAlpha = std::any_of(raw, raw + total, [](DWORD px) { return (px >> 24) != 0; });
+          if (!hasAlpha) {
+            std::fill_n(raw, total, 0x00ff00ffu);
+            ok = DrawIconEx(mem, 0, 0, hIcon, w, h, 0, nullptr, DI_NORMAL) != FALSE;
+            for (size_t i = 0; ok && i < total; ++i) {
+              out[i] = (raw[i] & 0x00ffffffu) == 0x00ff00ffu ? 0u : (0xff000000u | (raw[i] & 0x00ffffffu));
+            }
+          } else {
+            for (size_t i = 0; i < total; ++i) {
+              const DWORD px = raw[i];
+              const BYTE a = static_cast<BYTE>(px >> 24);
+              const BYTE r = static_cast<BYTE>(((px >> 16) & 0xff) * a / 255);
+              const BYTE g = static_cast<BYTE>(((px >> 8) & 0xff) * a / 255);
+              const BYTE b = static_cast<BYTE>((px & 0xff) * a / 255);
+              out[i] = (static_cast<DWORD>(a) << 24) | (static_cast<DWORD>(r) << 16) |
+                       (static_cast<DWORD>(g) << 8) | static_cast<DWORD>(b);
+            }
+          }
+        }
+        SelectObject(mem, prev);
+      }
+      DeleteDC(mem);
+    }
+    DeleteObject(tmp);
+    return ok;
+  };
+
+  std::vector<DWORD> iconPixels;
+  if (!drawIconToArgb(icon, iconSize.cx, iconSize.cy, iconPixels)) {
+    DeleteObject(bitmap);
+    return;
+  }
+
+  auto *canvas = static_cast<DWORD *>(pixels);
+  std::fill_n(canvas, static_cast<size_t>(canvasW) * canvasH, 0u);
+  const auto blendSprite = [&](LONG dstX, LONG dstY, BYTE opacity) {
+    for (LONG y = 0; y < iconSize.cy; ++y) {
+      const LONG cy = dstY + y;
+      if (cy < 0 || cy >= canvasH) continue;
+      for (LONG x = 0; x < iconSize.cx; ++x) {
+        const LONG cx = dstX + x;
+        if (cx < 0 || cx >= canvasW) continue;
+        const DWORD src = iconPixels[static_cast<size_t>(y) * iconSize.cx + x];
+        const BYTE sa = static_cast<BYTE>((src >> 24) * opacity / 255);
+        if (!sa) continue;
+        const BYTE sr = static_cast<BYTE>(((src >> 16) & 0xff) * opacity / 255);
+        const BYTE sg = static_cast<BYTE>(((src >> 8) & 0xff) * opacity / 255);
+        const BYTE sb = static_cast<BYTE>((src & 0xff) * opacity / 255);
+        DWORD &dst = canvas[static_cast<size_t>(cy) * canvasW + cx];
+        const BYTE da = static_cast<BYTE>(dst >> 24);
+        const BYTE dr = static_cast<BYTE>((dst >> 16) & 0xff);
+        const BYTE dg = static_cast<BYTE>((dst >> 8) & 0xff);
+        const BYTE db = static_cast<BYTE>(dst & 0xff);
+        const BYTE inv = static_cast<BYTE>(255 - sa);
+        const BYTE outA = static_cast<BYTE>(sa + da * inv / 255);
+        const BYTE outR = static_cast<BYTE>(sr + dr * inv / 255);
+        const BYTE outG = static_cast<BYTE>(sg + dg * inv / 255);
+        const BYTE outB = static_cast<BYTE>(sb + db * inv / 255);
+        dst = (static_cast<DWORD>(outA) << 24) | (static_cast<DWORD>(outR) << 16) |
+              (static_cast<DWORD>(outG) << 8) | static_cast<DWORD>(outB);
+      }
+    }
+  };
+
+  if (multiStack) {
+    blendSprite(iconLeft + stackOffset, std::max(0L, iconTop - stackOffset / 2), 140);
+  }
+  blendSprite(iconLeft, iconTop, 226);
+
+  if (showLabel || multiStack) {
+    HDC dc = CreateCompatibleDC(nullptr);
+    if (dc) {
+      const auto old = SelectObject(dc, bitmap);
+      if (old && old != HGDI_ERROR) {
+        Microsoft::WRL::ComPtr<ID2D1Factory> d2d;
+        Microsoft::WRL::ComPtr<IDWriteFactory> dwrite;
+        if (SUCCEEDED(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, IID_PPV_ARGS(&d2d))) && d2d &&
+            SUCCEEDED(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
+                                          reinterpret_cast<IUnknown **>(dwrite.GetAddressOf()))) && dwrite) {
+          D2D1_RENDER_TARGET_PROPERTIES props = D2D1::RenderTargetProperties(
+              D2D1_RENDER_TARGET_TYPE_DEFAULT,
+              D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), 96.0f, 96.0f);
+          Microsoft::WRL::ComPtr<ID2D1DCRenderTarget> target;
+          RECT bindRect{0, 0, canvasW, canvasH};
+          if (SUCCEEDED(d2d->CreateDCRenderTarget(&props, &target)) && target &&
+              SUCCEEDED(target->BindDC(dc, &bindRect))) {
+            target->BeginDraw();
+            target->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+            if (showLabel) {
+              const float fontPx = static_cast<float>(std::max(11, MulDiv(12, dpi, 96)));
+              Microsoft::WRL::ComPtr<IDWriteTextFormat> fmt;
+              if (SUCCEEDED(dwrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
+                                                     DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                                                     fontPx, L"", &fmt)) && fmt) {
+                fmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+                fmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+                fmt->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+                Microsoft::WRL::ComPtr<IDWriteInlineObject> ellipsis;
+                if (SUCCEEDED(dwrite->CreateEllipsisTrimmingSign(fmt.Get(), &ellipsis)) && ellipsis) {
+                  DWRITE_TRIMMING trim{DWRITE_TRIMMING_GRANULARITY_CHARACTER, 0, 0};
+                  fmt->SetTrimming(&trim, ellipsis.Get());
+                }
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> shadowBrush;
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> textBrush;
+                target->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.82f), &shadowBrush);
+                target->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.96f), &textBrush);
+                const float left = 2.0f;
+                const float top = static_cast<float>(iconTop + iconSize.cy + textGap);
+                const float right = static_cast<float>(canvasW - 2);
+                const float bottom = static_cast<float>(canvasH);
+                if (shadowBrush) {
+                  target->DrawTextW(label.c_str(), static_cast<UINT32>(label.size()), fmt.Get(),
+                                    D2D1::RectF(left + 1.0f, top + 1.0f, right + 1.0f, bottom + 1.0f), shadowBrush.Get());
+                }
+                if (textBrush) {
+                  target->DrawTextW(label.c_str(), static_cast<UINT32>(label.size()), fmt.Get(),
+                                    D2D1::RectF(left, top, right, bottom), textBrush.Get());
+                }
+              }
+            } else if (multiStack) {
+              const auto countText = std::to_wstring(itemCount);
+              const float fontPx = static_cast<float>(std::max(11, MulDiv(12, dpi, 96)));
+              Microsoft::WRL::ComPtr<IDWriteTextFormat> fmt;
+              if (SUCCEEDED(dwrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_BOLD,
+                                                     DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                                                     fontPx, L"", &fmt)) && fmt) {
+                fmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+                fmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                const float badgeH = static_cast<float>(std::max(18, MulDiv(20, dpi, 96)));
+                const float badgeW = std::max(badgeH, badgeH * 0.65f + countText.size() * fontPx * 0.62f);
+                const float cx = iconLeft + iconSize.cx * 0.5f;
+                const float cy = iconTop + iconSize.cy * 0.5f;
+                const D2D1_ROUNDED_RECT pill = D2D1::RoundedRect(
+                    D2D1::RectF(cx - badgeW * 0.5f, cy - badgeH * 0.5f, cx + badgeW * 0.5f, cy + badgeH * 0.5f),
+                    4.0f, 4.0f);
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> fillBrush;
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> borderBrush;
+                target->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.42f, 0.78f, 0.95f), &fillBrush);
+                target->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.95f), &borderBrush);
+                if (fillBrush) target->FillRoundedRectangle(pill, fillBrush.Get());
+                if (borderBrush) {
+                  target->DrawRoundedRectangle(pill, borderBrush.Get(), 1.5f);
+                  target->DrawTextW(countText.c_str(), static_cast<UINT32>(countText.size()), fmt.Get(),
+                                    pill.rect, borderBrush.Get());
+                }
+              }
+            }
+            target->EndDraw();
+          }
+        }
+        SelectObject(dc, old);
+      }
+      DeleteDC(dc);
+    }
+  }
+
+  SHDRAGIMAGE image{};
+  image.sizeDragImage = {canvasW, canvasH};
+  image.ptOffset = {std::clamp(iconLeft + iconAnchor.x, 0L, canvasW - 1),
+                    std::clamp(iconTop + iconAnchor.y, 0L, canvasH - 1)};
+  image.hbmpDragImage = bitmap;
+  image.crColorKey = CLR_NONE;
+  if (FAILED(helper->InitializeFromBitmap(&image, data))) DeleteObject(bitmap);
+}
+
+void setDropDescription(IDataObject *data, DROPIMAGETYPE type, const wchar_t *message,
+                        const wchar_t *insert) {
+  if (!data) return;
+  static const UINT formatId = RegisterClipboardFormatW(CFSTR_DROPDESCRIPTION);
+  if (!formatId) return;
+  STGMEDIUM medium{};
+  medium.tymed = TYMED_HGLOBAL;
+  medium.hGlobal = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, sizeof(DROPDESCRIPTION));
+  if (!medium.hGlobal) return;
+  if (auto *desc = static_cast<DROPDESCRIPTION *>(GlobalLock(medium.hGlobal))) {
+    desc->type = type;
+    if (message) wcsncpy_s(desc->szMessage, message, _TRUNCATE);
+    if (insert) wcsncpy_s(desc->szInsert, insert, _TRUNCATE);
+    GlobalUnlock(medium.hGlobal);
+    FORMATETC format{static_cast<CLIPFORMAT>(formatId), nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+    if (SUCCEEDED(data->SetData(&format, &medium, TRUE))) return;
+  }
+  GlobalFree(medium.hGlobal);
+}
+
+bool itemEditInfo(const std::wstring &path, std::wstring &editText, int &selectLength) {
+  editText.clear();
+  selectLength = 0;
+  if (path.empty()) return false;
+  PIDLIST_ABSOLUTE parsed = nullptr;
+  if (FAILED(SHParseDisplayName(path.c_str(), nullptr, &parsed, 0, nullptr)) || !parsed) return false;
+  const std::unique_ptr<void, decltype(&CoTaskMemFree)> owned(static_cast<void *>(parsed), CoTaskMemFree);
+  Microsoft::WRL::ComPtr<IShellFolder> folder;
+  PCUITEMID_CHILD child = nullptr;
+  if (FAILED(SHBindToParent(parsed, IID_PPV_ARGS(&folder), &child)) || !folder || !child) return false;
+  SFGAOF attributes = SFGAO_CANRENAME | SFGAO_FOLDER;
+  if (FAILED(folder->GetAttributesOf(1, &child, &attributes)) || !(attributes & SFGAO_CANRENAME)) return false;
+  STRRET str{};
+  if (FAILED(folder->GetDisplayNameOf(child, SHGDN_FOREDITING | SHGDN_INFOLDER, &str))) return false;
+  wchar_t buffer[MAX_PATH * 2]{};
+  if (FAILED(StrRetToBufW(&str, child, buffer, ARRAYSIZE(buffer))) || !buffer[0]) return false;
+  editText = buffer;
+  selectLength = static_cast<int>(editText.size());
+  if (!(attributes & SFGAO_FOLDER) && !isDesktopShellItem(path)) {
+    const auto extension = fn::fs::path(path).extension().wstring();
+    if (!extension.empty() && editText.size() > extension.size() &&
+        _wcsicmp(editText.c_str() + editText.size() - extension.size(), extension.c_str()) == 0) {
+      selectLength = static_cast<int>(editText.size() - extension.size());
+    }
+  }
+  return true;
+}
+
+void DropTarget::clearMarker() {
+#ifdef FOLDERNOTE_WINUI
+  if (panel.hasSurface()) panel.surface->showItemInsertion(std::nullopt);
+#endif
+  if (!IsRectEmpty(&panel.desktop.dropMarker)) {
+    const RECT previous = panel.desktop.dropMarker;
+    panel.desktop.dropMarker = {};
+    InvalidateRect(panel.list, &previous, FALSE);
+  }
+}
+
+void DropTarget::updateDescription(IDataObject *data, DWORD allowed, const std::wstring &folder, bool groupDrop) {
+  if (!data) return;
+  DROPIMAGETYPE type = DROPIMAGE_NONE;
+  std::wstring message;
+  std::wstring insert;
+  if (allowed) {
+    const auto &group = panel.desktop.groups[panel.index];
+    const auto targetLabel = [&]() -> std::wstring {
+      if (!folder.empty()) {
+        if (isRecycleBinShellItem(folder)) return recycleBinDisplayName();
+        const auto targetName = fn::fs::path(folder).filename().wstring();
+        return targetName.empty() ? folder : targetName;
+      }
+      if (panel.activeTab > 0 && panel.activeTab <= group.tabs.size() && !group.tabs[panel.activeTab - 1].name.empty()) {
+        return group.tabs[panel.activeTab - 1].name;
+      }
+      return group.name;
+    }();
+    if (folder.empty() && groupDrop && allowed == DROPEFFECT_MOVE &&
+        panel.desktop.oleDragActive && panel.desktop.dragWindow == panel.window) {
+      type = DROPIMAGE_NOIMAGE;
+    } else if (allowed == DROPEFFECT_MOVE) {
+      type = DROPIMAGE_MOVE;
+      message = lang::text(L"移动到 %1");
+      insert = targetLabel;
+    } else if (allowed == DROPEFFECT_LINK) {
+      type = DROPIMAGE_LINK;
+      message = lang::text(hasShellItems && !files ? L"添加到 %1" : L"在 %1 中创建链接");
+      insert = targetLabel;
+    } else {
+      type = DROPIMAGE_COPY;
+      message = lang::text(L"复制到 %1");
+      insert = targetLabel;
+    }
+  }
+  if (type == lastDescType && message == lastDescMessage && insert == lastDescInsert) return;
+  lastDescType = type;
+  lastDescMessage = message;
+  lastDescInsert = insert;
+  setDropDescription(data, type, message.c_str(), insert.c_str());
+}
+
+DWORD DropTarget::applyModifierEffect(DWORD keyState, DWORD allowed, DWORD preferred) {
+  constexpr DWORD keyAlt = 0x20;
+  const bool ctrl = (keyState & MK_CONTROL) != 0;
+  const bool shift = (keyState & MK_SHIFT) != 0;
+  const bool alt = (keyState & keyAlt) != 0;
+  if ((alt || (ctrl && shift)) && (allowed & DROPEFFECT_LINK)) return DROPEFFECT_LINK;
+  if (ctrl && !shift && (allowed & DROPEFFECT_COPY)) return DROPEFFECT_COPY;
+  if (shift && !ctrl && (allowed & DROPEFFECT_MOVE)) return DROPEFFECT_MOVE;
+  if (allowed & preferred) return preferred;
+  if (allowed & DROPEFFECT_MOVE) return DROPEFFECT_MOVE;
+  if (allowed & DROPEFFECT_COPY) return DROPEFFECT_COPY;
+  return allowed & DROPEFFECT_LINK;
+}
+
+DWORD DropTarget::externalEffect(DWORD keyState, DWORD allowed) const {
+  if (panel.folderView() || panel.desktop.editing || panel.desktop.quitting) return DROPEFFECT_NONE;
+  if (files && !hasShellItems) {
+    return applyModifierEffect(keyState, allowed, DROPEFFECT_MOVE);
+  }
+  if (!hasShellItems) return DROPEFFECT_NONE;
+  if (allowed & DROPEFFECT_LINK) return DROPEFFECT_LINK;
+  return allowed & DROPEFFECT_COPY;
+}
+
+DWORD DropTarget::evaluate(POINT screen, DWORD keyState, DWORD allowed, std::wstring &folder, bool &groupDrop) const {
+  folder.clear();
+  groupDrop = false;
+  if (panel.desktop.editing || panel.desktop.quitting) return DROPEFFECT_NONE;
+  if (panel.desktop.oleDragActive) {
+    const auto &paths = panel.desktop.dragItems;
+    const bool virtualItems = std::any_of(paths.begin(), paths.end(), isDesktopShellItem);
+    auto candidate = !panel.folderView() && virtualItems ? std::wstring{} : panel.desktop.dropFolder(&panel, screen);
+    if (candidate.empty() && panel.folderView() && !virtualItems) {
+      candidate = panel.activeFolder();
+    }
+    if (!candidate.empty()) {
+      const DWORD chosen = isRecycleBinShellItem(candidate)
+          ? (allowed & DROPEFFECT_MOVE)
+          : applyModifierEffect(keyState, allowed, DROPEFFECT_MOVE);
+      if (chosen == DROPEFFECT_MOVE ? panel.desktop.canMoveInto(paths, candidate) : (chosen != DROPEFFECT_NONE)) {
+        folder = candidate;
+        return chosen;
+      }
+      return DROPEFFECT_NONE;
+    }
+    if (panel.folderView()) return DROPEFFECT_NONE;
+    if (virtualItems) {
+      if (!panel.desktop.oleDragFromMapped && (allowed & DROPEFFECT_MOVE)) {
+        groupDrop = true;
+        return DROPEFFECT_MOVE;
+      }
+      groupDrop = (allowed & DROPEFFECT_LINK) != 0;
+      return allowed & DROPEFFECT_LINK;
+    }
+    const DWORD chosen = applyModifierEffect(keyState, allowed, DROPEFFECT_MOVE);
+    groupDrop = chosen != DROPEFFECT_NONE;
+    return chosen;
+  }
+  if (files && !hasShellItems) {
+    const auto hitTarget = panel.desktop.dropFolder(&panel, screen);
+    if (isRecycleBinShellItem(hitTarget) && (allowed & DROPEFFECT_MOVE)) {
+      folder = hitTarget;
+      return DROPEFFECT_MOVE;
+    }
+  }
+  if (panel.folderView() && files && !hasShellItems) {
+    folder = panel.activeFolder();
+    return folder.empty() ? DROPEFFECT_NONE : applyModifierEffect(keyState, allowed, DROPEFFECT_MOVE);
+  }
+  return externalEffect(keyState, allowed);
+}
+
+void DropTarget::updateFeedback(POINT screen, DWORD allowed, const std::wstring &folder, bool groupDrop) {
+  const auto highlighted = allowed != DROPEFFECT_NONE ? panel.window : nullptr;
+  RECT marker{};
+  if (groupDrop && folder.empty() && highlighted) {
+    panel.autoscroll(screen);
+    marker = panel.insertion(screen).marker;
+  }
+  const bool changedTarget = highlighted != panel.desktop.dropHighlight;
+  if (changedTarget) {
+    if (panel.desktop.dropHighlight) {
+      const auto previous = std::find_if(panel.desktop.panels.begin(), panel.desktop.panels.end(), [&](const auto &item) {
+        return item->window == panel.desktop.dropHighlight;
+      });
+      if (previous != panel.desktop.panels.end()) {
+#ifdef FOLDERNOTE_WINUI
+        if ((*previous)->hasSurface()) (*previous)->surface->showItemInsertion(std::nullopt);
+#endif
+        InvalidateRect((*previous)->list, &panel.desktop.dropMarker, FALSE);
+      }
+    }
+    panel.desktop.highlight(highlighted);
+  }
+#ifdef FOLDERNOTE_WINUI
+  if (panel.hasSurface()) {
+    panel.surface->showItemInsertion(highlighted && !IsRectEmpty(&marker) ? std::optional<RECT>(marker) : std::nullopt);
+  }
+#endif
+  if (!EqualRect(&marker, &panel.desktop.dropMarker)) {
+    if (highlighted && !panel.hasSurface()) {
+      InvalidateRect(panel.list, &panel.desktop.dropMarker, FALSE);
+      InvalidateRect(panel.list, &marker, FALSE);
+    }
+    panel.desktop.dropMarker = marker;
+  } else if (changedTarget && highlighted && !panel.hasSurface() && !IsRectEmpty(&marker)) {
+    InvalidateRect(panel.list, &marker, FALSE);
+  }
+}
+
+void DropTarget::checkSpringLoadedTab(POINT screen) {
+  const auto &group = panel.desktop.groups[panel.index];
+  const auto tab = !group.tabs.empty() ? panel.tabAt(screen) : std::nullopt;
+  if (tab && (*tab != panel.activeTab || panel.collapsed())) {
+    const auto now = GetTickCount64();
+    if (dragHoverTab != tab) {
+      dragHoverTab = tab;
+      dragHoverTabSince = now;
+    } else if (now - dragHoverTabSince >= 380) {
+      dragHoverTab.reset();
+      if (panel.collapsed()) {
+        panel.desktop.groups[panel.index].collapsed = false;
+        panel.autoCollapsed = false;
+        panel.setCollapsed();
+      }
+      panel.showTab(*tab, true);
+    }
+  } else {
+    dragHoverTab.reset();
+  }
+}
+
+DropTarget::DropTarget(Panel &value) : panel(value) {
+  CoCreateInstance(CLSID_DragDropHelper, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dragImage));
+}
+
+HRESULT STDMETHODCALLTYPE DropTarget::QueryInterface(REFIID iid, void **out) {
+  *out = nullptr;
+  if (iid != IID_IUnknown && iid != IID_IDropTarget) return E_NOINTERFACE;
+  *out = static_cast<IDropTarget *>(this);
+  AddRef();
+  return S_OK;
+}
+
+ULONG STDMETHODCALLTYPE DropTarget::AddRef() { return ++references; }
+
+ULONG STDMETHODCALLTYPE DropTarget::Release() {
+  const auto remaining = --references;
+  if (!remaining) delete this;
+  return remaining;
+}
+
+HRESULT STDMETHODCALLTYPE DropTarget::DragEnter(IDataObject *data, DWORD keyState, POINTL point, DWORD *effects) {
+  DragLeave();
+  try {
+    if (data) {
+      FORMATETC format{CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+      files = data->QueryGetData(&format) == S_OK;
+      if (!files || !(*effects & DROPEFFECT_MOVE)) {
+        for (const auto &path : desktopShellDropItems(data)) {
+          if (isDesktopShellItem(path)) hasShellItems = true;
+          else files = true;
+        }
+      }
+    }
+  } catch (...) {
+    DragLeave();
+  }
+  currentData = data;
+  POINT screen{point.x, point.y};
+  checkSpringLoadedTab(screen);
+  std::wstring folder;
+  bool groupDrop = false;
+  *effects = evaluate(screen, keyState, *effects, folder, groupDrop);
+  updateFeedback(screen, *effects, folder, groupDrop);
+  updateDescription(data, *effects, folder, groupDrop);
+  if (dragImage) dragImage->DragEnter(panel.window, data, &screen, *effects);
+  return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE DropTarget::DragOver(DWORD keyState, POINTL point, DWORD *effects) {
+  POINT screen{point.x, point.y};
+  checkSpringLoadedTab(screen);
+  std::wstring folder;
+  bool groupDrop = false;
+  *effects = evaluate(screen, keyState, *effects, folder, groupDrop);
+  updateFeedback(screen, *effects, folder, groupDrop);
+  updateDescription(currentData.Get(), *effects, folder, groupDrop);
+  if (dragImage) dragImage->DragOver(&screen, *effects);
+  return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE DropTarget::DragLeave() {
+  files = hasShellItems = false;
+  dragHoverTab.reset();
+  lastDescType = DROPIMAGE_INVALID;
+  lastDescMessage.clear();
+  lastDescInsert.clear();
+  if (currentData) {
+    setDropDescription(currentData.Get(), DROPIMAGE_INVALID);
+    currentData.Reset();
+  }
+  clearMarker();
+  panel.desktop.highlight(nullptr);
+  if (dragImage) dragImage->DragLeave();
+  return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE DropTarget::Drop(IDataObject *data, DWORD keyState, POINTL point, DWORD *effects) {
+  const auto offered = *effects;
+  POINT screen{point.x, point.y};
+  std::wstring folder;
+  bool groupDrop = false;
+  const auto allowed = evaluate(screen, keyState, offered, folder, groupDrop);
+  *effects = DROPEFFECT_NONE;
+  files = hasShellItems = false;
+  dragHoverTab.reset();
+  lastDescType = DROPIMAGE_INVALID;
+  lastDescMessage.clear();
+  lastDescInsert.clear();
+  currentData.Reset();
+  setDropDescription(data, DROPIMAGE_INVALID);
+  clearMarker();
+  panel.desktop.highlight(nullptr);
+  DWORD visualEffect = DROPEFFECT_NONE;
+  if (allowed) {
+    if (panel.desktop.oleDragActive) {
+      panel.desktop.pendingInternalDrop = Desktop::InternalDrop{panel.window, std::move(folder), screen, allowed};
+      visualEffect = allowed;
+      setDropEffect(data, CFSTR_PERFORMEDDROPEFFECT, DROPEFFECT_NONE);
+      setDropEffect(data, CFSTR_LOGICALPERFORMEDDROPEFFECT, DROPEFFECT_NONE);
+      *effects = DROPEFFECT_NONE;
+    } else {
+      try {
+        auto paths = (allowed == DROPEFFECT_MOVE || files) ? desktopDropPaths(data) : desktopShellDropItems(data);
+        if (!folder.empty()) {
+          if (panel.folderView() && samePath(folder, panel.activeFolder()) &&
+              (allowed == DROPEFFECT_MOVE || allowed == DROPEFFECT_COPY)) {
+            const auto ins = panel.insertion(screen);
+            size_t slot = ins.item >= 0
+                ? static_cast<size_t>(ins.item) + (ins.after ? 1 : 0)
+                : panel.orderedItems.size();
+            bool anyQueued = false;
+            for (const auto &p : paths) {
+              if (panel.desktop.enqueueAsyncTransferIntoPanel(panel, p, slot, allowed == DROPEFFECT_MOVE)) {
+                ++slot;
+                anyQueued = true;
+              }
+            }
+            if (anyQueued) {
+              visualEffect = allowed;
+              setDropEffect(data, CFSTR_PERFORMEDDROPEFFECT, DROPEFFECT_NONE);
+              setDropEffect(data, CFSTR_LOGICALPERFORMEDDROPEFFECT, allowed);
+              *effects = allowed == DROPEFFECT_MOVE ? (offered & DROPEFFECT_COPY) : allowed;
+            }
+          } else {
+            panel.desktop.moveInto(paths, folder, panel.window, allowed);
+            visualEffect = allowed;
+            setDropEffect(data, CFSTR_PERFORMEDDROPEFFECT, DROPEFFECT_NONE);
+            setDropEffect(data, CFSTR_LOGICALPERFORMEDDROPEFFECT, allowed);
+            *effects = allowed == DROPEFFECT_MOVE ? (offered & DROPEFFECT_COPY) : allowed;
+          }
+        } else if (allowed == DROPEFFECT_MOVE || (hasShellItems && !files)) {
+          if (allowed != DROPEFFECT_MOVE)
+            std::erase_if(paths, [](const auto &path) { return !isDesktopShellItem(path); });
+          if (panel.desktop.assign(panel, paths, screen, true)) {
+            visualEffect = allowed;
+            if (allowed == DROPEFFECT_MOVE) {
+              // The target moved the files. The drag source must not delete anything.
+              setDropEffect(data, CFSTR_PERFORMEDDROPEFFECT, DROPEFFECT_NONE);
+              setDropEffect(data, CFSTR_LOGICALPERFORMEDDROPEFFECT, DROPEFFECT_MOVE);
+              *effects = offered & DROPEFFECT_COPY;
+            } else {
+              *effects = allowed;
+            }
+          }
+        } else if (panel.desktop.assignCopyOrLink(panel, paths, screen, allowed)) {
+          visualEffect = allowed;
+          *effects = allowed;
+        }
+      } catch (...) {
+        PostMessageW(panel.window, rejectedMessage, 0, 0);
+      }
+    }
+  }
+  if (dragImage) dragImage->Drop(data, &screen, visualEffect);
+  return S_OK;
+}
+
+BoxFileMoves::BoxFileMoves(const std::vector<std::wstring> &desktopRoots, HWND window, size_t count)
+    : roots(desktopRoots), owner(window) {
+  moves.reserve(count);
+}
+
+BoxFileMoves::~BoxFileMoves() {
+  bool restored = true;
+  for (auto move = moves.rbegin(); move != moves.rend(); ++move)
+    restored &= rollbackBoxMove(move->second, move->first);
+  if (!restored)
+    report(owner, lang::text(L"无法恢复原文件位置。请在桌面和 .desktop 文件夹中查看文件。"));
+}
+
+const std::wstring &BoxFileMoves::transfer(const std::wstring &path, bool intoBox) {
+  auto original = path;
+  auto destination = intoBox ? storeBoxItem(roots, original) : restoreBoxItem(roots, original);
+  if (destination.empty()) {
+    static const std::wstring empty;
+    return empty;
+  }
+  return moves.emplace_back(std::move(original), std::move(destination)).second;
+}
+
 void Desktop::clearDropFeedback() {
   if (dropHighlight) {
     const auto previous = std::find_if(panels.begin(), panels.end(), [&](const auto &panel) {
@@ -286,26 +1073,6 @@ void Desktop::drag(Panel &panel, int index) {
   }
 
   if (dragResult == DRAGDROP_S_CANCEL) return;
-
-  POINT fallbackPoint{};
-  if (effect == DROPEFFECT_NONE && GetCursorPos(&fallbackPoint)) {
-    if (auto *target = panelAt(fallbackPoint)) {
-      const bool virtualItems = std::any_of(paths.begin(), paths.end(), isDesktopShellItem);
-      const auto folder = !target->folderView() && virtualItems ? std::wstring{} : dropFolder(target, fallbackPoint);
-      if (!folder.empty() && canMoveInto(paths, folder)) {
-        for (const auto &p : paths) startOutgoingVisual(p, true);
-        moveInto(paths, folder, sourceWindow);
-        return;
-      }
-      if (!target->folderView()) {
-        if (target->window != sourceWindow) {
-          for (const auto &p : paths) startOutgoingVisual(p, true);
-        }
-        assign(*target, paths, fallbackPoint, fromMapped);
-        return;
-      }
-    }
-  }
 
   const auto targetClsid = readTargetClsid(dataObject.Get());
   const bool droppedOnRecycleBin = targetClsid && IsEqualCLSID(*targetClsid, CLSID_RecycleBin);

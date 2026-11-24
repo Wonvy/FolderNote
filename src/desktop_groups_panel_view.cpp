@@ -994,7 +994,18 @@ LRESULT CALLBACK Panel::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
       }
       return point.y < bounds.top + panel->headerHeight() ? HTCAPTION : HTCLIENT;
     }
+    case WM_MOUSEMOVE:
+    case WM_NCMOUSEMOVE:
+      if (!desktop.headerTimerRunning) {
+        desktop.tickHeader();
+        desktop.ensureHeaderTimer();
+      }
+      break;
     case WM_SETCURSOR: {
+      if (!desktop.headerTimerRunning) {
+        desktop.tickHeader();
+        desktop.ensureHeaderTimer();
+      }
       if (panel->desktop.oleDragActive) return TRUE;
       if (panel->dockHidden) {
         SetCursor(LoadCursorW(nullptr, IDC_ARROW));
@@ -1266,14 +1277,22 @@ LRESULT CALLBACK Panel::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
     case WM_MBUTTONDOWN:
     case WM_MBUTTONDBLCLK:
     case WM_NCMBUTTONDOWN:
-    case WM_NCMBUTTONDBLCLK:
-      panel->middleDown = GetCursorPos(&panel->middleDownPoint) != FALSE;
+    case WM_NCMBUTTONDBLCLK: {
+      POINT pt{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
+      if (message == WM_MBUTTONDOWN || message == WM_MBUTTONDBLCLK) ClientToScreen(window, &pt);
+      if (!GetCursorPos(&panel->middleDownPoint)) panel->middleDownPoint = pt;
+      panel->middleDown = true;
       return 0;
+    }
     case WM_MBUTTONUP:
     case WM_NCMBUTTONUP:
       if (std::exchange(panel->middleDown, false)) {
         POINT cursor{};
-        if (GetCursorPos(&cursor) && quick::middleClickWithin(panel->middleDownPoint, cursor)) {
+        if (!GetCursorPos(&cursor)) {
+          cursor = {GET_X_LPARAM(l), GET_Y_LPARAM(l)};
+          if (message == WM_MBUTTONUP) ClientToScreen(window, &cursor);
+        }
+        if (quick::middleClickWithin(panel->middleDownPoint, cursor)) {
           panel->handleMiddleClick(cursor);
         }
       }

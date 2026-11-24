@@ -517,9 +517,237 @@ static void checkAutomatically(HWND owner) {
     startUpdateWork(owner, UpdateOperation::Automatic);
 }
 
+static std::wstring formatUpdateNotesText(const updater::Release &release) {
+  if (!release.notes.empty()) return release.notes;
+  return lang::text(L"暂无详细更新说明。");
+}
+
+static std::wstring formatUpdatePrompt(const updater::Release &release) {
+  auto header = lang::format(L"发现新版本 FolderNote {0}（当前版本 {1}）。", {release.version, app::version});
+  auto notesTitle = std::wstring(lang::text(L"更新内容："));
+  auto notes = formatUpdateNotesText(release);
+  auto question = std::wstring(lang::text(L"现在从 GitHub 下载并启动安装吗？"));
+  return header + L"\r\n\r\n" + notesTitle + L"\r\n" + notes + L"\r\n\r\n" + question;
+}
+
+static constexpr int updateDialogHeading = 201, updateDialogNotesLabel = 202,
+                     updateDialogNotesEdit = 203, updateDialogQuestion = 204;
+
+struct UpdateConfirmDialogState {
+  ui::Theme *theme = nullptr;
+  HFONT textFont = nullptr;
+  HFONT titleFont = nullptr;
+  bool ownedTextFont = false;
+  RECT notesFrame{};
+  bool confirmed = false;
+  bool closed = false;
+  ~UpdateConfirmDialogState() {
+    if (ownedTextFont && textFont) DeleteObject(textFont);
+    if (titleFont) DeleteObject(titleFont);
+  }
+};
+
+static LRESULT CALLBACK updateConfirmEditProc(HWND edit, UINT message, WPARAM w, LPARAM l, UINT_PTR id, DWORD_PTR) {
+  if (message == WM_NCDESTROY) {
+    RemoveWindowSubclass(edit, updateConfirmEditProc, id);
+    return DefSubclassProc(edit, message, w, l);
+  }
+  if (message == WM_KEYDOWN) {
+    if (w == VK_ESCAPE) {
+      PostMessageW(GetParent(edit), WM_COMMAND, MAKEWPARAM(IDNO, BN_CLICKED), 0);
+      return 0;
+    }
+    if (w == VK_RETURN && (GetKeyState(VK_CONTROL) & 0x8000) == 0) {
+      PostMessageW(GetParent(edit), WM_COMMAND, MAKEWPARAM(IDYES, BN_CLICKED), 0);
+      return 0;
+    }
+  }
+  return DefSubclassProc(edit, message, w, l);
+}
+
+static LRESULT CALLBACK updateConfirmDialogProc(HWND window, UINT message, WPARAM w, LPARAM l) {
+  auto *state = reinterpret_cast<UpdateConfirmDialogState *>(GetWindowLongPtrW(window, GWLP_USERDATA));
+  if (message == WM_NCCREATE) {
+    state = static_cast<UpdateConfirmDialogState *>(reinterpret_cast<CREATESTRUCTW *>(l)->lpCreateParams);
+    SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(state));
+  }
+  if (!state) return DefWindowProcW(window, message, w, l);
+  if (message == WM_COMMAND) {
+    const int id = LOWORD(w);
+    if (id == IDYES || id == IDOK) {
+      state->confirmed = true;
+      state->closed = true;
+      DestroyWindow(window);
+      return 0;
+    }
+    if (id == IDNO || id == IDCANCEL) {
+      state->confirmed = false;
+      state->closed = true;
+      DestroyWindow(window);
+      return 0;
+    }
+  }
+  if (message == WM_KEYDOWN) {
+    if (w == VK_ESCAPE) {
+      PostMessageW(window, WM_COMMAND, MAKEWPARAM(IDNO, BN_CLICKED), 0);
+      return 0;
+    }
+    if (w == VK_RETURN) {
+      PostMessageW(window, WM_COMMAND, MAKEWPARAM(IDYES, BN_CLICKED), 0);
+      return 0;
+    }
+  }
+  if (message == WM_CLOSE) {
+    state->confirmed = false;
+    state->closed = true;
+    DestroyWindow(window);
+    return 0;
+  }
+  if (message == WM_PAINT && state->theme) {
+    PAINTSTRUCT paint{};
+    HDC dc = BeginPaint(window, &paint);
+    RECT client{};
+    GetClientRect(window, &client);
+    FillRect(dc, &client, state->theme->background);
+    if (!IsRectEmpty(&state->notesFrame)) {
+      const int radius = MulDiv(6, GetDpiForWindow(window), 96);
+      ui::rounded(dc, state->notesFrame, state->theme->colors.field, state->theme->colors.border, radius);
+    }
+    EndPaint(window, &paint);
+    return 0;
+  }
+  LRESULT handled = 0;
+  if (state->theme && state->theme->handle(window, message, w, l, handled)) return handled;
+  return DefWindowProcW(window, message, w, l);
+}
+
+static HWND createUpdateConfirmDialog(HWND owner, const updater::Release &release, UpdateConfirmDialogState &state) {
+  const HINSTANCE instance = GetModuleHandleW(nullptr);
+  constexpr wchar_t dialogClass[] = L"FolderNote.UpdateConfirmDialog";
+  WNDCLASSW cls{};
+  if (!GetClassInfoW(instance, dialogClass, &cls)) {
+    cls.lpfnWndProc = updateConfirmDialogProc;
+    cls.hInstance = instance;
+    cls.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    cls.hIcon = LoadIconW(instance, MAKEINTRESOURCEW(IDI_FOLDERNOTE));
+    cls.lpszClassName = dialogClass;
+    RegisterClassW(&cls);
+  }
+
+  const UINT windowDpi = owner && IsWindow(owner) ? GetDpiForWindow(owner) : GetDpiForSystem();
+  const auto px = [windowDpi](int n) { return MulDiv(n, windowDpi, 96); };
+  state.theme = appearance.get();
+  state.titleFont = ui::makeFont(windowDpi, 13, FW_SEMIBOLD);
+  state.textFont = ui::makeFont(windowDpi);
+  state.ownedTextFont = true;
+
+  const int dialogW = px(500);
+  const int dialogH = px(380);
+  RECT ownerRect{};
+  int x = CW_USEDEFAULT, y = CW_USEDEFAULT;
+  if (owner && IsWindow(owner) && GetWindowRect(owner, &ownerRect)) {
+    x = ownerRect.left + ((ownerRect.right - ownerRect.left) - dialogW) / 2;
+    y = ownerRect.top + ((ownerRect.bottom - ownerRect.top) - dialogH) / 2;
+  }
+
+  HWND dialog = CreateWindowExW(WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT, dialogClass,
+                                lang::text(L"FolderNote 更新"),
+                                WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN,
+                                x, y, dialogW, dialogH, owner, nullptr, instance, &state);
+  if (!dialog) return nullptr;
+
+  RECT client{};
+  GetClientRect(dialog, &client);
+  const int margin = px(20);
+  const int contentW = std::max(px(200), static_cast<int>(client.right) - margin * 2);
+
+  const auto headingText = lang::format(L"发现新版本 FolderNote {0}（当前版本 {1}）", {release.version, app::version});
+  HWND heading = CreateWindowExW(0, L"STATIC", headingText.c_str(),
+                                 WS_CHILD | WS_VISIBLE | SS_NOPREFIX,
+                                 margin, px(18), contentW, px(24),
+                                 dialog, reinterpret_cast<HMENU>(static_cast<INT_PTR>(updateDialogHeading)), instance, nullptr);
+  HWND notesLabel = CreateWindowExW(0, L"STATIC", lang::text(L"更新内容："),
+                                    WS_CHILD | WS_VISIBLE | SS_NOPREFIX,
+                                    margin, px(48), contentW, px(20),
+                                    dialog, reinterpret_cast<HMENU>(static_cast<INT_PTR>(updateDialogNotesLabel)), instance, nullptr);
+  ui::muted(notesLabel);
+
+  const int buttonH = px(32);
+  const int buttonW = px(112);
+  const int bottomY = static_cast<int>(client.bottom) - margin - buttonH;
+  const int questionY = bottomY - px(28);
+  const int frameTop = px(72);
+  const int frameBottom = std::max(frameTop + px(80), questionY - px(12));
+  state.notesFrame = {margin, frameTop, margin + contentW, frameBottom};
+
+  const int pad = px(8);
+  const auto notesText = formatUpdateNotesText(release);
+  HWND notesEdit = CreateWindowExW(0, L"EDIT", notesText.c_str(),
+                                   WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL |
+                                   ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY,
+                                   state.notesFrame.left + pad, state.notesFrame.top + pad,
+                                   std::max(px(60), contentW - pad * 2),
+                                   std::max(px(40), (frameBottom - frameTop) - pad * 2),
+                                   dialog, reinterpret_cast<HMENU>(static_cast<INT_PTR>(updateDialogNotesEdit)), instance, nullptr);
+  SetWindowSubclass(notesEdit, updateConfirmEditProc, 1, 0);
+
+  HWND question = CreateWindowExW(0, L"STATIC", lang::text(L"现在从 GitHub 下载并启动安装吗？"),
+                                  WS_CHILD | WS_VISIBLE | SS_NOPREFIX,
+                                  margin, questionY, contentW, px(20),
+                                  dialog, reinterpret_cast<HMENU>(static_cast<INT_PTR>(updateDialogQuestion)), instance, nullptr);
+
+  const int gap = px(10);
+  const int yesX = margin + contentW - buttonW * 2 - gap;
+  const int noX = margin + contentW - buttonW;
+  HWND yesBtn = CreateWindowExW(0, L"BUTTON", lang::text(L"立即更新"),
+                                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
+                                yesX, bottomY, buttonW, buttonH,
+                                dialog, reinterpret_cast<HMENU>(IDYES), instance, nullptr);
+  HWND noBtn = CreateWindowExW(0, L"BUTTON", lang::text(L"暂不更新"),
+                               WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+                               noX, bottomY, buttonW, buttonH,
+                               dialog, reinterpret_cast<HMENU>(IDNO), instance, nullptr);
+
+  for (HWND ctrl : {notesLabel, notesEdit, question, yesBtn, noBtn}) {
+    if (ctrl && state.textFont) SendMessageW(ctrl, WM_SETFONT, reinterpret_cast<WPARAM>(state.textFont), FALSE);
+  }
+  if (heading && (state.titleFont || state.textFont)) {
+    SendMessageW(heading, WM_SETFONT, reinterpret_cast<WPARAM>(state.titleFont ? state.titleFont : state.textFont), FALSE);
+  }
+  SendMessageW(notesEdit, EM_SETSEL, static_cast<WPARAM>(-1), 0);
+  if (state.theme) state.theme->apply(dialog);
+  return dialog;
+}
+
+static bool confirmUpdateDialog(HWND owner, const updater::Release &release) {
+  UpdateConfirmDialogState state;
+  HWND dialog = createUpdateConfirmDialog(owner, release, state);
+  if (!dialog) {
+    const auto prompt = formatUpdatePrompt(release);
+    return MessageBoxW(owner, prompt.c_str(), lang::text(L"FolderNote 更新"), MB_YESNO | MB_ICONQUESTION) == IDYES;
+  }
+  const bool hadOwner = owner && IsWindow(owner);
+  const bool wasEnabled = hadOwner && IsWindowEnabled(owner) != FALSE;
+  if (hadOwner && wasEnabled) EnableWindow(owner, FALSE);
+  ShowWindow(dialog, SW_SHOWNORMAL);
+  SetFocus(GetDlgItem(dialog, IDYES));
+  MSG msg{};
+  while (!state.closed && IsWindow(dialog) && GetMessageW(&msg, nullptr, 0, 0) > 0) {
+    if (!IsDialogMessageW(dialog, &msg)) {
+      TranslateMessage(&msg);
+      DispatchMessageW(&msg);
+    }
+  }
+  if (hadOwner && IsWindow(owner)) {
+    if (wasEnabled) EnableWindow(owner, TRUE);
+    SetForegroundWindow(owner);
+  }
+  if (IsWindow(dialog)) DestroyWindow(dialog);
+  return state.confirmed;
+}
+
 static void offerUpdate(HWND owner, const updater::Release &release) {
-  auto prompt = lang::format(L"发现 FolderNote {0}。现在从 GitHub 下载并启动安装吗？", {release.version});
-  if (MessageBoxW(owner, prompt.c_str(), lang::text(L"FolderNote 更新"), MB_YESNO | MB_ICONQUESTION) == IDYES)
+  if (confirmUpdateDialog(owner, release))
     startUpdateWork(owner, UpdateOperation::Install, release);
 }
 

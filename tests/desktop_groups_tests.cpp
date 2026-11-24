@@ -1,5 +1,6 @@
 #include "../src/core.h"
 #include "../src/desktop_groups_icon_source.h"
+#include "../src/desktop_groups_internal.h"
 #include "../src/desktop_groups_model.h"
 #include "../src/desktop_groups_render.h"
 #include "../src/desktop_groups_storage.h"
@@ -955,6 +956,162 @@ void exerciseTransferProgress(const fn::fs::path &root) {
         "a missing source reports no destination");
   if (SUCCEEDED(com)) CoUninitialize();
 }
+
+void exercisePanelAndDesktopFlows(const fn::fs::path &root) {
+  using namespace desktop_groups;
+  using namespace desktop_groups::detail;
+  const HRESULT ole = OleInitialize(nullptr);
+  struct OleScope {
+    HRESULT hr;
+    ~OleScope() { if (SUCCEEDED(hr)) OleUninitialize(); }
+  } oleScope{ole};
+
+  INITCOMMONCONTROLSEX controls{sizeof(controls), ICC_LISTVIEW_CLASSES | ICC_STANDARD_CLASSES};
+  InitCommonControlsEx(&controls);
+
+  const HINSTANCE instance = GetModuleHandleW(nullptr);
+  WNDCLASSW panelCls{};
+  if (!GetClassInfoW(instance, panelClass, &panelCls)) {
+    panelCls.lpfnWndProc = Panel::proc;
+    panelCls.hInstance = instance;
+    panelCls.lpszClassName = panelClass;
+    panelCls.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    panelCls.style = CS_DBLCLKS;
+    check(RegisterClassW(&panelCls) != 0, "register Panel window class for flow tests");
+  }
+  WNDCLASSW receiverCls{};
+  if (!GetClassInfoW(instance, receiverClass, &receiverCls)) {
+    receiverCls.lpfnWndProc = Desktop::proc;
+    receiverCls.hInstance = instance;
+    receiverCls.lpszClassName = receiverClass;
+    receiverCls.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    check(RegisterClassW(&receiverCls) != 0, "register Desktop receiver window class for flow tests");
+  }
+
+  const auto personal = root / L"PersonalDesktop";
+  const auto externalDir = root / L"ExternalSource";
+  const auto layoutFile = root / L"flow-layout.json";
+  fn::fs::create_directories(personal);
+  fn::fs::create_directories(externalDir);
+
+  Group group;
+  group.name = L"主标签";
+  group.bounds = {-31800, -31800, -31440, -31540};
+  group.tabs.push_back(Tab{L"待删标签", {}, {}});
+  group.tabs.push_back(Tab{L"保留标签", {}, {}});
+  save({group}, layoutFile);
+
+  HWND host = CreateWindowExW(WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW, L"STATIC", L"", WS_POPUP,
+                              -32000, -32000, 1200, 800, nullptr, nullptr, instance, nullptr);
+  check(host != nullptr, "create hidden desktop host window for Panel flow tests");
+  struct HostScope {
+    HWND handle;
+    ~HostScope() { if (handle && IsWindow(handle)) DestroyWindow(handle); }
+  } hostScope{host};
+
+  Desktop desktop(instance, layoutFile, std::vector<std::wstring>{personal.native()});
+#ifdef FOLDERNOTE_WINUI
+  desktop.useWinui = false;
+#endif
+  desktop.host = host;
+
+  check(CreateWindowExW(WS_EX_TOOLWINDOW, receiverClass, L"", WS_POPUP, 0, 0, 0, 0,
+                        nullptr, nullptr, instance, &desktop) != nullptr && desktop.window != nullptr,
+        "create Desktop receiver window");
+  struct DesktopScope {
+    Desktop &d;
+    ~DesktopScope() {
+      d.quitting = true;
+      d.panels.clear();
+      if (d.window && IsWindow(d.window)) DestroyWindow(d.window);
+    }
+  } desktopScope{desktop};
+
+  check(desktop.openPanel(0) && desktop.panels.size() == 1, "open hidden Panel attached to test host");
+  auto &panel = *desktop.panels[0];
+
+  // 1. Power-saving headerTimer auto-stop when idle and immediate wake on mouse activity
+  desktop.ensureHeaderTimer();
+  check(desktop.headerTimerRunning, "ensureHeaderTimer starts the 70ms header polling timer");
+  desktop.tickHeader();
+  check(!desktop.headerTimerRunning, "tickHeader stops headerTimer automatically when cursor is outside all boxes and idle");
+  SendMessageW(panel.window, WM_SETCURSOR, reinterpret_cast<WPARAM>(panel.window), MAKELPARAM(HTCLIENT, WM_MOUSEMOVE));
+  check(desktop.headerTimerRunning, "mouse activity over a box immediately wakes headerTimer");
+  SendMessageW(desktop.window, WM_TIMER, headerTimer, 0);
+  check(!desktop.headerTimerRunning, "subsequent headerTimer tick stops timer again once cursor is outside and idle");
+
+  // 2. Optimistic transfer progress placeholder & completion into Panel
+  const auto externalFile = externalDir / L"异步传入.txt";
+  {
+    std::ofstream out(externalFile, std::ios::binary);
+    out << "transfer-test-payload";
+  }
+  check(desktop.enqueueAsyncTransferIntoPanel(panel, externalFile.native(), 0, false),
+        "enqueueAsyncTransferIntoPanel accepts external file");
+  check(panel.activeTransfers.size() == 1 && panel.activeTransfers[0].placeholder &&
+        !panel.orderedItems.empty() && isTransferToken(panel.orderedItems[0]) &&
+        desktop.transferTimerRunning,
+        "optimistic transfer inserts placeholder token into Panel and starts transferTimer");
+
+  const auto deadline = GetTickCount64() + 4000;
+  while (GetTickCount64() < deadline) {
+    desktop.handleCompletedTransfers();
+    if (!panel.activeTransfers.empty() && panel.activeTransfers[0].finished) break;
+    Sleep(15);
+  }
+  check(!panel.activeTransfers.empty() && panel.activeTransfers[0].finished,
+        "background worker completes file transfer into .desktop");
+  panel.activeTransfers[0].visualProgress = 1.0;
+  panel.activeTransfers[0].finishedAt = GetTickCount64() - 100;
+  desktop.tickTransfers();
+  check(panel.activeTransfers.empty() && !desktop.transferTimerRunning &&
+        !panel.orderedItems.empty() && !isTransferToken(panel.orderedItems[0]) &&
+        fn::fs::exists(panel.orderedItems[0]),
+        "completed transfer replaces placeholder with stored .desktop path and stops transferTimer");
+
+  // 3. Multi-tab targeted tab removal updates tabs, activeTab, and activeTransfers tab indices
+  panel.showTab(2);
+  check(panel.activeTab == 2, "switch Panel to third tab before removing middle tab");
+  Panel::TransferEntry dummyOnRemovedTab;
+  dummyOnRemovedTab.id = 9001;
+  dummyOnRemovedTab.tab = 1;
+  dummyOnRemovedTab.placeholder = false;
+  dummyOnRemovedTab.finished = true;
+  dummyOnRemovedTab.finishedAt = GetTickCount64();
+  Panel::TransferEntry dummyOnSurvivingTab = dummyOnRemovedTab;
+  dummyOnSurvivingTab.id = 9002;
+  dummyOnSurvivingTab.tab = 2;
+  panel.activeTransfers.push_back(dummyOnRemovedTab);
+  panel.activeTransfers.push_back(dummyOnSurvivingTab);
+
+  SendMessageW(panel.window, WM_COMMAND, RemoveTab, 1);
+  check(desktop.groups[0].tabs.size() == 1 && desktop.groups[0].tabs[0].name == L"保留标签" &&
+        panel.activeTab == 1 &&
+        panel.activeTransfers.size() == 1 && panel.activeTransfers[0].id == 9002 &&
+        panel.activeTransfers[0].tab == 1,
+        "removing non-active middle tab via Panel WM_COMMAND preserves other tabs and shifts activeTab/transfers");
+  panel.activeTransfers.clear();
+
+  // 4. In-box middle-click fallback gesture tracking on Panel and ListView child
+  SendMessageW(panel.window, WM_MBUTTONDOWN, MK_MBUTTON, MAKELPARAM(12, 12));
+  check(panel.middleDown, "Panel WM_MBUTTONDOWN records middle-click press");
+  panel.middleDownPoint = {-30000, -30000};
+  SendMessageW(panel.window, WM_MBUTTONUP, 0, MAKELPARAM(12, 12));
+  check(!panel.middleDown, "Panel WM_MBUTTONUP clears middle-click state");
+
+  SendMessageW(panel.list, WM_MBUTTONDOWN, MK_MBUTTON, MAKELPARAM(12, 12));
+  check(panel.middleDown, "ListView child WM_MBUTTONDOWN records middle-click press via iconInput");
+  panel.middleDownPoint = {-30000, -30000};
+  SendMessageW(panel.list, WM_MBUTTONUP, 0, MAKELPARAM(12, 12));
+  check(!panel.middleDown, "ListView child WM_MBUTTONUP clears middle-click state");
+
+  // 5. Drag-out moved file no longer on disk does not post a false rejectedMessage
+  const std::wstring movedOutPath = (personal / L".desktop" / L"已拖出到桌面.pdf").native();
+  desktop.assign(panel, std::span<const std::wstring>(&movedOutPath, 1), {-1, -1}, false);
+  MSG rejectedMsg{};
+  check(!PeekMessageW(&rejectedMsg, panel.window, rejectedMessage, rejectedMessage, PM_REMOVE),
+        "assigning a path already moved out of .desktop does not post a false error dialog");
+}
 }
 
 int main() {
@@ -967,6 +1124,7 @@ int main() {
     exerciseBoxStorage(files.root / L"storage-test");
     exerciseNewBoxEnhancements(files.root / L"enhancements-test");
     exerciseTransferProgress(files.root / L"transfer-test");
+    exercisePanelAndDesktopFlows(files.root / L"panel-flow-test");
     exerciseShadow();
     exerciseThumbnailMask();
     exerciseThumbnailFit(files.root);

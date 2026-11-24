@@ -25,6 +25,10 @@ bool Desktop::assign(Panel &panel, std::span<const std::wstring> paths, POINT po
         accepted = true;
         continue;
       }
+      if (!fromExplorer && !isDesktopShellItem(candidate) &&
+          GetFileAttributesW(candidate.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        continue;
+      }
       rejected = true;
       continue;
     }
@@ -655,6 +659,55 @@ public:
   }
 };
 
+void Desktop::ensureHeaderTimer() {
+  if (!headerTimerRunning && !quitting && !boxesHidden && IsWindow(window)) {
+    headerTimerRunning = SetTimer(window, headerTimer, 70, nullptr) != 0;
+  }
+}
+
+void Desktop::tickHeader() {
+  if (quitting || boxesHidden || !IsWindow(host)) {
+    if (headerTimerRunning && IsWindow(window)) {
+      KillTimer(window, headerTimer);
+      headerTimerRunning = false;
+    }
+    return;
+  }
+  POINT cursor{LONG_MIN, LONG_MIN};
+  const bool hasCursor = GetCursorPos(&cursor) != FALSE;
+  const auto now = GetTickCount64();
+  const auto underPointer = hasCursor ? WindowFromPoint(cursor) : nullptr;
+  bool keepRunning = false;
+  for (const auto &panel : panels) {
+    if (!IsWindow(panel->window)) continue;
+    panel->tickDock(cursor, now);
+    if (!panel->dockHidden) {
+      const bool inside = insideDesktopWindow(panel->window, underPointer);
+      panel->tickAutoCollapse(inside, now);
+      panel->updateHeaderActions(cursor);
+      panel->tickFolderHover(cursor, inside, now);
+      const bool actionsActive =
+#ifdef FOLDERNOTE_WINUI
+          panel->hasSurface() ? panel->headerActions :
+#endif
+          (panel->viewButtons[0] && IsWindowVisible(panel->viewButtons[0]) != FALSE);
+      const bool dockCountingDown = panel->dockSide != DockSide::None && panel->dockHideAt != 0;
+      const bool collapseCountingDown = groups[panel->index].autoCollapse &&
+          !groups[panel->index].collapsed && !panel->autoCollapsed && panel->autoCollapseAt != 0;
+      const bool hoverActive = panel->hoveredFolderRow >= 0 || panel->suppressedHoverRow >= 0;
+      if (inside || actionsActive || dockCountingDown || collapseCountingDown || hoverActive) {
+        keepRunning = true;
+      }
+    } else if (panel->dockTrigger && insideDesktopWindow(panel->dockTrigger, underPointer)) {
+      keepRunning = true;
+    }
+  }
+  if (!keepRunning && headerTimerRunning && IsWindow(window)) {
+    KillTimer(window, headerTimer);
+    headerTimerRunning = false;
+  }
+}
+
 LRESULT CALLBACK Desktop::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
   auto desktop = reinterpret_cast<Desktop *>(GetWindowLongPtrW(window, GWLP_USERDATA));
   if (message == WM_NCCREATE) {
@@ -687,7 +740,8 @@ LRESULT CALLBACK Desktop::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
           : configuredAppearance());
       return 0;
     }
-    if (message == ui::themeChangedMessage() || message == WM_THEMECHANGED || message == WM_SETTINGCHANGE) {
+    if (message == ui::themeChangedMessage() || message == WM_THEMECHANGED ||
+        message == WM_SETTINGCHANGE || message == WM_SYSCOLORCHANGE) {
       invalidateWallpaperBackdrop();
       desktop->theme.reset(ui::configuredTheme());
       if (!desktop->previewingAppearance) desktop->style = configuredAppearance();
@@ -696,6 +750,7 @@ LRESULT CALLBACK Desktop::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
         panel->resize();
       }
       desktop->updateShadows();
+      desktop->lower();
     }
     switch (message) {
     case WM_COPYDATA: {
@@ -737,28 +792,24 @@ LRESULT CALLBACK Desktop::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
         return 0;
       }
       if (w == headerTimer) {
-        if (!IsWindow(desktop->host)) return 0;
-        POINT cursor{};
-        if (GetCursorPos(&cursor)) {
-          const auto now = GetTickCount64();
-          const auto underPointer = WindowFromPoint(cursor);
-          for (const auto &panel : desktop->panels) {
-            if (!IsWindow(panel->window)) continue;
-            panel->tickDock(cursor, now);
-            if (!panel->dockHidden) {
-              const bool inside = insideDesktopWindow(panel->window, underPointer);
-              panel->tickAutoCollapse(inside, now);
-              panel->updateHeaderActions(cursor);
-              panel->tickFolderHover(cursor, inside, now);
-            }
-          }
-        }
+        desktop->tickHeader();
         return 0;
       }
       if (!enabled()) PostMessageW(window, WM_CLOSE, 0, 0);
       else {
         if (!desktop->ensureHost()) return 0;
         desktop->lower();
+        if (!desktop->headerTimerRunning && !desktop->boxesHidden) {
+          POINT cursor{};
+          if (GetCursorPos(&cursor)) {
+            const HWND under = WindowFromPoint(cursor);
+            if (std::any_of(desktop->panels.begin(), desktop->panels.end(),
+                            [under](const auto &p) { return insideDesktopWindow(p->window, under); })) {
+              desktop->ensureHeaderTimer();
+              desktop->tickHeader();
+            }
+          }
+        }
         if (std::any_of(desktop->panels.begin(), desktop->panels.end(),
                         [](const auto &panel) { return panel->movingOrSizing; })) return 0;
         for (const auto &panel : desktop->panels) panel->applyThumbnails();
@@ -981,7 +1032,7 @@ int run(HINSTANCE instance, bool manage, bool create, bool delegated) {
             [&desktop] { return desktop.previewTarget(); });
         DesktopBlankClickWatcher blankClickWatcher(desktop.window);
         if (!SetTimer(desktop.window, 1, 400, nullptr)) throw 0;
-        if (!SetTimer(desktop.window, headerTimer, 70, nullptr)) throw 0;
+        desktop.ensureHeaderTimer();
         if (!SetPropW(desktop.window, readyProperty, reinterpret_cast<HANDLE>(1))) throw 0;
         if (manage) PostMessageW(desktop.window, manageMessage, 0, 0);
         if (create) PostMessageW(desktop.window, createMessage,

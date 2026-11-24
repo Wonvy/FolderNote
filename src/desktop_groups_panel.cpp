@@ -1186,12 +1186,19 @@ LRESULT CALLBACK iconInput(HWND control, UINT message, WPARAM w, LPARAM l, UINT_
     return DefSubclassProc(control, message, w, l);
   }
   if (message == WM_MBUTTONDOWN || message == WM_MBUTTONDBLCLK) {
-    panel.middleDown = GetCursorPos(&panel.middleDownPoint) != FALSE;
+    POINT pt{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
+    ClientToScreen(control, &pt);
+    if (!GetCursorPos(&panel.middleDownPoint)) panel.middleDownPoint = pt;
+    panel.middleDown = true;
     return 0;
   }
   if (message == WM_MBUTTONUP && std::exchange(panel.middleDown, false)) {
     POINT cursor{};
-    if (GetCursorPos(&cursor) && quick::middleClickWithin(panel.middleDownPoint, cursor)) {
+    if (!GetCursorPos(&cursor)) {
+      cursor = {GET_X_LPARAM(l), GET_Y_LPARAM(l)};
+      ClientToScreen(control, &cursor);
+    }
+    if (quick::middleClickWithin(panel.middleDownPoint, cursor)) {
       panel.handleMiddleClick(cursor);
     }
     return 0;
@@ -1406,10 +1413,12 @@ LRESULT CALLBACK Panel::dockTriggerProc(HWND trigger, UINT message, WPARAM w, LP
   auto &panel = *reinterpret_cast<Panel *>(data);
   if (message == WM_NCHITTEST) return HTCLIENT;
   if (message == WM_SETCURSOR) {
+    panel.desktop.ensureHeaderTimer();
     SetCursor(LoadCursorW(nullptr, IDC_ARROW));
     return TRUE;
   }
   if (message == WM_MOUSEMOVE || message == WM_LBUTTONDOWN || message == WM_RBUTTONDOWN) {
+    panel.desktop.ensureHeaderTimer();
     panel.dockHideAt = 0;
     panel.showDockedBox(true);
     return 0;
