@@ -94,7 +94,7 @@ ItemMenuResult showItemMenu(HWND owner, std::span<const std::wstring> paths, POI
   if (!shell) {
     folder.Reset();
     PCUITEMID_CHILD child = nullptr;
-    if (FAILED(SHBindToParent(parsedList.front().get(), IID_PPV_ARGS(&folder), &child)) || !child ||
+    if (FAILED(SHBindToParent(parsedList.front().get(), IID_PPV_ARGS(&folder), &child)) || !folder || !child ||
         FAILED(folder->GetUIObjectOf(owner, 1, &child, IID_IContextMenu, nullptr,
                                      reinterpret_cast<void **>(shell.GetAddressOf()))) || !shell)
       return outcome;

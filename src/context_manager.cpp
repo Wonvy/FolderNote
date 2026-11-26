@@ -188,7 +188,7 @@ struct Editor : Window {
     Microsoft::WRL::ComPtr<IShellItem> folder;
     if (SUCCEEDED(result)) result = dialog->GetResult(&folder);
     PWSTR raw = nullptr;
-    if (SUCCEEDED(result)) result = folder->GetDisplayName(SIGDN_FILESYSPATH, &raw);
+    if (SUCCEEDED(result)) result = folder ? folder->GetDisplayName(SIGDN_FILESYSPATH, &raw) : E_FAIL;
     std::unique_ptr<wchar_t, decltype(&CoTaskMemFree)> path(raw, CoTaskMemFree);
     if (FAILED(result) || !path) throw fn::Error{lang::text(L"无法打开文件夹选择窗口。")};
     set(id, path.get());

@@ -34,7 +34,7 @@ void syncHelper(const std::wstring &exe);
 void ensureHelperRunning() noexcept;
 void configureStartup(const std::wstring &exe, bool enabled);
 bool stopHelper(bool removeStartup = true);
-int helper(HINSTANCE, bool delegated = false);
+int helper(HINSTANCE, bool delegated = false, bool supervised = false);
 enum class HookRehookReason : unsigned {
   None = 0,
   MissedMouseMove = 1,

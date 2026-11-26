@@ -10,6 +10,7 @@
 #include "navigation.h"
 #include "core.h"
 #include "window_position.h"
+#include "runtime_guard.h"
 #include <exdisp.h>
 #include <shlguid.h>
 #include <shlobj.h>
@@ -34,7 +35,7 @@ ComPtr<IShellBrowser> browserFor(HWND target, HWND expectedView, HWND *actualVie
     ComPtr<IDispatch> dispatch; ComPtr<IServiceProvider> services; ComPtr<IShellBrowser> browser;
     ComPtr<IShellView> view; HWND viewWindow = nullptr;
     if (FAILED(windows->FindWindowSW(&location, &root, SWC_DESKTOP, &handle, SWFO_NEEDDISPATCH, &dispatch)) || !dispatch ||
-        FAILED(dispatch.As(&services)) || FAILED(services->QueryService(SID_STopLevelBrowser, IID_PPV_ARGS(&browser))) ||
+        FAILED(dispatch.As(&services)) || FAILED(services->QueryService(SID_STopLevelBrowser, IID_PPV_ARGS(&browser))) || !browser ||
         FAILED(browser->QueryActiveShellView(&view)) || !view || FAILED(view->GetWindow(&viewWindow)) ||
         !IsWindowVisible(viewWindow) || (expectedView && viewWindow != expectedView) ||
         !isDesktop(GetAncestor(viewWindow, GA_ROOT))) return {};
@@ -51,7 +52,7 @@ ComPtr<IShellBrowser> browserFor(HWND target, HWND expectedView, HWND *actualVie
     if (FAILED(dispatch.As(&web)) || FAILED(web->get_HWND(&handle)) ||
         GetAncestor(reinterpret_cast<HWND>(handle), GA_ROOT) != target) continue;
     ComPtr<IServiceProvider> services; ComPtr<IShellBrowser> browser;
-    if (FAILED(dispatch.As(&services)) || FAILED(services->QueryService(SID_STopLevelBrowser, IID_PPV_ARGS(&browser)))) continue;
+    if (FAILED(dispatch.As(&services)) || FAILED(services->QueryService(SID_STopLevelBrowser, IID_PPV_ARGS(&browser))) || !browser) continue;
     ComPtr<IShellView> view; HWND viewWindow = nullptr;
     if (FAILED(browser->QueryActiveShellView(&view)) || !view || FAILED(view->GetWindow(&viewWindow)) ||
         !IsWindowVisible(viewWindow) || (expectedView && expectedView != viewWindow) ||
@@ -319,6 +320,7 @@ int menu(HINSTANCE instance, HWND target, HWND view, POINT point) {
         detail::MenuGate gate;
         if (!gate.acquire()) {
           if (gate.error() != ERROR_TIMEOUT) fn::fail(lang::text(L"无法打开快速文件夹菜单"), gate.error());
+          guard::log(L"中键菜单被跳过：上一个菜单仍占用菜单锁");
           break;
         }
         if (!validTarget() || !foregroundOk() || !navigation::quickEnabled()) break;
@@ -433,7 +435,7 @@ int menu(HINSTANCE instance, HWND target, HWND view, POINT point) {
       ui::message(nullptr, error.message.c_str(), lang::text(L"快速文件夹"), MB_OK | MB_ICONINFORMATION);
     result = 1;
   }
-    catch (...) { result = 1; }
+    catch (...) { guard::log(L"中键菜单出现未知异常"); result = 1; }
   return result;
 }
 }

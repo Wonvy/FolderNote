@@ -24,7 +24,7 @@ std::wstring displayPath(IShellItem *item, SIGDN form) {
 HBITMAP loadDesktopThumbnail(const std::wstring &path, int pixels) {
   if (pixels <= 0) return nullptr;
   ComPtr<IShellItemImageFactory> factory;
-  if (FAILED(SHCreateItemFromParsingName(path.c_str(), nullptr, IID_PPV_ARGS(&factory)))) return nullptr;
+  if (FAILED(SHCreateItemFromParsingName(path.c_str(), nullptr, IID_PPV_ARGS(&factory))) || !factory) return nullptr;
   using Bitmap = std::unique_ptr<std::remove_pointer_t<HBITMAP>, decltype(&DeleteObject)>;
   HBITMAP image = nullptr;
   auto result = factory->GetImage({pixels, pixels}, SIIGBF_THUMBNAILONLY | SIIGBF_RESIZETOFIT | SIIGBF_SCALEUP, &image);

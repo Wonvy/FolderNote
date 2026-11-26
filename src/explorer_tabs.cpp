@@ -70,8 +70,8 @@ Location location(PCIDLIST_ABSOLUTE id) {
 }
 Location current(IShellBrowser *browser) {
   ComPtr<IShellView> view; ComPtr<IFolderView> folder; ComPtr<IPersistFolder2> persistent;
-  if (!browser || FAILED(browser->QueryActiveShellView(&view)) || FAILED(view.As(&folder)) ||
-      FAILED(folder->GetFolder(IID_PPV_ARGS(&persistent)))) return {};
+  if (!browser || FAILED(browser->QueryActiveShellView(&view)) || !view || FAILED(view.As(&folder)) || !folder ||
+      FAILED(folder->GetFolder(IID_PPV_ARGS(&persistent))) || !persistent) return {};
   PIDLIST_ABSOLUTE id = nullptr; Location value;
   if (SUCCEEDED(persistent->GetCurFolder(&id))) { value = location(id); CoTaskMemFree(id); }
   return value;
@@ -83,7 +83,7 @@ Location computer() {
 }
 bool selection(IShellBrowser *browser, std::vector<std::vector<BYTE>> &items) {
   ComPtr<IShellView> view; ComPtr<IFolderView> folder; ComPtr<IEnumIDList> list;
-  if (!browser || FAILED(browser->QueryActiveShellView(&view)) || FAILED(view.As(&folder))) return false;
+  if (!browser || FAILED(browser->QueryActiveShellView(&view)) || !view || FAILED(view.As(&folder)) || !folder) return false;
   int count = 0;
   if (FAILED(folder->ItemCount(SVGIO_SELECTION, &count)) || count < 0 || size_t(count) > routing::maxSelection) return false;
   items.clear(); if (!count) return true;

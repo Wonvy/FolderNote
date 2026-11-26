@@ -159,11 +159,11 @@ ComPtr<IContextMenu> contextMenu(HWND owner, const std::wstring &path, PreviewTa
   if (target == PreviewTarget::Background) {
     ComPtr<IShellFolder> desktop;
     if (SUCCEEDED(SHGetDesktopFolder(&desktop)) &&
-        SUCCEEDED(desktop->BindToObject(parsed, nullptr, IID_PPV_ARGS(&folder))))
+        SUCCEEDED(desktop->BindToObject(parsed, nullptr, IID_PPV_ARGS(&folder))) && folder)
       folder->CreateViewObject(owner, IID_PPV_ARGS(&menu));
   } else {
     PCUITEMID_CHILD child = nullptr;
-    if (SUCCEEDED(SHBindToParent(parsed, IID_PPV_ARGS(&folder), &child)) && child)
+    if (SUCCEEDED(SHBindToParent(parsed, IID_PPV_ARGS(&folder), &child)) && folder && child)
       folder->GetUIObjectOf(owner, 1, &child, IID_IContextMenu, nullptr, reinterpret_cast<void **>(menu.GetAddressOf()));
   }
   return menu;
@@ -238,7 +238,7 @@ void resolveHandlers(HWND owner, const std::wstring &path, PreviewTarget target,
   if (target == PreviewTarget::Object) {
     ComPtr<IShellFolder> folder;
     PCUITEMID_CHILD child = nullptr;
-    if (FAILED(SHBindToParent(location.get(), IID_PPV_ARGS(&folder), &child)) || !child ||
+    if (FAILED(SHBindToParent(location.get(), IID_PPV_ARGS(&folder), &child)) || !folder || !child ||
         FAILED(folder->GetUIObjectOf(owner, 1, &child, IID_IDataObject, nullptr,
                                      reinterpret_cast<void **>(selection.GetAddressOf()))))
       return;

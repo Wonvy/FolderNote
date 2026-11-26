@@ -40,6 +40,11 @@ jobs:
           if (!$section.Success) { throw "Missing changelog for $version." }
           $intro = "下载 **FolderNote-Setup-x64.exe** 即可安装，无需解压。Win11 首层菜单测试版请下载 **FolderNote-Setup-Win11-x64.exe**。安装包使用软件图标，可从 Windows 已安装的应用中卸载；覆盖升级保留用户设置和数据。`n`nZIP 用于兼容旧版在线更新。`n`n"
           ($intro + $section.Groups[1].Value.Trim()) | Set-Content dist/ReleaseNotes.md -Encoding utf8
+      - name: Collect debug symbols
+        run: |
+          $pdbs = 'FolderNote', 'FolderNoteShell', 'FolderNoteNavigation' | ForEach-Object { "build/Release/$_.pdb" } | Where-Object { Test-Path $_ }
+          if (!$pdbs) { throw "No release PDBs were produced." }
+          Compress-Archive -Path $pdbs -DestinationPath dist/FolderNote-symbols-x64.zip -Force
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: FolderNote-windows-x64
@@ -50,6 +55,7 @@ jobs:
             dist/FolderNote-win11-test.zip
             dist/SHA256SUMS.txt
             dist/ReleaseNotes.md
+            dist/FolderNote-symbols-x64.zip
           if-no-files-found: error
 
   release:
@@ -72,7 +78,7 @@ jobs:
         run: |
           $tag = $env:GITHUB_REF_NAME
           $repo = $env:GITHUB_REPOSITORY
-          $assets = 'packages/FolderNote-Setup-x64.exe', 'packages/FolderNote-Setup-Win11-x64.exe', 'packages/FolderNote-win-x64.zip', 'packages/FolderNote-win11-test.zip', 'packages/SHA256SUMS.txt'
+          $assets = 'packages/FolderNote-Setup-x64.exe', 'packages/FolderNote-Setup-Win11-x64.exe', 'packages/FolderNote-win-x64.zip', 'packages/FolderNote-win11-test.zip', 'packages/SHA256SUMS.txt', 'packages/FolderNote-symbols-x64.zip'
           $existing = gh release view $tag --repo $repo --json isDraft 2>$null
           if ($LASTEXITCODE -ne 0) {
             gh release create $tag --repo $repo --verify-tag --title "FolderNote $tag" --notes-file packages/ReleaseNotes.md --draft

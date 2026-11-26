@@ -11,9 +11,10 @@ std::wstring pickFolder(HWND owner) {
   dialog->SetTitle(lang::text(L"选择要映射的文件夹"));
   Microsoft::WRL::ComPtr<IShellItem> item;
   PWSTR path = nullptr;
-  if (FAILED(dialog->Show(owner)) || FAILED(dialog->GetResult(&item)) ||
+  if (FAILED(dialog->Show(owner)) || FAILED(dialog->GetResult(&item)) || !item ||
       FAILED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) return {};
   const std::unique_ptr<wchar_t, decltype(&CoTaskMemFree)> storage(path, CoTaskMemFree);
+  if (!path) return {};
   return quick::normalize(path);
 }
 

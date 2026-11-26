@@ -9,6 +9,7 @@
 #include "desktop_groups_process.h"
 #include "middle_click.h"
 #include "remote_input.h"
+#include "runtime_guard.h"
 #include <atomic>
 #include <memory>
 #include <new>
@@ -27,7 +28,12 @@ constexpr wchar_t propMouseTick[] = L"FolderNote.QuickFolders.MouseTick.v1";
 constexpr wchar_t propKeyboardTick[] = L"FolderNote.QuickFolders.KeyboardTick.v1";
 constexpr wchar_t runKey[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 constexpr wchar_t runName[] = L"FolderNote.QuickFolders";
-constexpr UINT showMessage = WM_APP + 0x511, foregroundMessage = WM_APP + 0x512, rehookMessage = WM_APP + 0x513;
+constexpr UINT showMessage = WM_APP + 0x511, foregroundMessage = WM_APP + 0x512, rehookMessage = WM_APP + 0x513,
+               rehookLogMessage = WM_APP + 0x514;
+// A crashed helper is restarted at most this often; beyond it the supervisor
+// gives up so a deterministic startup crash cannot loop forever.
+constexpr int supervisorRestartLimit = 3;
+constexpr DWORD supervisorRestartWindow = 10 * 60 * 1000;
 constexpr UINT_PTR historyTimer = 2;
 std::atomic<HWND> eligible{nullptr};
 std::atomic<DWORD> activeHookThreadId{0};
@@ -57,6 +63,9 @@ void recordHookRehook(HookRehookReason reason, bool mouseInstalled, bool keyboar
     SetPropW(receiver, propRehookCount, reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(count)));
     SetPropW(receiver, propRehookReason, reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(code)));
     SetPropW(receiver, propRehookTick, reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(tick)));
+    // Never write files on the hook thread: a slow disk would delay hook
+    // callbacks past LowLevelHooksTimeout. The UI thread logs it instead.
+    PostMessageW(receiver, rehookLogMessage, code, count);
   }
 }
 // Pure decision, kept separate so it can be verified without real hooks.
@@ -367,6 +376,11 @@ LRESULT CALLBACK helperProc(HWND window, UINT message, WPARAM w, LPARAM l) {
     if (message == WM_TIMER && w == 1) { if (!legacy::reap()) KillTimer(window, 1); return 0; }
     if (message == WM_TIMER && w == historyTimer) { updateTarget(); return 0; }
     if (message == foregroundMessage) { updateTarget(); return 0; }
+    if (message == rehookLogMessage) {
+      guard::log(std::wstring(L"中键钩子重挂：原因=") + hookRehookReasonText(static_cast<HookRehookReason>(w)) +
+                 L"，累计 " + std::to_wstring(l) + L" 次");
+      return 0;
+    }
     if (message == showMessage) {
       std::unique_ptr<MenuRequest> request(reinterpret_cast<MenuRequest *>(l));
       const auto desktopActive = [&](HWND current) {
@@ -384,7 +398,13 @@ LRESULT CALLBACK helperProc(HWND window, UINT message, WPARAM w, LPARAM l) {
       }
       return 0;
     }
-  } catch (...) { }
+  } catch (const fn::Error &error) {
+    guard::log(L"后台组件消息处理失败：" + error.message);
+  } catch (const std::exception &error) {
+    guard::log(L"后台组件消息处理异常：" + std::wstring(error.what(), error.what() + strlen(error.what())));
+  } catch (...) {
+    guard::log(L"后台组件消息处理出现未知异常");
+  }
   return DefWindowProcW(window, message, w, l);
 }
 }
@@ -541,18 +561,68 @@ void ensureHelperRunning() noexcept {
     launchHelper(executable(), context);
   } catch (...) {}
 }
-int helper(HINSTANCE instance, bool delegated) {
+namespace {
+// The background helper hosts global hooks and third-party Shell/UIA code; a
+// crash there used to silently disable middle-click until the user toggled the
+// setting. This thin parent restarts it after abnormal exits. It owns no hooks,
+// windows or COM state, so it has nothing that can crash with the child.
+int superviseHelper() {
+  std::wstring exe;
+  try { exe = fn::modulePath().native(); } catch (...) { return 1; }
+  guard::log(L"后台组件守护进程启动");
+  DWORD windowStart = GetTickCount();
+  int restarts = 0;
+  for (;;) {
+    if (!helperEnabled()) return 0;
+    auto command = L"\"" + exe + L"\" --quick-helper --supervised";
+    STARTUPINFOW startup{sizeof(startup)};
+    startup.dwFlags = STARTF_FORCEOFFFEEDBACK;
+    PROCESS_INFORMATION process{};
+    if (!CreateProcessW(exe.c_str(), command.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &startup, &process)) {
+      guard::log(L"无法启动后台组件，错误 " + std::to_wstring(GetLastError()));
+      return 1;
+    }
+    CloseHandle(process.hThread);
+    for (;;) {
+      // Pump (and drop) messages so Windows clears the startup feedback cursor.
+      const DWORD wait = MsgWaitForMultipleObjects(1, &process.hProcess, FALSE, INFINITE, QS_ALLINPUT);
+      if (wait != WAIT_OBJECT_0 + 1) break;
+      MSG message;
+      while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {}
+    }
+    DWORD code = 1;
+    GetExitCodeProcess(process.hProcess, &code);
+    CloseHandle(process.hProcess);
+    if (code == 0 || !helperEnabled()) return 0;
+    // Another helper instance (e.g. started by Settings) already took over.
+    if (FindWindowExW(HWND_MESSAGE, nullptr, helperClass, nullptr)) return 0;
+    const DWORD now = GetTickCount();
+    if (now - windowStart > supervisorRestartWindow) { windowStart = now; restarts = 0; }
+    wchar_t exitText[16]{};
+    swprintf_s(exitText, L"0x%08lX", code);
+    if (++restarts > supervisorRestartLimit) {
+      guard::log(std::wstring(L"后台组件反复异常退出（") + exitText + L"），已停止自动重启");
+      return static_cast<int>(code);
+    }
+    guard::log(std::wstring(L"后台组件异常退出（") + exitText + L"），第 " + std::to_wstring(restarts) + L" 次自动重启");
+    Sleep(guard::crashExitCode(code) ? 1000 : 3000);
+  }
+}
+}
+int helper(HINSTANCE instance, bool delegated, bool supervised) {
   if (!helperEnabled()) return 0;
   // Explorer and its router must have matching integrity levels. Inheriting
   // an administrator settings/installer token silently rejects every frame.
   const auto context = desktop_groups::desktopLaunchContext();
   if (context.mode != desktop_groups::DesktopLaunchMode::Direct) {
-    if (delegated || context.mode != desktop_groups::DesktopLaunchMode::Explorer) return 1;
+    if (delegated || supervised || context.mode != desktop_groups::DesktopLaunchMode::Explorer) return 1;
     const auto running = FindWindowExW(HWND_MESSAGE, nullptr, helperClass, nullptr);
     if (running && desktop_groups::desktopReceiverStatus(running, context) == desktop_groups::DesktopReceiverStatus::Elevated &&
         !stopHelper(false)) return 1;
     return launchHelper(fn::modulePath().native(), context) ? 0 : 1;
   }
+  if (!supervised) return superviseHelper();
+  guard::installCrashHandler(L"helper");
   HANDLE mutex = CreateMutexW(nullptr, FALSE, L"Local\\FolderNote.QuickFolders.Helper.v1");
   if (!mutex) return 1;
   // A settings/upgrade restart may outlive stopHelper's short UI wait. Wait in
@@ -580,8 +650,14 @@ int helper(HINSTANCE instance, bool delegated) {
   const bool ready = (!observe || (thread && hook.hook)) && searchReady && (!searchMode || hook.keyboard) && (!routeMode || router) &&
                      SetPropW(receiver, readyProperty, reinterpret_cast<HANDLE>(1));
   if (ready) {
+    guard::log(std::wstring(L"后台组件就绪：中键=") + (quickMode ? L"开" : L"关") + L"，标签路由=" + (routeMode ? L"开" : L"关") +
+               L"，快捷搜索=" + (searchMode ? L"开" : L"关"));
     MSG message;
     while (GetMessageW(&message, nullptr, 0, 0) > 0) { TranslateMessage(&message); DispatchMessageW(&message); }
+  } else {
+    guard::log(std::wstring(L"后台组件启动失败：钩子=") + (hook.hook ? L"成功" : L"失败") + L"，键盘钩子=" +
+               (hook.keyboard ? L"成功" : L"失败") + L"，搜索=" + (searchReady ? L"就绪" : L"失败") +
+               L"，路由=" + (!routeMode || router ? L"就绪" : L"失败"));
   }
   eligible = nullptr;
   quick_find::external::stop();

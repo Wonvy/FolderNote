@@ -4,6 +4,7 @@
 #include "explorer_tabs.h"
 #include "quick_find_external.h"
 #include "quick_folders.h"
+#include "runtime_guard.h"
 #include <tlhelp32.h>
 #include <set>
 #include <sstream>
@@ -136,7 +137,9 @@ std::wstring diagnostics() {
     CloseHandle(snapshot);
     if (!found) text << L"Explorer " << pid << L"：未加载导航 DLL\r\n";
   }
-  text << L"以上只读取加载状态；DLL 已加载不代表手势已完成实测。";
+  text << L"以上只读取加载状态；DLL 已加载不代表手势已完成实测。\r\n"
+       << L"最近一次崩溃转储：" << guard::lastCrash() << L"\r\n"
+       << L"最近日志（最多 50 行）：\r\n" << guard::recentLog(50);
   return text.str();
 }
 } // namespace navigation

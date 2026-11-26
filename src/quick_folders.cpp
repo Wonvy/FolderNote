@@ -275,9 +275,10 @@ std::wstring viewPath(IShellView *view) {
   if (!view) return {};
   ComPtr<IFolderView> folder;
   ComPtr<IPersistFolder2> persistent;
-  if (FAILED(view->QueryInterface(IID_PPV_ARGS(&folder))) || FAILED(folder->GetFolder(IID_PPV_ARGS(&persistent)))) return {};
+  if (FAILED(view->QueryInterface(IID_PPV_ARGS(&folder))) || !folder ||
+      FAILED(folder->GetFolder(IID_PPV_ARGS(&persistent))) || !persistent) return {};
   PIDLIST_ABSOLUTE id = nullptr;
-  if (FAILED(persistent->GetCurFolder(&id))) return {};
+  if (FAILED(persistent->GetCurFolder(&id)) || !id) { CoTaskMemFree(id); return {}; }
   std::wstring path(32768, 0);
   bool ok = SHGetPathFromIDListEx(id, path.data(), static_cast<DWORD>(path.size()), GPFIDL_DEFAULT) != FALSE;
   CoTaskMemFree(id);

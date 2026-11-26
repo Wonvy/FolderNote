@@ -149,7 +149,7 @@ std::wstring pickFolder(HWND owner) {
   ComPtr<IShellItem> item;
   if (SUCCEEDED(result)) result = dialog->GetResult(&item);
   PWSTR rawPath = nullptr;
-  if (SUCCEEDED(result)) result = item->GetDisplayName(SIGDN_FILESYSPATH, &rawPath);
+  if (SUCCEEDED(result)) result = item ? item->GetDisplayName(SIGDN_FILESYSPATH, &rawPath) : E_FAIL;
   std::unique_ptr<wchar_t, decltype(&CoTaskMemFree)> path(rawPath, CoTaskMemFree);
   if (FAILED(result) || !path) throw fn::Error{lang::text(L"无法打开文件夹选择窗口。")};
   return path.get();

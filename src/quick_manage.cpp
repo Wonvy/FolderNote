@@ -233,7 +233,7 @@ LRESULT CALLBACK managerProc(HWND window, UINT message, WPARAM w, LPARAM l) {
         dialog->SetTitle(lang::text(L"选择要置顶的文件夹"));
         if (SUCCEEDED(dialog->Show(window))) {
           Microsoft::WRL::ComPtr<IShellItem> item; PWSTR path = nullptr;
-          if (SUCCEEDED(dialog->GetResult(&item)) && SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) {
+          if (SUCCEEDED(dialog->GetResult(&item)) && item && SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path)) && path) {
             std::wstring value(path); CoTaskMemFree(path); pin(value, true);
           }
         }

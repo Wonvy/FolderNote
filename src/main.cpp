@@ -6,6 +6,7 @@
 #include "desktop_groups_visibility.h"
 #include "navigation.h"
 #include "quick_folders.h"
+#include "runtime_guard.h"
 #include <climits>
 #include "explorer_refresh.h"
 #include "resource.h"
@@ -331,12 +332,14 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
     return result;
   }
   const bool desktopDelegated = argc == 3 && std::wstring_view(argv[2]) == L"--from-desktop-shell";
+  const bool helperSupervised = argc == 3 && std::wstring_view(argv[2]) == L"--supervised";
   if ((argc == 2 || desktopDelegated) && (std::wstring_view(argv[1]) == L"--desktop-groups" ||
                                          std::wstring_view(argv[1]) == L"--desktop-groups-manage" ||
                                          std::wstring_view(argv[1]) == L"--desktop-groups-create")) {
     const bool manage = std::wstring_view(argv[1]) == L"--desktop-groups-manage";
     const bool create = std::wstring_view(argv[1]) == L"--desktop-groups-create";
     LocalFree(argv);
+    guard::installCrashHandler(L"desktop");
     const auto result = desktop_groups::run(inst, manage, create, desktopDelegated);
     CoUninitialize();
     return result;
@@ -351,16 +354,16 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
     }
     LocalFree(argv); CoUninitialize(); return result;
   }
-  if ((argc == 2 || desktopDelegated) && std::wstring(argv[1]) == L"--quick-helper") {
+  if ((argc == 2 || desktopDelegated || helperSupervised) && std::wstring(argv[1]) == L"--quick-helper") {
     LocalFree(argv);
-    if (!desktopDelegated) {
+    if (!desktopDelegated && !helperSupervised) {
       for (int attempt = 0; attempt < 60 &&
            desktop_groups::desktopLaunchContext().mode == desktop_groups::DesktopLaunchMode::Unavailable;
            ++attempt) {
         Sleep(500);
       }
     }
-    auto result = quick::helper(inst, desktopDelegated);
+    auto result = quick::helper(inst, desktopDelegated, helperSupervised);
     CoUninitialize();
     return result;
   }
@@ -368,6 +371,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
     LocalFree(argv); auto result = navigation::settings(inst, navigation::SettingsPage::QuickFolders); CoUninitialize(); return result;
   }
   if (argc == 6 && std::wstring(argv[1]) == L"--quick-menu") {
+    guard::installCrashHandler(L"menu");
     int result = 1;
     try {
       auto number = [&](int index) { size_t used = 0; auto value = std::stoll(argv[index], &used); if (used != wcslen(argv[index])) throw 1; return value; };

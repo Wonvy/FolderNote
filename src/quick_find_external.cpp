@@ -160,7 +160,7 @@ Contents readItems(IUIAutomation *ui, IUIAutomationElement *list, const Input &i
     if (SUCCEEDED(ui->CreatePropertyCondition(UIA_ControlTypePropertyId, type, &condition)) &&
         condition && SUCCEEDED(list->FindAll(TreeScope_Descendants, condition.Get(), &items)) && items) {
       int count = 0;
-      items->get_Length(&count);
+      if (FAILED(items->get_Length(&count))) count = 0;
       for (int i = 0; i < count && i < 20000 && current(input); ++i) {
         ComPtr<IUIAutomationElement> item;
         if (SUCCEEDED(items->GetElement(i, &item)) && item) append(std::move(item));

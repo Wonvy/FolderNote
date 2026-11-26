@@ -134,13 +134,15 @@ public:
       for (DWORD i = 0; i < count; ++i) {
         IShellItem *item = nullptr;
         hr = selection->GetItemAt(i, &item);
-        if (FAILED(hr))
-          return hr;
+        if (FAILED(hr) || !item)
+          return FAILED(hr) ? hr : E_FAIL;
         PWSTR path = nullptr;
         hr = item->GetDisplayName(SIGDN_FILESYSPATH, &path);
         item->Release();
-        if (FAILED(hr))
-          return hr;
+        if (FAILED(hr) || !path) {
+          CoTaskMemFree(path);
+          return FAILED(hr) ? hr : E_FAIL;
+        }
         paths.emplace_back(path);
         CoTaskMemFree(path);
       }
