@@ -25,14 +25,18 @@ std::wstring currentPath(HWND target) {
   ComPtr<IUIAutomationElement> root;
   ComPtr<IUIAutomationCondition> condition;
   VARIANT type{}; type.vt = VT_I4; type.lVal = UIA_ToolBarControlTypeId;
-  if (FAILED(automation->ElementFromHandle(target, &root)) ||
-      FAILED(automation->CreatePropertyCondition(UIA_ControlTypePropertyId, type, &condition))) return {};
+  // UIA may return S_OK with a null out-pointer when the dialog closes or the
+  // 200 ms timeout expires mid-query. This runs in the background helper, so a
+  // null dereference here would kill middle-click for the whole session.
+  if (FAILED(automation->ElementFromHandle(target, &root)) || !root ||
+      FAILED(automation->CreatePropertyCondition(UIA_ControlTypePropertyId, type, &condition)) || !condition) return {};
   ComPtr<IUIAutomationElementArray> bars;
-  if (FAILED(root->FindAll(TreeScope_Descendants, condition.Get(), &bars))) return {};
-  int count = 0; bars->get_Length(&count);
+  if (FAILED(root->FindAll(TreeScope_Descendants, condition.Get(), &bars)) || !bars) return {};
+  int count = 0;
+  if (FAILED(bars->get_Length(&count))) return {};
   for (int i = 0; i < std::min(count, 16); ++i) {
     ComPtr<IUIAutomationElement> element; BSTR name = nullptr;
-    if (SUCCEEDED(bars->GetElement(i, &element)) && SUCCEEDED(element->get_CurrentName(&name))) {
+    if (SUCCEEDED(bars->GetElement(i, &element)) && element && SUCCEEDED(element->get_CurrentName(&name))) {
       auto path = name ? pathFromText(name) : std::wstring(); SysFreeString(name);
       if (!path.empty()) return path;
     }
