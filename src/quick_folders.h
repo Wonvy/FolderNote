@@ -35,6 +35,11 @@ void ensureHelperRunning() noexcept;
 void configureStartup(const std::wstring &exe, bool enabled);
 bool stopHelper(bool removeStartup = true);
 int helper(HINSTANCE, bool delegated = false, bool supervised = false);
+// The helper shows menus on a resident thread through this runner (normally
+// quick::menu). Unset, or set HKCU\Software\FolderNote\QuickMenuInProcess=0,
+// to always use a separate --quick-menu process.
+using MenuRunner = int (*)(HINSTANCE, HWND target, HWND view, POINT point);
+void setInProcessMenu(MenuRunner runner) noexcept;
 enum class HookRehookReason : unsigned {
   None = 0,
   MissedMouseMove = 1,

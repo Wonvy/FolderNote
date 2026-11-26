@@ -155,11 +155,43 @@ HWND searchTarget(HWND window) {
   }
   return search;
 }
+// File dialogs navigate without a foreground change. Instead of polling every
+// 250 ms, watch name changes (the address band's accessible name carries the
+// path) only in the foreground dialog's process, debounced, plus a slow
+// fallback in case an event is missed. No timer runs when no dialog is active.
+constexpr UINT historyFallbackMs = 1000, historyDebounceMs = 300;
+constexpr UINT_PTR historyDebounceTimer = 3;
+HWND observedDialog = nullptr;
+HWINEVENTHOOK dialogNameHook = nullptr;
+DWORD dialogNameProcess = 0;
+void CALLBACK dialogNameEvent(HWINEVENTHOOK, DWORD, HWND window, LONG, LONG, DWORD, DWORD) {
+  if (receiver && window && observedDialog && GetAncestor(window, GA_ROOT) == observedDialog)
+    SetTimer(receiver, historyDebounceTimer, historyDebounceMs, nullptr);
+}
+void watchDialog(HWND dialogWindow) {
+  DWORD process = 0;
+  if (dialogWindow) GetWindowThreadProcessId(dialogWindow, &process);
+  observedDialog = process ? dialogWindow : nullptr;
+  if (process != dialogNameProcess) {
+    if (dialogNameHook) UnhookWinEvent(dialogNameHook);
+    dialogNameHook = nullptr; dialogNameProcess = 0;
+    if (process) {
+      dialogNameHook = SetWinEventHook(EVENT_OBJECT_NAMECHANGE, EVENT_OBJECT_NAMECHANGE, nullptr, dialogNameEvent,
+                                       process, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+      if (dialogNameHook) dialogNameProcess = process;
+    }
+  }
+  if (!receiver) return;
+  if (observedDialog) SetTimer(receiver, historyTimer, historyFallbackMs, nullptr);
+  else { KillTimer(receiver, historyTimer); KillTimer(receiver, historyDebounceTimer); }
+}
 void updateTarget() {
   HWND window = GetForegroundWindow();
   eligible.store(eligibleTarget(window) ? window : nullptr);
-  dialog::observeHistory(eligible.load() == window && isFileDialog(window) ? window : nullptr);
+  const bool dialogWindow = isFileDialog(window);
+  dialog::observeHistory(eligible.load() == window && dialogWindow ? window : nullptr);
   quick_find::external::target(searchTarget(window));
+  watchDialog(dialogWindow ? window : nullptr);
 }
 void CALLBACK foregroundEvent(HWINEVENTHOOK, DWORD event, HWND window, LONG, LONG, DWORD, DWORD) {
   if (event == EVENT_SYSTEM_DESKTOPSWITCH) {
@@ -346,6 +378,78 @@ DWORD WINAPI hookThread(void *argument) {
   if (state->keyboard) UnhookWindowsHookEx(state->keyboard);
   return 0;
 }
+// Resident menu thread: showing the menu from the already-running helper skips
+// a process start (and its 200 ms gate race) on every middle click. While it is
+// busy (menu open, slow copy/move, dialog) or unavailable, the proven separate
+// --quick-menu process is used instead, so a click is never dropped.
+constexpr UINT menuRunMessage = WM_APP + 0x515;
+constexpr wchar_t inProcessMenuValue[] = L"QuickMenuInProcess";
+MenuRunner inProcessMenu = nullptr;
+HANDLE menuThread = nullptr;
+DWORD menuThreadId = 0;
+std::atomic<bool> menuBusy{false};
+struct MenuJob { HINSTANCE instance; HWND target; POINT point; };
+DWORD WINAPI menuThreadProc(void *ready) {
+  const HRESULT initialized = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+  MSG msg; PeekMessageW(&msg, nullptr, WM_USER, WM_USER, PM_NOREMOVE);
+  SetEvent(static_cast<HANDLE>(ready));
+  while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
+    if (msg.hwnd || msg.message != menuRunMessage) { TranslateMessage(&msg); DispatchMessageW(&msg); continue; }
+    std::unique_ptr<MenuJob> job(reinterpret_cast<MenuJob *>(msg.lParam));
+    const ULONGLONG started = GetTickCount64();
+    try { if (job && inProcessMenu) inProcessMenu(job->instance, job->target, nullptr, job->point); }
+    catch (...) { guard::log(L"常驻中键菜单出现未知异常"); }
+    const ULONGLONG elapsed = GetTickCount64() - started;
+    if (elapsed > 60000) guard::log(L"常驻中键菜单占用了 " + std::to_wstring(elapsed / 1000) + L" 秒（期间改用独立进程）");
+    menuBusy = false;
+  }
+  if (SUCCEEDED(initialized)) CoUninitialize();
+  return 0;
+}
+bool inProcessMenuAllowed() {
+  DWORD value = 1, size = sizeof(value);
+  if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", inProcessMenuValue, RRF_RT_REG_DWORD, nullptr, &value, &size) != ERROR_SUCCESS)
+    value = 1;
+  return value != 0;
+}
+void startMenuThread() {
+  if (!inProcessMenu || menuThread || !inProcessMenuAllowed()) return;
+  HANDLE ready = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+  if (!ready) return;
+  menuThread = CreateThread(nullptr, 0, menuThreadProc, ready, 0, &menuThreadId);
+  // Wait indefinitely like hookThread: menuThreadProc only initializes COM and
+  // creates its message queue before signaling, so closing ready early is unsafe.
+  if (menuThread) WaitForSingleObject(ready, INFINITE);
+  CloseHandle(ready);
+  if (!menuThread) guard::log(L"无法启动常驻中键菜单线程，改用独立进程");
+}
+void signalMenuThreadQuit() {
+  if (menuThread && menuThreadId) PostThreadMessageW(menuThreadId, WM_QUIT, 0, 0);
+}
+void joinMenuThread() {
+  if (!menuThread) return;
+  // Wait after hooks, receiver window and singleton mutex are already released,
+  // so a new helper can start immediately while any in-progress Copy/Move or
+  // Shell call on this thread finishes cleanly before CRT static teardown.
+  WaitForSingleObject(menuThread, INFINITE);
+  CloseHandle(menuThread);
+  menuThread = nullptr; menuThreadId = 0; menuBusy = false;
+}
+void showMenu(HINSTANCE instance, HWND target, POINT point) {
+  if (menuThread) {
+    if (WaitForSingleObject(menuThread, 0) != WAIT_TIMEOUT) {
+      CloseHandle(menuThread);
+      menuThread = nullptr; menuThreadId = 0; menuBusy = false;
+      guard::log(L"常驻中键菜单线程已提前退出，改用独立进程");
+    } else if (dialog::pathReaderAvailable() && !menuBusy.exchange(true)) {
+      auto job = new (std::nothrow) MenuJob{instance, target, point};
+      if (job && PostThreadMessageW(menuThreadId, menuRunMessage, 0, reinterpret_cast<LPARAM>(job))) return;
+      delete job;
+      menuBusy = false;
+    }
+  }
+  launchMenu(target, nullptr, point);
+}
 LRESULT CALLBACK helperProc(HWND window, UINT message, WPARAM w, LPARAM l) {
   LRESULT routingResult = 0;
   if (tabs::routing::message(window, message, w, l, routingResult)) return routingResult;
@@ -355,7 +459,8 @@ LRESULT CALLBACK helperProc(HWND window, UINT message, WPARAM w, LPARAM l) {
                              propRehookReason, propRehookTick, propMouseTick, propKeyboardTick}) {
       RemovePropW(window, prop);
     }
-    tabs::routing::stop(); KillTimer(window, 1); KillTimer(window, historyTimer); legacy::shutdown(); dialog::stopHistory();
+    tabs::routing::stop(); KillTimer(window, 1); KillTimer(window, historyTimer); KillTimer(window, historyDebounceTimer);
+    watchDialog(nullptr); legacy::shutdown(); dialog::stopHistory();
     MSG pending{};
     while (PeekMessageW(&pending, window, showMessage, showMessage, PM_REMOVE))
       delete reinterpret_cast<MenuRequest *>(pending.lParam);
@@ -375,6 +480,7 @@ LRESULT CALLBACK helperProc(HWND window, UINT message, WPARAM w, LPARAM l) {
     }
     if (message == WM_TIMER && w == 1) { if (!legacy::reap()) KillTimer(window, 1); return 0; }
     if (message == WM_TIMER && w == historyTimer) { updateTarget(); return 0; }
+    if (message == WM_TIMER && w == historyDebounceTimer) { KillTimer(window, historyDebounceTimer); updateTarget(); return 0; }
     if (message == foregroundMessage) { updateTarget(); return 0; }
     if (message == rehookLogMessage) {
       guard::log(std::wstring(L"中键钩子重挂：原因=") + hookRehookReasonText(static_cast<HookRehookReason>(w)) +
@@ -393,7 +499,7 @@ LRESULT CALLBACK helperProc(HWND window, UINT message, WPARAM w, LPARAM l) {
         const HWND fgAfter = GetForegroundWindow();
         if (request->desktopBox || request->target == fgAfter || desktopActive(fgAfter)) {
           eligible.store(request->target);
-          launchMenu(request->target, nullptr, request->point);
+          showMenu(GetModuleHandleW(nullptr), request->target, request->point);
         }
       }
       return 0;
@@ -408,6 +514,7 @@ LRESULT CALLBACK helperProc(HWND window, UINT message, WPARAM w, LPARAM l) {
   return DefWindowProcW(window, message, w, l);
 }
 }
+void setInProcessMenu(MenuRunner runner) noexcept { inProcessMenu = runner; }
 const wchar_t *hookRehookReasonText(HookRehookReason reason) noexcept {
   switch (reason) {
   case HookRehookReason::None: return L"无（初始挂载）";
@@ -642,7 +749,7 @@ int helper(HINSTANCE instance, bool delegated, bool supervised) {
   auto event = observe ? SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, nullptr, foregroundEvent, 0, 0, WINEVENT_OUTOFCONTEXT) : nullptr;
   auto desktopSwitch = observe ? SetWinEventHook(EVENT_SYSTEM_DESKTOPSWITCH, EVENT_SYSTEM_DESKTOPSWITCH, nullptr, foregroundEvent, 0, 0, WINEVENT_OUTOFCONTEXT) : nullptr;
   auto shown = observe ? SetWinEventHook(EVENT_OBJECT_SHOW, EVENT_OBJECT_SHOW, nullptr, foregroundEvent, 0, 0, WINEVENT_OUTOFCONTEXT) : nullptr;
-  if (observe) { updateTarget(); SetTimer(receiver, historyTimer, 250, nullptr); }
+  if (observe) updateTarget();
   HookStart hook{observe ? CreateEventW(nullptr, TRUE, FALSE, nullptr) : nullptr, nullptr, nullptr, searchMode};
   DWORD threadId = 0;
   HANDLE thread = hook.ready ? CreateThread(nullptr, 0, hookThread, &hook, 0, &threadId) : nullptr;
@@ -650,8 +757,9 @@ int helper(HINSTANCE instance, bool delegated, bool supervised) {
   const bool ready = (!observe || (thread && hook.hook)) && searchReady && (!searchMode || hook.keyboard) && (!routeMode || router) &&
                      SetPropW(receiver, readyProperty, reinterpret_cast<HANDLE>(1));
   if (ready) {
+    if (quickMode) startMenuThread();
     guard::log(std::wstring(L"后台组件就绪：中键=") + (quickMode ? L"开" : L"关") + L"，标签路由=" + (routeMode ? L"开" : L"关") +
-               L"，快捷搜索=" + (searchMode ? L"开" : L"关"));
+               L"，快捷搜索=" + (searchMode ? L"开" : L"关") + L"，菜单=" + (menuThread ? L"常驻线程" : L"独立进程"));
     MSG message;
     while (GetMessageW(&message, nullptr, 0, 0) > 0) { TranslateMessage(&message); DispatchMessageW(&message); }
   } else {
@@ -660,6 +768,7 @@ int helper(HINSTANCE instance, bool delegated, bool supervised) {
                L"，路由=" + (!routeMode || router ? L"就绪" : L"失败"));
   }
   eligible = nullptr;
+  signalMenuThreadQuit();
   quick_find::external::stop();
   tabs::routing::stop();
   if (thread) { PostThreadMessageW(threadId, WM_QUIT, 0, 0); WaitForSingleObject(thread, INFINITE); CloseHandle(thread); }
@@ -667,9 +776,11 @@ int helper(HINSTANCE instance, bool delegated, bool supervised) {
   if (event) UnhookWinEvent(event);
   if (desktopSwitch) UnhookWinEvent(desktopSwitch);
   if (shown) UnhookWinEvent(shown);
+  watchDialog(nullptr);
   if (IsWindow(receiver)) DestroyWindow(receiver);
   receiver = nullptr;
   ReleaseMutex(mutex); CloseHandle(mutex);
+  joinMenuThread();
   return ready ? 0 : 1;
 }
 }

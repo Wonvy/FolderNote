@@ -338,7 +338,7 @@ int menu(HINSTANCE instance, HWND target, HWND view, POINT point) {
               selection = transfer::selectedItems(active.Get(), selectedCount);
               if (!browserFor(target, view) || !foregroundOk()) { selection.Reset(); selectedCount = 0; }
             }
-          } else current = dialog::currentPath(target);
+          } else current = dialog::safeCurrentPath(target);
           if (desktop) {
             PWSTR path = nullptr;
             if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Desktop, KF_FLAG_DONT_VERIFY, nullptr, &path))) current = path;

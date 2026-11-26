@@ -581,6 +581,30 @@ int main() {
           hookDiag.msSinceLastRehook < 5000 &&
           std::wstring_view(quick::hookRehookReasonText(hookDiag.lastRehookReason)) == L"指针移动未收到回调",
           "hook diagnostics publish install state, callback ticks, rehook count, and last rehook reason");
+    quick::watchDialog(first);
+    check(quick::observedDialog == first && quick::dialogNameHook != nullptr && quick::dialogNameProcess != 0,
+          "watchDialog installs a name-change hook while a file dialog is observed");
+    quick::watchDialog(nullptr);
+    check(quick::observedDialog == nullptr && quick::dialogNameHook == nullptr && quick::dialogNameProcess == 0,
+          "watchDialog tears down the name-change hook when no dialog is observed");
+    const size_t beforeFallback = launches.size();
+    quick::showMenu(nullptr, first, {11, 22});
+    check(launches.size() == beforeFallback + 1 && launches.back().first == first &&
+          launches.back().second.x == 11 && launches.back().second.y == 22,
+          "showMenu falls back to separate process when no resident menu thread exists");
+    HANDLE dummy = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    check(dummy != nullptr, "create dummy handle for menu-thread fallback tests");
+    quick::menuThread = dummy;
+    quick::menuBusy = true;
+    quick::showMenu(nullptr, first, {33, 44});
+    check(launches.size() == beforeFallback + 2 && quick::menuThread == dummy,
+          "showMenu falls back to separate process without closing a busy resident thread");
+    SetEvent(dummy);
+    quick::menuBusy = false;
+    quick::showMenu(nullptr, first, {55, 66});
+    check(quick::menuThread == nullptr && launches.size() == beforeFallback + 3,
+          "showMenu detects and clears an exited resident menu thread and falls back");
+    if (quick::menuThread) { CloseHandle(quick::menuThread); quick::menuThread = nullptr; }
     DestroyWindow(quick::receiver); quick::receiver = nullptr;
     DestroyWindow(first); DestroyWindow(second); DestroyWindow(ordinary); UnregisterClassW(shell.lpszClassName, shell.hInstance);
     std::cout << "PASS " << checks << " quick runtime assertions: foreground race, per-click targets, queued coordinates, gesture filtering, helper handoff\n";

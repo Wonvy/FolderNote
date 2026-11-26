@@ -363,6 +363,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
         Sleep(500);
       }
     }
+    quick::setInProcessMenu(&quick::menu);
     auto result = quick::helper(inst, desktopDelegated, helperSupervised);
     CoUninitialize();
     return result;
