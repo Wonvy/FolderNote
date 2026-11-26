@@ -600,6 +600,11 @@ bool writeAtomicBytes(std::string_view bytes, const fn::fs::path &file, bool rep
       if (!FlushFileBuffers(output.handle)) fn::fail(lang::text(writeError));
     }
     const DWORD flags = MOVEFILE_WRITE_THROUGH | (replace ? MOVEFILE_REPLACE_EXISTING : 0);
+    if (replace && attributes != INVALID_FILE_ATTRIBUTES) {
+      auto backup = file;
+      backup += L".bak";
+      CopyFileW(file.c_str(), backup.c_str(), FALSE);
+    }
     if (MoveFileExW(temporary.c_str(), file.c_str(), flags)) return true;
     const auto error = GetLastError();
     if (!replace && (error == ERROR_FILE_EXISTS || error == ERROR_ALREADY_EXISTS)) {
@@ -625,7 +630,16 @@ std::filesystem::path layoutPath() { return fn::localRoot() / L"DesktopGroups.js
 Layout readLayout(const fn::fs::path &file) { return loadJson(file).value_or(Layout{}); }
 
 Layout loadLayout(const fn::fs::path &file) {
-  if (auto layout = loadJson(file)) return std::move(*layout);
+  try {
+    if (auto layout = loadJson(file)) return std::move(*layout);
+  } catch (const fn::Error &) {
+    auto backup = file;
+    backup += L".bak";
+    try {
+      if (auto fallback = loadJson(backup)) return std::move(*fallback);
+    } catch (...) {}
+    throw;
+  }
   if (auto legacy = loadLegacy()) {
     if (writeJson(*legacy, file, false)) return std::move(*legacy);
     if (auto layout = loadJson(file)) return std::move(*layout);

@@ -100,7 +100,7 @@ struct Frame {
   ~Frame() { if (IsWindow(window)) DestroyWindow(window); windows.erase(window); }
   WindowState &state() { return windows[window]; }
   bool arm() { return tabs::gate::arm(window); }
-  void release() { SendMessageW(window, tabs::routing::releaseGateMessage, 0, 0); }
+  void release() { SendMessageW(window, tabs::routing::releaseGateMessage(), 0, 0); }
   void timer() { SendMessageW(window, WM_TIMER, tabs::gate::gateId, 0); }
 };
 struct Registry {

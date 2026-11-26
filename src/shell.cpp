@@ -71,7 +71,11 @@ public:
       return E_FAIL;
     }
   }
-  HRESULT STDMETHODCALLTYPE GetToolTip(IShellItemArray*, PWSTR* p) override { *p=nullptr; return E_NOTIMPL; }
+  HRESULT STDMETHODCALLTYPE GetToolTip(IShellItemArray*, PWSTR* p) override {
+    if (!p) return E_POINTER;
+    *p = nullptr;
+    return E_NOTIMPL;
+  }
   HRESULT STDMETHODCALLTYPE GetCanonicalName(GUID* p) override {
     if (!p) return E_POINTER;
     return CLSIDFromString(commandId(op), p);
@@ -86,8 +90,16 @@ public:
     return S_OK;
   }
   HRESULT STDMETHODCALLTYPE Invoke(IShellItemArray* items, IBindCtx*) override { SetSelection(items); return Execute(); }
-  HRESULT STDMETHODCALLTYPE GetFlags(EXPCMDFLAGS* p) override { *p=ECF_DEFAULT;return S_OK; }
-  HRESULT STDMETHODCALLTYPE EnumSubCommands(IEnumExplorerCommand** p) override { *p=nullptr;return E_NOTIMPL; }
+  HRESULT STDMETHODCALLTYPE GetFlags(EXPCMDFLAGS* p) override {
+    if (!p) return E_POINTER;
+    *p = ECF_DEFAULT;
+    return S_OK;
+  }
+  HRESULT STDMETHODCALLTYPE EnumSubCommands(IEnumExplorerCommand** p) override {
+    if (!p) return E_POINTER;
+    *p = nullptr;
+    return E_NOTIMPL;
+  }
   ULONG STDMETHODCALLTYPE Release() override {
     auto n = --refs;
     if (!n)

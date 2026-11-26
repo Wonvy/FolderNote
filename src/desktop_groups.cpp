@@ -1,7 +1,33 @@
 // Desktop box clipboard, deletion, automation, backup and the public interface.
 #include "desktop_groups_internal.h"
+#include "runtime_guard.h"
+#include <shlwapi.h>
+#include <unordered_set>
 
 namespace desktop_groups::detail {
+namespace {
+std::wstring lowerKey(std::wstring value) {
+  for (auto &ch : value) ch = static_cast<wchar_t>(towlower(ch));
+  return value;
+}
+
+bool isPathInGroups(std::span<const Group> groups, const std::wstring &candidate) {
+  for (const auto &g : groups) {
+    for (const auto &p : g.paths)
+      if (samePath(p, candidate)) return true;
+    for (const auto &t : g.tabs)
+      for (const auto &p : t.paths)
+        if (samePath(p, candidate)) return true;
+  }
+  return false;
+}
+}
+
+void Desktop::recoverOrphanedBoxStorage() {
+  for (const auto &item : listBoxStorageItems(roots)) {
+    if (!isPathInGroups(groups, item)) restoreBoxItem(roots, item);
+  }
+}
 bool Desktop::assign(Panel &panel, std::span<const std::wstring> paths, POINT point, bool fromExplorer) {
   if (editing || quitting || panel.folderView()) return false;
   auto changed = groups;
@@ -415,20 +441,21 @@ void Desktop::applyAutoRules() {
   if (!hasAnyRule) return;
 
   const auto personal = quick::normalize(roots.front());
-  if (personal.empty()) return;
+  if (personal.empty() || PathIsNetworkPathW(personal.c_str())) return;
   const auto storageDir = boxStorageFolder(roots);
 
   FILETIME nowFt{};
   GetSystemTimeAsFileTime(&nowFt);
   const ULONGLONG nowTicks = (static_cast<ULONGLONG>(nowFt.dwHighDateTime) << 32) | nowFt.dwLowDateTime;
 
+  std::unordered_set<std::wstring> groupedSet;
+  for (const auto &g : groups) {
+    for (const auto &p : g.paths) groupedSet.insert(lowerKey(p));
+    for (const auto &t : g.tabs)
+      for (const auto &p : t.paths) groupedSet.insert(lowerKey(p));
+  }
   const auto isGrouped = [&](const std::wstring &candidate) {
-    for (const auto &g : groups) {
-      for (const auto &p : g.paths) if (samePath(p, candidate)) return true;
-      for (const auto &t : g.tabs)
-        for (const auto &p : t.paths) if (samePath(p, candidate)) return true;
-    }
-    return false;
+    return groupedSet.contains(lowerKey(candidate));
   };
 
   struct Match { size_t groupIndex; std::wstring path; };
@@ -581,6 +608,9 @@ void Desktop::importBackup(HWND owner) {
   if (quitting) return;
   try {
     auto layout = importDesktopBackup(raw);
+    for (const auto &item : listBoxStorageItems(roots)) {
+      if (!isPathInGroups(layout.groups, item)) restoreBoxItem(roots, item);
+    }
     groups = std::move(layout.groups);
     invalidateWallpaperBackdrop();
     theme.reset(ui::configuredTheme());
@@ -740,8 +770,13 @@ LRESULT CALLBACK Desktop::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
           : configuredAppearance());
       return 0;
     }
-    if (message == ui::themeChangedMessage() || message == WM_THEMECHANGED ||
-        message == WM_SETTINGCHANGE || message == WM_SYSCOLORCHANGE) {
+    const bool isThemeBroadcast =
+        message == ui::themeChangedMessage() || message == WM_THEMECHANGED || message == WM_SYSCOLORCHANGE ||
+        (message == WM_SETTINGCHANGE &&
+         (w == SPI_SETDESKWALLPAPER || w == SPI_SETNONCLIENTMETRICS ||
+          (l && (!_wcsicmp(reinterpret_cast<const wchar_t *>(l), L"ImmersiveColorSet") ||
+                 !_wcsicmp(reinterpret_cast<const wchar_t *>(l), L"WindowsThemeElement")))));
+    if (isThemeBroadcast) {
       invalidateWallpaperBackdrop();
       desktop->theme.reset(ui::configuredTheme());
       if (!desktop->previewingAppearance) desktop->style = configuredAppearance();
@@ -932,7 +967,25 @@ bool enabled() {
 bool stop() {
   const auto removed = startup({});
   const auto menuRemoved = configureDesktopMenu({});
-  return stopProcess() && restoreDesktopIcons() && removed && menuRemoved;
+  const auto stopped = stopProcess();
+  const auto roots = desktopRoots();
+  std::vector<std::pair<std::wstring, std::wstring>> moved;
+  restoreAllBoxStorage(roots, &moved);
+  if (!moved.empty()) {
+    try {
+      auto layout = readLayout();
+      const auto wasMoved = [&](const std::wstring &p) {
+        return std::any_of(moved.begin(), moved.end(), [&](const auto &m) { return samePath(m.first, p); });
+      };
+      bool changed = false;
+      for (auto &g : layout.groups) {
+        changed |= std::erase_if(g.paths, wasMoved) != 0;
+        for (auto &t : g.tabs) changed |= std::erase_if(t.paths, wasMoved) != 0;
+      }
+      if (changed) saveLayout(layout);
+    } catch (...) {}
+  }
+  return stopped && restoreDesktopIcons() && removed && menuRemoved;
 }
 
 bool sync(const std::wstring &installedExecutable) {
@@ -1046,9 +1099,11 @@ int run(HINSTANCE instance, bool manage, bool create, bool delegated) {
           DispatchMessageW(&message);
         }
       } catch (const fn::Error &error) {
+        guard::log(L"桌面盒子运行失败：" + error.message);
         if (manage || create) report(nullptr, error.message.c_str());
         result = 1;
       } catch (...) {
+        guard::log(L"桌面盒子运行出现未知异常");
         if (manage) report(nullptr, lang::text(L"无法打开桌面盒子。"));
         result = 1;
       }

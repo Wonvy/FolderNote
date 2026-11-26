@@ -23,16 +23,35 @@ void Panel::refresh(const Group &group) {
   const auto folder = activeFolder();
   const bool folderMapped = !folder.empty();
   if (folder != mappedFolder) {
+    if (mappedWatch != INVALID_HANDLE_VALUE) {
+      FindCloseChangeNotification(mappedWatch);
+      mappedWatch = INVALID_HANDLE_VALUE;
+    }
+    mappedLastScan = 0;
     mappedFolder = folder;
     mappedItems.clear();
     mappedResult = {};
+    if (!folder.empty()) {
+      mappedWatch = FindFirstChangeNotificationW(folder.c_str(), FALSE,
+          FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME |
+          FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_ATTRIBUTES);
+    }
   }
   auto items = folderMapped ? std::vector<std::wstring>{} : manualItems(group, activeTab);
   if (folderMapped) {
     if (mappedResult.valid() && mappedResult.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
       try { mappedItems = mappedResult.get(); } catch (...) {}
     }
-    readMappedFolder();
+    bool shouldScan = mappedLastScan == 0;
+    if (!shouldScan && mappedWatch != INVALID_HANDLE_VALUE) {
+      if (WaitForSingleObject(mappedWatch, 0) == WAIT_OBJECT_0) {
+        shouldScan = true;
+        FindNextChangeNotification(mappedWatch);
+      }
+    } else if (!shouldScan && GetTickCount64() - mappedLastScan >= 10000) {
+      shouldScan = true;
+    }
+    if (shouldScan) readMappedFolder();
     for (const auto &entry : mappedItems) items.push_back(entry.path);
   }
   const auto sort = folderMapped && group.sort == Sort::Manual ? Sort::Name : group.sort;

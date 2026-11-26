@@ -287,9 +287,11 @@ std::wstring viewPath(IShellView *view) {
   return normalize(path);
 }
 std::wstring executable() {
-  wchar_t dll[32768]{}; DWORD bytes = sizeof(dll);
+  std::wstring dll(32768, L'\0');
+  DWORD bytes = static_cast<DWORD>(dll.size() * sizeof(wchar_t));
   auto key = std::wstring(navreg::userKey) + L"\\InprocServer32";
-  if (RegGetValueW(HKEY_CURRENT_USER, key.c_str(), nullptr, RRF_RT_REG_SZ, nullptr, dll, &bytes) == ERROR_SUCCESS) {
+  if (RegGetValueW(HKEY_CURRENT_USER, key.c_str(), nullptr, RRF_RT_REG_SZ, nullptr, dll.data(), &bytes) == ERROR_SUCCESS) {
+    dll.resize(wcslen(dll.c_str()));
     auto exe = std::filesystem::path(dll).parent_path() / L"FolderNote.exe";
     if (GetFileAttributesW(exe.c_str()) != INVALID_FILE_ATTRIBUTES) return exe.native();
   }

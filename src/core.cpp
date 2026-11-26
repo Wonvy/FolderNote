@@ -72,8 +72,25 @@ std::wstring readText(const fs::path &p) {
     if (!len && b.size() > off)
       fail(L"无法解码文件");
     s.resize(len);
-    if (len)
+    if (len) {
       MultiByteToWideChar(cp, flags, b.data() + off, (int)(b.size() - off), s.data(), len);
+      if (off == 0 && cp == CP_ACP) {
+        bool nonAscii = false;
+        for (char ch : b) if (static_cast<unsigned char>(ch) >= 0x80) { nonAscii = true; break; }
+        if (nonAscii) {
+          BOOL usedDefault = FALSE;
+          const int rtLen = WideCharToMultiByte(CP_ACP, WC_NO_BEST_FIT_CHARS, s.data(), len,
+                                                nullptr, 0, nullptr, &usedDefault);
+          std::string rt(rtLen > 0 ? rtLen : 0, '\0');
+          if (rtLen <= 0 || usedDefault ||
+              !WideCharToMultiByte(CP_ACP, WC_NO_BEST_FIT_CHARS, s.data(), len,
+                                   rt.data(), rtLen, nullptr, &usedDefault) ||
+              usedDefault || rt.size() != b.size() || memcmp(rt.data(), b.data(), b.size()) != 0) {
+            throw Error{lang::text(L"配置文件编码与当前系统不匹配，已取消修改以防乱码。")};
+          }
+        }
+      }
+    }
   }
   for (size_t i = 0; i < s.size(); ++i) {
     auto c = s[i];

@@ -182,6 +182,13 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
     CoUninitialize();
     return helperResult;
   }
+  if (n >= 3 && std::wstring_view(args[1]) == L"--restore-explorer-mounts") {
+    bool allRestored = true;
+    for (int i = 2; i < n; ++i) allRestored &= explorer_entries::restoreMachineMountById(args[i]);
+    LocalFree(args);
+    CoUninitialize();
+    return allRestored ? 0 : 1;
+  }
   for (int i = 1; i < n; ++i)
     if (std::wstring(args[i]) == L"--quiet")
       quiet = true;
@@ -255,6 +262,25 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
       navreg::unregisterUser();
       context::unregisterCommands();
       const auto unresolvedContextMenus = context::restoreAll();
+#ifndef FOLDERNOTE_UNINSTALL_TEST
+      {
+        const auto machineMounts = explorer_entries::pendingMachineMountIds();
+        if (!machineMounts.empty()) {
+          std::wstring params = L"--restore-explorer-mounts";
+          for (const auto &id : machineMounts) { params += L" "; params += id; }
+          SHELLEXECUTEINFOW exec{sizeof(exec)};
+          exec.fMask = SEE_MASK_NOCLOSEPROCESS;
+          exec.lpVerb = L"runas";
+          exec.lpFile = self.c_str();
+          exec.lpParameters = params.c_str();
+          exec.nShow = SW_HIDE;
+          if (ShellExecuteExW(&exec) && exec.hProcess) {
+            WaitForSingleObject(exec.hProcess, INFINITE);
+            CloseHandle(exec.hProcess);
+          }
+        }
+      }
+#endif
       size_t unresolvedEntries = 0;
       for (auto cleanup : {explorer_entries::restoreAll, desktop_folder_links::restoreAll}) {
         try { unresolvedEntries += cleanup(); }
@@ -294,6 +320,17 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
         RemoveDirectoryW(versions.c_str());
       }
       removePayload(dest,remaining);
+      for (const auto &pair : {std::pair{L"Logs", L".log"}, std::pair{L"Crashes", L".dmp"}}) {
+        const auto dir = dest / pair.first;
+        std::error_code ec;
+        if (fn::fs::exists(dir, ec)) {
+          for (const auto &entry : fn::fs::directory_iterator(dir, ec)) {
+            if (!_wcsicmp(entry.path().extension().c_str(), pair.second))
+              fn::fs::remove(entry.path(), ec);
+          }
+          RemoveDirectoryW(dir.c_str());
+        }
+      }
       RemoveDirectoryW((dest / L"Requests").c_str());
       RemoveDirectoryW(dest.c_str());
 #ifdef FOLDERNOTE_UNINSTALL_ONLY

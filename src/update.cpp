@@ -177,6 +177,33 @@ std::wstring downloadDigest(const std::wstring &url, const fn::fs::path &path) {
   return encoded;
 }
 
+std::wstring fileSha256(const fn::fs::path &path) {
+  Sha256 digest;
+  if (BCryptOpenAlgorithmProvider(&digest.algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0) ||
+      BCryptCreateHash(digest.algorithm, &digest.hash, nullptr, 0, nullptr, 0, 0))
+    throw fn::Error{lang::text(L"无法初始化更新校验。")};
+  HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file == INVALID_HANDLE_VALUE) throw fn::Error{lang::text(L"无法读取更新安装包。")};
+  std::array<UCHAR, 65536> buffer{};
+  DWORD readBytes = 0;
+  BOOL ok = FALSE;
+  while ((ok = ReadFile(file, buffer.data(), static_cast<DWORD>(buffer.size()), &readBytes, nullptr)) != FALSE && readBytes > 0) {
+    if (BCryptHashData(digest.hash, buffer.data(), readBytes, 0)) {
+      CloseHandle(file);
+      throw fn::Error{lang::text(L"无法校验更新安装包。")};
+    }
+  }
+  CloseHandle(file);
+  if (!ok) throw fn::Error{lang::text(L"无法读取更新安装包。")};
+  std::array<UCHAR, 32> hash{};
+  if (BCryptFinishHash(digest.hash, hash.data(), static_cast<ULONG>(hash.size()), 0))
+    throw fn::Error{lang::text(L"无法校验更新安装包。")};
+  constexpr wchar_t hex[] = L"0123456789abcdef";
+  std::wstring encoded;
+  for (auto byte : hash) { encoded += hex[byte >> 4]; encoded += hex[byte & 15]; }
+  return encoded;
+}
+
 struct Staging {
   fn::fs::path path;
   Staging() {
@@ -408,6 +435,8 @@ bool install(const Release &release, bool (*allowAutomaticInstall)()) {
     // Different settings builds can be open at the same time and share the same registration.
     const InstallLock lock;
     if (allowAutomaticInstall && !allowAutomaticInstall()) return false;
+    if (release.standaloneInstaller && _wcsicmp(fileSha256(installer).c_str(), release.sha256.c_str()) != 0)
+      throw fn::Error{lang::text(L"安装包 SHA-256 校验失败，请重新下载。")};
     run(installer, staging.path, allowAutomaticInstall ? L"--automatic-update" : L"",
         lang::text(L"更新安装未完成。"));
   }

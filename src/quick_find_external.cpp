@@ -284,7 +284,7 @@ void run() {
           if (!current(input)) { candidatePending = false; continue; }
           previousEpoch = input.epoch;
           const bool desktop = desktopHost(input.root);
-          const auto parent = desktop ? std::wstring{} : quick::dialog::currentPath(input.root);
+          const auto parent = desktop ? std::wstring{} : quick::dialog::safeCurrentPath(input.root);
           if (desktop) contents.shell = desktopItems();
           auto matchLabels = contents.labels;
           if (desktop && desktop_groups::search::receiver()) {

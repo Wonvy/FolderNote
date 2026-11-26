@@ -18,6 +18,8 @@ void setHidden(const Entry &entry, bool hidden);
 void restore(const Entry &entry);
 // Best-effort restoration. Returns the number of records still requiring attention.
 size_t restoreAll();
+std::vector<std::wstring> pendingMachineMountIds();
+bool restoreMachineMountById(const std::wstring &id);
 void refresh(Surface surface) noexcept;
 // Call after the visibility change has committed and released its registry lock.
 void refreshOpen(Surface surface, bool policyChanged = false) noexcept;

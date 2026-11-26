@@ -13,7 +13,10 @@ inline constexpr UINT routeMessage = WM_APP + 127;
 inline constexpr UINT importMessage = WM_APP + 128;
 inline constexpr UINT completedMessage = WM_APP + 129;
 inline constexpr UINT holdMessage = WM_APP + 130;
-inline constexpr UINT releaseGateMessage = WM_APP + 131;
+inline UINT releaseGateMessage() {
+  static const UINT message = RegisterWindowMessageW(L"FolderNote.ExplorerTabs.ReleaseGate.v1");
+  return message;
+}
 inline constexpr UINT capabilityMessage = WM_APP + 132;
 inline constexpr wchar_t gateProperty[] = L"FolderNote.ExplorerTabs.Held.v1";
 inline constexpr wchar_t gateOriginProperty[] = L"FolderNote.ExplorerTabs.HeldForeground.v1";

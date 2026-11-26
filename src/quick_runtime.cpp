@@ -388,6 +388,7 @@ MenuRunner inProcessMenu = nullptr;
 HANDLE menuThread = nullptr;
 DWORD menuThreadId = 0;
 std::atomic<bool> menuBusy{false};
+std::atomic<bool> menuStopping{false};
 struct MenuJob { HINSTANCE instance; HWND target; POINT point; };
 DWORD WINAPI menuThreadProc(void *ready) {
   const HRESULT initialized = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
@@ -396,6 +397,7 @@ DWORD WINAPI menuThreadProc(void *ready) {
   while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
     if (msg.hwnd || msg.message != menuRunMessage) { TranslateMessage(&msg); DispatchMessageW(&msg); continue; }
     std::unique_ptr<MenuJob> job(reinterpret_cast<MenuJob *>(msg.lParam));
+    if (menuStopping.load(std::memory_order_relaxed)) { menuBusy = false; continue; }
     const ULONGLONG started = GetTickCount64();
     try { if (job && inProcessMenu) inProcessMenu(job->instance, job->target, nullptr, job->point); }
     catch (...) { guard::log(L"常驻中键菜单出现未知异常"); }
@@ -414,6 +416,7 @@ bool inProcessMenuAllowed() {
 }
 void startMenuThread() {
   if (!inProcessMenu || menuThread || !inProcessMenuAllowed()) return;
+  menuStopping = false;
   HANDLE ready = CreateEventW(nullptr, TRUE, FALSE, nullptr);
   if (!ready) return;
   menuThread = CreateThread(nullptr, 0, menuThreadProc, ready, 0, &menuThreadId);
@@ -424,6 +427,7 @@ void startMenuThread() {
   if (!menuThread) guard::log(L"无法启动常驻中键菜单线程，改用独立进程");
 }
 void signalMenuThreadQuit() {
+  menuStopping = true;
   if (menuThread && menuThreadId) PostThreadMessageW(menuThreadId, WM_QUIT, 0, 0);
 }
 void joinMenuThread() {
@@ -614,6 +618,36 @@ void configureStartup(const std::wstring &exe, bool enabled) {
       reinterpret_cast<const BYTE *>(command.c_str()), static_cast<DWORD>((command.size() + 1) * sizeof(wchar_t))); RegCloseKey(key); }
   if (error) fn::fail(lang::text(L"选项已保存，但无法启用快速定位启动项"), error);
 }
+constexpr wchar_t supervisorClass[] = L"FolderNote.QuickFolders.Supervisor.v1";
+LRESULT CALLBACK supervisorProc(HWND window, UINT message, WPARAM w, LPARAM l) {
+  if (message == WM_CLOSE) {
+    if (const auto stopEvent = reinterpret_cast<HANDLE>(GetWindowLongPtrW(window, GWLP_USERDATA)))
+      SetEvent(stopEvent);
+    DestroyWindow(window);
+    return 0;
+  }
+  return DefWindowProcW(window, message, w, l);
+}
+DWORD waitWithPump(HANDLE first, HANDLE second, DWORD timeoutMs) {
+  HANDLE handles[2]{first, second};
+  const DWORD count = second ? 2 : 1;
+  const ULONGLONG deadline = timeoutMs == INFINITE ? 0 : GetTickCount64() + timeoutMs;
+  for (;;) {
+    DWORD remaining = INFINITE;
+    if (timeoutMs != INFINITE) {
+      const ULONGLONG now = GetTickCount64();
+      if (now >= deadline) return WAIT_TIMEOUT;
+      remaining = static_cast<DWORD>(deadline - now);
+    }
+    const DWORD wait = MsgWaitForMultipleObjects(count, handles, FALSE, remaining, QS_ALLINPUT);
+    if (wait != WAIT_OBJECT_0 + count) return wait;
+    MSG message;
+    while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+      TranslateMessage(&message);
+      DispatchMessageW(&message);
+    }
+  }
+}
 bool stopHelper(bool removeStartup) {
   // Close transient menus as well, including a hidden 1.6.1 popup waiting in
   // GetMessage. Posting WM_CLOSE wakes old versions without killing Explorer
@@ -630,15 +664,26 @@ bool stopHelper(bool removeStartup) {
     return TRUE;
   }, 0);
   if (removeStartup) configureStartup({}, false);
+  // Stop any supervisor first so a crashing child cannot respawn mid-shutdown.
+  HANDLE supProcess = nullptr;
+  if (HWND supWindow = FindWindowExW(HWND_MESSAGE, nullptr, supervisorClass, nullptr)) {
+    DWORD supPid = 0; GetWindowThreadProcessId(supWindow, &supPid);
+    supProcess = supPid ? OpenProcess(SYNCHRONIZE, FALSE, supPid) : nullptr;
+    PostMessageW(supWindow, WM_CLOSE, 0, 0);
+  }
+  bool posted = true;
   HWND window = FindWindowExW(HWND_MESSAGE, nullptr, helperClass, nullptr);
   if (window) {
     DWORD pid = 0; GetWindowThreadProcessId(window, &pid);
     HANDLE process = OpenProcess(SYNCHRONIZE, FALSE, pid);
-    const bool posted = PostMessageW(window, WM_CLOSE, 0, 0) != FALSE;
+    posted = PostMessageW(window, WM_CLOSE, 0, 0) != FALSE;
     if (process) { if (posted) WaitForSingleObject(process, 2000); CloseHandle(process); }
-    return posted;
   }
-  return true;
+  if (supProcess) {
+    WaitForSingleObject(supProcess, 2000);
+    CloseHandle(supProcess);
+  }
+  return posted;
 }
 void syncHelper(const std::wstring &exe) {
   if (!stopHelper(false))
@@ -673,14 +718,28 @@ namespace {
 // crash there used to silently disable middle-click until the user toggled the
 // setting. This thin parent restarts it after abnormal exits. It owns no hooks,
 // windows or COM state, so it has nothing that can crash with the child.
-int superviseHelper() {
+int superviseHelper(HINSTANCE instance) {
   std::wstring exe;
   try { exe = fn::modulePath().native(); } catch (...) { return 1; }
+  struct SupervisorState {
+    HANDLE stopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    HWND window = nullptr;
+    ~SupervisorState() {
+      if (window && IsWindow(window)) DestroyWindow(window);
+      if (stopEvent) CloseHandle(stopEvent);
+    }
+  } state;
+  if (!state.stopEvent) return 1;
+  WNDCLASSW cls{}; cls.lpfnWndProc = supervisorProc; cls.hInstance = instance; cls.lpszClassName = supervisorClass;
+  RegisterClassW(&cls);
+  state.window = CreateWindowExW(0, supervisorClass, L"", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, instance, nullptr);
+  if (state.window) SetWindowLongPtrW(state.window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(state.stopEvent));
+
   guard::log(L"后台组件守护进程启动");
   DWORD windowStart = GetTickCount();
   int restarts = 0;
   for (;;) {
-    if (!helperEnabled()) return 0;
+    if (!helperEnabled() || WaitForSingleObject(state.stopEvent, 0) == WAIT_OBJECT_0) return 0;
     auto command = L"\"" + exe + L"\" --quick-helper --supervised";
     STARTUPINFOW startup{sizeof(startup)};
     startup.dwFlags = STARTF_FORCEOFFFEEDBACK;
@@ -690,17 +749,18 @@ int superviseHelper() {
       return 1;
     }
     CloseHandle(process.hThread);
-    for (;;) {
-      // Pump (and drop) messages so Windows clears the startup feedback cursor.
-      const DWORD wait = MsgWaitForMultipleObjects(1, &process.hProcess, FALSE, INFINITE, QS_ALLINPUT);
-      if (wait != WAIT_OBJECT_0 + 1) break;
-      MSG message;
-      while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {}
+    const DWORD wait = waitWithPump(state.stopEvent, process.hProcess, INFINITE);
+    if (wait == WAIT_OBJECT_0) {
+      if (HWND childWindow = FindWindowExW(HWND_MESSAGE, nullptr, helperClass, nullptr))
+        PostMessageW(childWindow, WM_CLOSE, 0, 0);
+      WaitForSingleObject(process.hProcess, 2000);
+      CloseHandle(process.hProcess);
+      return 0;
     }
     DWORD code = 1;
     GetExitCodeProcess(process.hProcess, &code);
     CloseHandle(process.hProcess);
-    if (code == 0 || !helperEnabled()) return 0;
+    if (code == 0 || !helperEnabled() || WaitForSingleObject(state.stopEvent, 0) == WAIT_OBJECT_0) return 0;
     // Another helper instance (e.g. started by Settings) already took over.
     if (FindWindowExW(HWND_MESSAGE, nullptr, helperClass, nullptr)) return 0;
     const DWORD now = GetTickCount();
@@ -712,7 +772,15 @@ int superviseHelper() {
       return static_cast<int>(code);
     }
     guard::log(std::wstring(L"后台组件异常退出（") + exitText + L"），第 " + std::to_wstring(restarts) + L" 次自动重启");
-    Sleep(guard::crashExitCode(code) ? 1000 : 3000);
+    if (waitWithPump(state.stopEvent, nullptr, guard::crashExitCode(code) ? 1000 : 3000) == WAIT_OBJECT_0) return 0;
+    if (!helperEnabled() || WaitForSingleObject(state.stopEvent, 0) == WAIT_OBJECT_0 ||
+        FindWindowExW(HWND_MESSAGE, nullptr, helperClass, nullptr)) return 0;
+    try {
+      if (_wcsicmp(executable().c_str(), exe.c_str()) != 0) {
+        guard::log(L"检测到后台组件版本已变更，旧守护进程退出");
+        return 0;
+      }
+    } catch (...) { return 0; }
   }
 }
 }
@@ -728,7 +796,7 @@ int helper(HINSTANCE instance, bool delegated, bool supervised) {
         !stopHelper(false)) return 1;
     return launchHelper(fn::modulePath().native(), context) ? 0 : 1;
   }
-  if (!supervised) return superviseHelper();
+  if (!supervised) return superviseHelper(instance);
   guard::installCrashHandler(L"helper");
   HANDLE mutex = CreateMutexW(nullptr, FALSE, L"Local\\FolderNote.QuickFolders.Helper.v1");
   if (!mutex) return 1;

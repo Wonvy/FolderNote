@@ -370,9 +370,12 @@ class BrowserHost final : public IObjectWithSite {
     auto *self = reinterpret_cast<BrowserHost *>(data); self->AddRef();
     bool syncHandled = false;
     try {
-      if (message == RegisterWindowMessageW(L"FolderNote.Navigation.SettingsChanged.v2")) { self->tabsStopped = false; self->queueRefresh(); }
-      if (message == RegisterWindowMessageW(L"FolderNote.Navigation.SyncTabs.v1")) { self->tabsStopped = false; self->updateView(); syncHandled = true; }
-      if (message == RegisterWindowMessageW(L"FolderNote.Navigation.Shutdown.v2")) { self->tabsStopped = true; self->tabsHost.clear(); }
+      static const UINT settingsChanged = RegisterWindowMessageW(L"FolderNote.Navigation.SettingsChanged.v2");
+      static const UINT syncTabs = RegisterWindowMessageW(L"FolderNote.Navigation.SyncTabs.v1");
+      static const UINT shutdownMsg = RegisterWindowMessageW(L"FolderNote.Navigation.Shutdown.v2");
+      if (message == settingsChanged) { self->tabsStopped = false; self->queueRefresh(); }
+      if (message == syncTabs) { self->tabsStopped = false; self->updateView(); syncHandled = true; }
+      if (message == shutdownMsg) { self->tabsStopped = true; self->tabsHost.clear(); }
       if (!self->tabsStopped && ((message == WM_SHOWWINDOW && w) ||
           (message == WM_ACTIVATE && LOWORD(w) != WA_INACTIVE) || message == WM_SIZE) &&
           !IsWindow(static_cast<HWND>(GetPropW(window, tabs::windowProperty)))) self->queueRefresh();
@@ -560,9 +563,10 @@ void recordTabFactory(REFIID iid, HRESULT result) noexcept {
   HMODULE image = nullptr;
   GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
       reinterpret_cast<LPCWSTR>(&recordTabFactory), &image);
-  wchar_t path[32768]{}; auto count = GetModuleFileNameW(image, path, ARRAYSIZE(path));
-  if (count && count < ARRAYSIZE(path))
-    RegSetKeyValueW(HKEY_CURRENT_USER, key, L"TabsLastFactoryModule", REG_SZ, path, (count + 1) * sizeof(wchar_t));
+  std::wstring path(32768, L'\0');
+  auto count = GetModuleFileNameW(image, path.data(), static_cast<DWORD>(path.size()));
+  if (count && count < path.size())
+    RegSetKeyValueW(HKEY_CURRENT_USER, key, L"TabsLastFactoryModule", REG_SZ, path.c_str(), (count + 1) * sizeof(wchar_t));
 }
 } // namespace
 

@@ -3,6 +3,8 @@
 #include <functional>
 #include <span>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace desktop_groups {
 // The personal Desktop must be the first root.
@@ -13,6 +15,10 @@ std::wstring boxStoredItem(std::span<const std::wstring> roots, const std::wstri
 // Return the new path, or an empty string when the original could not be moved.
 std::wstring storeBoxItem(std::span<const std::wstring> roots, const std::wstring &path);
 std::wstring restoreBoxItem(std::span<const std::wstring> roots, const std::wstring &path);
+std::vector<std::wstring> listBoxStorageItems(std::span<const std::wstring> roots);
+void unhideBoxStorage(std::span<const std::wstring> roots);
+size_t restoreAllBoxStorage(std::span<const std::wstring> roots,
+                            std::vector<std::pair<std::wstring, std::wstring>> *moved = nullptr);
 std::wstring transferItemToFolder(const std::wstring &source, const std::wstring &destinationFolder,
                                   bool move, HWND owner, bool renameOnCollision = true,
                                   const std::function<void(double)> &onProgress = {});

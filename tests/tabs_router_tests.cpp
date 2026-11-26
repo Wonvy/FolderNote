@@ -67,7 +67,7 @@ LRESULT fakeSend(HWND target, UINT message, WPARAM w, LPARAM l, UINT flags, UINT
   return sendSucceeds ? 1 : 0;
 }
 BOOL fakePost(HWND window, UINT message, WPARAM w, LPARAM l) {
-  if (message == tabs::routing::releaseGateMessage) { released.push_back(window); return TRUE; }
+  if (message == tabs::routing::releaseGateMessage()) { released.push_back(window); return TRUE; }
   return PostMessageW(window, message, w, l);
 }
 }

@@ -156,6 +156,56 @@ std::wstring restoreBoxItem(std::span<const std::wstring> roots, const std::wstr
   return moveToFolder(source, quick::normalize(roots.front()));
 }
 
+std::vector<std::wstring> listBoxStorageItems(std::span<const std::wstring> roots) {
+  std::vector<std::wstring> items;
+  const auto folder = boxStorageFolder(roots);
+  if (!safeDirectory(folder)) return items;
+  std::error_code ec;
+  const fs::directory_iterator end;
+  for (fs::directory_iterator it(folder, ec); !ec && it != end; it.increment(ec)) {
+    const auto name = it->path().filename().native();
+    if (name.empty() || !_wcsicmp(name.c_str(), L"desktop.ini")) continue;
+    const auto normalized = quick::normalize(it->path().native());
+    if (!normalized.empty()) items.push_back(normalized);
+  }
+  return items;
+}
+
+void unhideBoxStorage(std::span<const std::wstring> roots) {
+  const auto folder = boxStorageFolder(roots);
+  if (!safeDirectory(folder)) return;
+  const DWORD attrs = GetFileAttributesW(folder.c_str());
+  if (attrs == INVALID_FILE_ATTRIBUTES) return;
+  DWORD updated = attrs & ~(FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM);
+  if (!updated) updated = FILE_ATTRIBUTE_NORMAL;
+  if (updated != attrs && SetFileAttributesW(folder.c_str(), updated) && folder.size() < MAX_PATH)
+    SHChangeNotify(SHCNE_UPDATEITEM, SHCNF_PATHW | SHCNF_FLUSHNOWAIT, folder.c_str(), nullptr);
+}
+
+size_t restoreAllBoxStorage(std::span<const std::wstring> roots,
+                            std::vector<std::pair<std::wstring, std::wstring>> *moved) {
+  if (roots.empty()) return 0;
+  const auto desktop = quick::normalize(roots.front());
+  const auto folder = boxStorageFolder(roots);
+  if (desktop.empty() || !safeDirectory(folder)) return 0;
+  size_t remaining = 0;
+  for (const auto &item : listBoxStorageItems(roots)) {
+    auto restored = moveToFolder(item, desktop);
+    if (restored.empty()) {
+      ++remaining;
+    } else if (moved) {
+      moved->emplace_back(item, std::move(restored));
+    }
+  }
+  if (!remaining) {
+    if (RemoveDirectoryW(folder.c_str()) && folder.size() < MAX_PATH)
+      SHChangeNotify(SHCNE_RMDIR, SHCNF_PATHW | SHCNF_FLUSHNOWAIT, folder.c_str(), nullptr);
+  } else {
+    unhideBoxStorage(roots);
+  }
+  return remaining;
+}
+
 namespace {
 class CopyResultSink final : public Microsoft::WRL::RuntimeClass<
     Microsoft::WRL::RuntimeClassFlags<Microsoft::WRL::ClassicCom>, IFileOperationProgressSink> {

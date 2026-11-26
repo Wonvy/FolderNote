@@ -20,10 +20,10 @@ namespace {
 std::atomic<long> controllers{0};
 std::atomic<long> queryWorkers{0};
 std::atomic<UINT_PTR> nextToken{1};
-const UINT resultMessage = RegisterWindowMessageW(L"FolderNote.Navigation.QueryReady.v2");
-const UINT refreshMessage = RegisterWindowMessageW(L"FolderNote.Navigation.RefreshView.v2");
-const UINT settingsMessage = RegisterWindowMessageW(L"FolderNote.Navigation.SettingsChanged.v2");
-const UINT shutdownMessage = RegisterWindowMessageW(L"FolderNote.Navigation.Shutdown.v2");
+UINT resultMessage() { static const UINT m = RegisterWindowMessageW(L"FolderNote.Navigation.QueryReady.v2"); return m; }
+UINT refreshMessage() { static const UINT m = RegisterWindowMessageW(L"FolderNote.Navigation.RefreshView.v2"); return m; }
+UINT settingsMessage() { static const UINT m = RegisterWindowMessageW(L"FolderNote.Navigation.SettingsChanged.v2"); return m; }
+UINT shutdownMessage() { static const UINT m = RegisterWindowMessageW(L"FolderNote.Navigation.Shutdown.v2"); return m; }
 constexpr wchar_t ownerProperty[] = L"FolderNote.Navigation.ViewOwner.v2";
 constexpr wchar_t controllerProperty[] = L"FolderNote.Navigation.Controller.v3";
 bool modifiers() {
@@ -159,7 +159,7 @@ DWORD WINAPI queryThread(void *argument) {
             target->previous = {};
             target->ready.clear();
             target->ready.push_back(job.data);
-            PostMessageW(target->receiver, resultMessage, target->token, 0);
+            PostMessageW(target->receiver, resultMessage(), target->token, 0);
           } else {
             target->previous = c;
             target->previousEpoch = job.data.epoch;
@@ -270,7 +270,7 @@ static void clearView(Controller *c) {
 }
 static void requestRefresh(Controller *c) {
   if (!c->refreshPosted && c->host && !c->stopped && !c->detached) {
-    c->refreshPosted = PostMessageW(c->host, refreshMessage, c->target->token, 0) != FALSE;
+    c->refreshPosted = PostMessageW(c->host, refreshMessage(), c->target->token, 0) != FALSE;
   }
 }
 static void addSurface(Controller *c, HWND h) {
@@ -400,18 +400,18 @@ static LRESULT CALLBACK frameProc(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PTR i
   CallbackGuard guard(c);
   try {
     if (m == WM_MOUSEWHEEL && forwardTabWheel(c, w, l)) { resetGesture(c); return TRUE; }
-    if (m == settingsMessage) {
+    if (m == settingsMessage()) {
       c->stopped = false;
       resetGesture(c);
       refresh(c, nullptr);
-    } else if (m == shutdownMessage) {
+    } else if (m == shutdownMessage()) {
       c->stopped = true;
       clearView(c);
       releaseQueries(c->queries);
-    } else if (m == refreshMessage && w == c->target->token) {
+    } else if (m == refreshMessage() && w == c->target->token) {
       c->refreshPosted = false;
       refresh(c, nullptr);
-    } else if (m == resultMessage && w == c->target->token) {
+    } else if (m == resultMessage() && w == c->target->token) {
       consume(c);
     } else if (m == WM_ACTIVATE || m == WM_SHOWWINDOW ||
                (m == WM_PARENTNOTIFY && (LOWORD(w) == WM_CREATE || LOWORD(w) == WM_DESTROY))) {

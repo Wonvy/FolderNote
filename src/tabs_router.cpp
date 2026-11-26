@@ -81,7 +81,7 @@ bool sameFrame(const Frame &frame) {
 }
 void releaseGate(Frame &frame) {
   if (!frame.releaseSent && sameFrame(frame) && (frame.held || GetPropW(frame.window, gateProperty)))
-    frame.releaseSent = PostMessageW(frame.window, releaseGateMessage, 0, 0) != FALSE;
+    frame.releaseSent = PostMessageW(frame.window, releaseGateMessage(), 0, 0) != FALSE;
 }
 void prune() {
   const auto now = GetTickCount64();

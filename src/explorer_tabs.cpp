@@ -16,6 +16,7 @@
 #include <uxtheme.h>
 #include <atomic>
 #include <memory>
+#include <mutex>
 #include <new>
 #include <utility>
 #include <cstdlib>
@@ -36,9 +37,11 @@ HMODULE codeModule() {
       reinterpret_cast<LPCWSTR>(&codeModule), &module); return module;
 }
 bool explorerProcess() {
-  wchar_t image[32768]{}, system[MAX_PATH]{};
-  GetModuleFileNameW(nullptr, image, ARRAYSIZE(image)); GetWindowsDirectoryW(system, ARRAYSIZE(system));
-  return !_wcsicmp(image, (std::wstring(system) + L"\\explorer.exe").c_str());
+  std::wstring image(32768, L'\0');
+  wchar_t system[MAX_PATH]{};
+  GetModuleFileNameW(nullptr, image.data(), static_cast<DWORD>(image.size()));
+  GetWindowsDirectoryW(system, ARRAYSIZE(system));
+  return !_wcsicmp(image.c_str(), (std::wstring(system) + L"\\explorer.exe").c_str());
 }
 template<class T> ComPtr<T> service(IUnknown *site, REFGUID id) {
   ComPtr<T> result; ComPtr<IServiceProvider> provider;
@@ -51,13 +54,23 @@ template<class T> ComPtr<T> service(IUnknown *site, REFGUID id) {
   return result;
 }
 void recordAttachment(const wchar_t *stage, HRESULT result) noexcept {
+  try {
+    static std::mutex mutex;
+    static std::wstring lastStage;
+    static HRESULT lastResult = E_PENDING;
+    std::lock_guard lock(mutex);
+    if (stage && lastStage == stage && lastResult == result) return;
+    lastStage = stage ? stage : L"";
+    lastResult = result;
+  } catch (...) {}
   constexpr auto key = L"Software\\FolderNote";
   RegSetKeyValueW(HKEY_CURRENT_USER, key, L"TabsLastBandStage", REG_SZ, stage, DWORD((wcslen(stage) + 1) * sizeof(wchar_t)));
   RegSetKeyValueW(HKEY_CURRENT_USER, key, L"TabsLastBandResult", REG_DWORD, &result, sizeof(result));
   DWORD process = GetCurrentProcessId();
   RegSetKeyValueW(HKEY_CURRENT_USER, key, L"TabsLastBandProcess", REG_DWORD, &process, sizeof(process));
-  wchar_t path[32768]{}; DWORD size = GetModuleFileNameW(codeModule(), path, ARRAYSIZE(path));
-  if (size && size < ARRAYSIZE(path)) RegSetKeyValueW(HKEY_CURRENT_USER, key, L"TabsLastBandModule", REG_SZ, path, (size + 1) * sizeof(wchar_t));
+  std::wstring path(32768, L'\0');
+  DWORD size = GetModuleFileNameW(codeModule(), path.data(), static_cast<DWORD>(path.size()));
+  if (size && size < path.size()) RegSetKeyValueW(HKEY_CURRENT_USER, key, L"TabsLastBandModule", REG_SZ, path.c_str(), (size + 1) * sizeof(wchar_t));
 }
 Location location(PCIDLIST_ABSOLUTE id) {
   Location value; if (!id) return value;
@@ -989,7 +1002,7 @@ class Band final : public IDeskBand2, public IObjectWithSite, public IPersistStr
       if (message == routing::capabilityMessage) return 2;
       if (message == WM_TIMER && w == 2) {
         KillTimer(h, 2); KillTimer(h, 4); self->outgoing = {};
-        if (self->frame) PostMessageW(self->frame, routing::releaseGateMessage, 0, 0);
+        if (self->frame) PostMessageW(self->frame, routing::releaseGateMessage(), 0, 0);
         return 0;
       }
       if (message == WM_TIMER && w == 3) { KillTimer(h, 3); self->finishImport(true); return 0; }

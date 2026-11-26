@@ -4,7 +4,6 @@
 #include <wrl/client.h>
 #include <filesystem>
 #include <algorithm>
-#include <condition_variable>
 #include <deque>
 #include <map>
 #include <mutex>
@@ -28,22 +27,22 @@ Image read(const Source &source, int size) {
     Microsoft::WRL::ComPtr<IPersistFile> persist;
     if (FAILED(CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&link))) ||
         FAILED(link.As(&persist)) || FAILED(persist->Load(source.path.c_str(), STGM_READ))) return {};
-    wchar_t iconPath[32768]{}; int index = 0;
-    if (SUCCEEDED(link->GetIconLocation(iconPath, ARRAYSIZE(iconPath), &index)) && *iconPath) {
-      wchar_t expanded[32768]{};
-      const auto length = ExpandEnvironmentStringsW(iconPath, expanded, ARRAYSIZE(expanded));
-      if (length && length <= ARRAYSIZE(expanded)) {
+    std::wstring iconPath(32768, L'\0'); int index = 0;
+    if (SUCCEEDED(link->GetIconLocation(iconPath.data(), static_cast<int>(iconPath.size()), &index)) && iconPath[0]) {
+      std::wstring expanded(32768, L'\0');
+      const auto length = ExpandEnvironmentStringsW(iconPath.c_str(), expanded.data(), static_cast<DWORD>(expanded.size()));
+      if (length && length <= expanded.size()) {
         HICON iconLarge = nullptr, iconSmall = nullptr;
-        ExtractIconExW(expanded, index, &iconLarge, &iconSmall, 1);
+        ExtractIconExW(expanded.c_str(), index, &iconLarge, &iconSmall, 1);
         const auto result = size > 16 ? (iconLarge ? iconLarge : iconSmall) : (iconSmall ? iconSmall : iconLarge);
         if (iconLarge && iconLarge != result) DestroyIcon(iconLarge);
         if (iconSmall && iconSmall != result) DestroyIcon(iconSmall);
         if (result) return adopt(result);
       }
     }
-    wchar_t target[32768]{};
-    if (SUCCEEDED(link->GetPath(target, ARRAYSIZE(target), nullptr, SLGP_RAWPATH)) && *target)
-      return read(Source::file(target), size);
+    std::wstring target(32768, L'\0');
+    if (SUCCEEDED(link->GetPath(target.data(), static_cast<int>(target.size()), nullptr, SLGP_RAWPATH)) && target[0])
+      return read(Source::file(target.c_str()), size);
     PIDLIST_ABSOLUTE id = nullptr;
     SHFILEINFOW info{};
     if (SUCCEEDED(link->GetIDList(&id)) && id) {
@@ -139,7 +138,6 @@ struct Cache::State {
   struct Entry { Image icon; bool ready = false; unsigned long long used = 0; };
   struct Job { std::wstring key; Source source; };
   std::mutex mutex;
-  std::condition_variable changed;
   std::map<std::wstring, Entry, OrdinalLess> entries;
   std::deque<Job> queue;
   HWND notify;
@@ -147,6 +145,7 @@ struct Cache::State {
   int size;
   Loader loader;
   bool stopped = false;
+  size_t activeWorkers = 0;
   unsigned long long clock = 0;
   State(HWND window, UINT event, int pixels, Loader load) : notify(window), message(event), size(pixels), loader(std::move(load)) {}
   struct Worker { std::shared_ptr<State> state; HMODULE module; };
@@ -159,23 +158,31 @@ struct Cache::State {
     worker->state->work();
   }
   void stop() {
-    { std::lock_guard lock(mutex); stopped = true; notify = nullptr; queue.clear(); }
-    changed.notify_all();
+    std::lock_guard lock(mutex);
+    stopped = true;
+    notify = nullptr;
+    queue.clear();
   }
   void work() {
-    HRESULT initialized = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    const HRESULT initialized = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
     for (;;) {
       Job job;
       {
-        std::unique_lock lock(mutex); changed.wait(lock, [&] { return stopped || !queue.empty(); });
-        if (stopped) break;
+        std::lock_guard lock(mutex);
+        if (stopped || queue.empty()) {
+          if (activeWorkers > 0) --activeWorkers;
+          break;
+        }
         job = std::move(queue.front()); queue.pop_front();
       }
       Image icon;
-      try { if (SUCCEEDED(initialized)) icon = loader(job.source, size); } catch (...) { }
+      try { if (SUCCEEDED(initialized) || initialized == RPC_E_CHANGED_MODE) icon = loader(job.source, size); } catch (...) { }
       {
         std::lock_guard lock(mutex);
-        if (stopped) break;
+        if (stopped) {
+          if (activeWorkers > 0) --activeWorkers;
+          break;
+        }
         auto found = entries.find(job.key);
         if (found != entries.end()) { found->second.icon = std::move(icon); found->second.ready = true; }
         // No pointers in the notification. Cancellation clears notify under
@@ -187,20 +194,7 @@ struct Cache::State {
   }
 };
 Cache::Cache(HWND notify, UINT message, int size, Loader loader)
-    : state(std::make_shared<State>(notify, message, size, std::move(loader))) {
-  try {
-    // At most two workers: a slow network icon never creates a thread per row.
-    for (int i = 0; i < 2; ++i) {
-      HMODULE module = nullptr;
-      if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, reinterpret_cast<LPCWSTR>(&State::run), &module)) throw std::bad_alloc();
-      std::unique_ptr<State::Worker> worker;
-      try { worker = std::make_unique<State::Worker>(State::Worker{state, module}); }
-      catch (...) { FreeLibrary(module); throw; }
-      if (!TrySubmitThreadpoolCallback(State::run, worker.get(), nullptr)) { FreeLibrary(module); throw std::bad_alloc(); }
-      worker.release();
-    }
-  } catch (...) { state->stop(); throw; }
-}
+    : state(std::make_shared<State>(notify, message, size, std::move(loader))) {}
 Cache::~Cache() { state->stop(); } // Closing the menu never waits for a slow shell extension.
 Image Cache::get(const Source &source) {
   auto key = keyFor(source);
@@ -217,6 +211,22 @@ Image Cache::get(const Source &source) {
     state->entries.erase(oldest);
   }
   state->entries.emplace(key, State::Entry{{}, false, ++state->clock});
-  state->queue.push_back({std::move(key), source}); state->changed.notify_one(); return {};
+  state->queue.push_back({std::move(key), source});
+  if (state->activeWorkers < 2) {
+    HMODULE module = nullptr;
+    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, reinterpret_cast<LPCWSTR>(&State::run), &module)) {
+      std::unique_ptr<State::Worker> worker;
+      try { worker = std::make_unique<State::Worker>(State::Worker{state, module}); }
+      catch (...) { FreeLibrary(module); return {}; }
+      ++state->activeWorkers;
+      if (TrySubmitThreadpoolCallback(State::run, worker.get(), nullptr)) {
+        worker.release();
+      } else {
+        --state->activeWorkers;
+        FreeLibrary(module);
+      }
+    }
+  }
+  return {};
 }
 }

@@ -1542,7 +1542,13 @@ bool Desktop::enqueueAsyncTransferIntoPanel(Panel &panel, const std::wstring &so
   const HWND panelWnd = panel.window;
   const auto rootsCopy = roots;
   const auto queue = completionQueue;
-  std::thread([id, desktopWnd, panelWnd, sourcePath, targetFolder, rootsCopy, isMove, intoMapped, progress, queue] {
+  const auto inFlight = inFlightTransfers;
+  ++(*inFlight);
+  std::thread([id, desktopWnd, panelWnd, sourcePath, targetFolder, rootsCopy, isMove, intoMapped, progress, queue, inFlight] {
+    struct InFlightGuard {
+      std::shared_ptr<std::atomic<int>> counter;
+      ~InFlightGuard() { --(*counter); }
+    } flightGuard{inFlight};
     const HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     std::wstring resultPath;
     if (SUCCEEDED(com) || com == RPC_E_CHANGED_MODE) {
@@ -1559,6 +1565,10 @@ bool Desktop::enqueueAsyncTransferIntoPanel(Panel &panel, const std::wstring &so
       }
     }
     if (SUCCEEDED(com)) CoUninitialize();
+    if (!intoMapped && !resultPath.empty() && !IsWindow(desktopWnd)) {
+      restoreBoxItem(rootsCopy, resultPath);
+      return;
+    }
     {
       std::lock_guard lock(queue->mutex);
       queue->items.push_back({id, panelWnd, sourcePath, std::move(resultPath), isMove, intoMapped});
@@ -1577,10 +1587,22 @@ void Desktop::handleCompletedTransfers() {
   }
   if (doneList.empty()) return;
 
+  // Prevent WM_TIMER (ensureHost / cleanupMovedCutItems) from rebuilding panels
+  // while a modal commit error dialog pumps messages.
+  struct EditingScope {
+    bool &flag;
+    bool previous;
+    explicit EditingScope(bool &value) : flag(value), previous(value) { flag = true; }
+    ~EditingScope() { flag = previous; }
+  } editingScope(editing);
+
   const ULONGLONG now = GetTickCount64();
   for (auto &done : doneList) {
     auto *panel = panelForWindow(done.panelWindow);
-    if (!panel) continue;
+    if (!panel) {
+      if (!done.intoMapped && !done.resultPath.empty()) restoreBoxItem(roots, done.resultPath);
+      continue;
+    }
     auto entryIt = std::find_if(panel->activeTransfers.begin(), panel->activeTransfers.end(),
                                 [&](const Panel::TransferEntry &e) { return e.id == done.id; });
     if (done.resultPath.empty()) {
@@ -1629,9 +1651,14 @@ void Desktop::handleCompletedTransfers() {
           for (auto &t : g.tabs) removeOld(t.paths);
         }
       }
-      addItem(changed, panel->index, done.resultPath, desiredTab);
-      if (changed[panel->index].sort == Sort::Manual) {
-        auto &tabItems = manualItems(changed[panel->index], desiredTab);
+      size_t addedTab = desiredTab;
+      bool added = addItem(changed, panel->index, done.resultPath, addedTab);
+      if (!added && addedTab != 0) {
+        addedTab = 0;
+        added = addItem(changed, panel->index, done.resultPath, addedTab);
+      }
+      if (added && changed[panel->index].sort == Sort::Manual) {
+        auto &tabItems = manualItems(changed[panel->index], addedTab);
         auto found = std::find_if(tabItems.begin(), tabItems.end(),
                                   [&](const auto &p) { return samePath(p, done.resultPath); });
         if (found != tabItems.end() && desiredSlot < tabItems.size()) {
@@ -1641,17 +1668,34 @@ void Desktop::handleCompletedTransfers() {
           else if (to < from) std::rotate(tabItems.begin() + to, tabItems.begin() + from, tabItems.begin() + from + 1);
         }
       }
-      commit(std::move(changed), panel->window, false);
+      const bool saved = added && commit(std::move(changed), panel->window, false);
+      if (!saved) {
+        restoreBoxItem(roots, done.resultPath);
+        if (auto *currentPanel = panelForWindow(done.panelWindow)) {
+          auto it = std::find_if(currentPanel->activeTransfers.begin(), currentPanel->activeTransfers.end(),
+                                 [&](const Panel::TransferEntry &e) { return e.id == done.id; });
+          if (it != currentPanel->activeTransfers.end()) currentPanel->activeTransfers.erase(it);
+        }
+        for (size_t pi = 0; pi < panels.size(); ++pi) panels[pi]->refresh(groups[pi]);
+        continue;
+      }
     }
 
-    if (entryIt != panel->activeTransfers.end()) {
-      entryIt->tokenPath = done.resultPath;
-      entryIt->realPath = done.resultPath;
-      entryIt->iconSourcePath = done.resultPath;
-      entryIt->placeholder = false;
-      entryIt->finished = true;
-      entryIt->finishedAt = now;
-      entryIt->visualProgress = std::max(entryIt->visualProgress, 0.72);
+    // Re-lookup panel and entry after commit(), because a modal failure box pumps
+    // messages and tickTransfers() may have erased from activeTransfers.
+    panel = panelForWindow(done.panelWindow);
+    if (panel) {
+      entryIt = std::find_if(panel->activeTransfers.begin(), panel->activeTransfers.end(),
+                             [&](const Panel::TransferEntry &e) { return e.id == done.id; });
+      if (entryIt != panel->activeTransfers.end()) {
+        entryIt->tokenPath = done.resultPath;
+        entryIt->realPath = done.resultPath;
+        entryIt->iconSourcePath = done.resultPath;
+        entryIt->placeholder = false;
+        entryIt->finished = true;
+        entryIt->finishedAt = now;
+        entryIt->visualProgress = std::max(entryIt->visualProgress, 0.72);
+      }
     }
     for (size_t pi = 0; pi < panels.size(); ++pi) panels[pi]->refresh(groups[pi]);
   }

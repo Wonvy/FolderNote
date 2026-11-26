@@ -1,5 +1,6 @@
 // Panel appearance, tabs, hover menus, thumbnails, docking and resize gestures.
 #include "desktop_groups_internal.h"
+#include <shlwapi.h>
 
 namespace desktop_groups::detail {
 void Panel::applyTheme(const ui::Palette &colors) {
@@ -244,6 +245,15 @@ std::shared_ptr<FolderHoverScan> scanHoverFolder(const std::wstring &path) {
   return result;
 }
 
+bool isLocalPath(const std::wstring &path) {
+  if (path.empty() || PathIsNetworkPathW(path.c_str())) return false;
+  if (path.size() >= 3 && path[1] == L':' && (path[2] == L'\\' || path[2] == L'/')) {
+    const wchar_t root[4]{path[0], L':', L'\\', L'\0'};
+    if (GetDriveTypeW(root) == DRIVE_REMOTE) return false;
+  }
+  return true;
+}
+
 std::wstring resolveShortcutFolderTarget(const std::wstring &lnkPath) {
   Microsoft::WRL::ComPtr<IShellLinkW> link;
   Microsoft::WRL::ComPtr<IPersistFile> persist;
@@ -256,7 +266,7 @@ std::wstring resolveShortcutFolderTarget(const std::wstring &lnkPath) {
   wchar_t rawTarget[MAX_PATH]{};
   WIN32_FIND_DATAW findData{};
   if (SUCCEEDED(link->GetPath(rawTarget, ARRAYSIZE(rawTarget), &findData, 0)) && rawTarget[0] &&
-      PathIsDirectoryW(rawTarget)) {
+      isLocalPath(rawTarget) && PathIsDirectoryW(rawTarget)) {
     return quick::normalize(rawTarget);
   }
   return {};
@@ -280,13 +290,13 @@ std::wstring Panel::hoverFolderPathAt(int row) {
       if (found->attributes & FILE_ATTRIBUTE_DIRECTORY) resolvedFolder = entryPath;
       else if (!_wcsicmp(fn::fs::path(entryPath).extension().c_str(), L".lnk"))
         resolvedFolder = resolveShortcutFolderTarget(entryPath);
-    } else if (PathIsDirectoryW(entryPath.c_str())) {
+    } else if (isLocalPath(entryPath) && PathIsDirectoryW(entryPath.c_str())) {
       resolvedFolder = entryPath;
     }
   } else {
     const auto actual = desktop.boxItem(entryPath);
     if (!actual.empty() && !isDesktopShellItem(actual)) {
-      if (PathIsDirectoryW(actual.c_str())) resolvedFolder = actual;
+      if (isLocalPath(actual) && PathIsDirectoryW(actual.c_str())) resolvedFolder = actual;
       else if (!_wcsicmp(fn::fs::path(actual).extension().c_str(), L".lnk"))
         resolvedFolder = resolveShortcutFolderTarget(actual);
     }
@@ -376,7 +386,7 @@ void Panel::showFolderHoverMenu(int row) {
   if (currentHit != row) return;
 
   const auto rootFolder = hoverFolderPathAt(row);
-  if (rootFolder.empty() || !PathIsDirectoryW(rootFolder.c_str())) return;
+  if (rootFolder.empty() || !isLocalPath(rootFolder) || !PathIsDirectoryW(rootFolder.c_str())) return;
 
   RECT anchorBounds{};
 #ifdef FOLDERNOTE_WINUI
@@ -559,6 +569,7 @@ void Desktop::setAppearance(const Appearance &value) {
 
 void Panel::readMappedFolder() {
   if (mappedResult.valid() || mappedFolder.empty()) return;
+  mappedLastScan = GetTickCount64();
   std::packaged_task<std::vector<MappedItem>()> read([folder = mappedFolder] {
     std::vector<MappedItem> items;
     std::error_code error;

@@ -586,6 +586,43 @@ size_t restoreAll() {
   return failed;
 }
 
+std::vector<std::wstring> pendingMachineMountIds() {
+  std::vector<std::wstring> pending;
+  try {
+    Lock lock;
+    auto journal = open(HKEY_CURRENT_USER, journalPath(Surface::ThisPc));
+    for (const auto &id : ids(journal.handle, true)) {
+      try {
+        const auto saved = savedValue(journal.handle, id);
+        if (!saved || saved->version != 2) continue;
+        const unsigned machineBits = ((1u << mounts.size()) - 1u) << mounts.size();
+        if (saved->suppressEnumeration & mountMask(id, true) & machineBits)
+          pending.push_back(id);
+      } catch (const fn::Error &) {}
+    }
+  } catch (const fn::Error &) {}
+  return pending;
+}
+
+bool restoreMachineMountById(const std::wstring &rawId) {
+  const auto id = guid(rawId);
+  if (id.empty()) return false;
+  try {
+    Lock lock;
+    const unsigned machineBits = ((1u << mounts.size()) - 1u) << mounts.size();
+    const unsigned parkedMask = mountMask(id, true) & machineBits;
+    if (!parkedMask) return true;
+    if (mountMask(id, false) & parkedMask) return false;
+    requireWritableMounts(parkedMask);
+    for (unsigned slot = static_cast<unsigned>(mounts.size()); slot < 2 * mounts.size(); ++slot) {
+      if (parkedMask & (1u << slot)) renameMount(slot, parked(id), id);
+    }
+    return true;
+  } catch (const fn::Error &) {
+    return false;
+  }
+}
+
 void refresh(Surface surface) noexcept {
   PIDLIST_ABSOLUTE folder = nullptr;
   if (SUCCEEDED(SHGetSpecialFolderLocation(nullptr, surface == Surface::ThisPc ? CSIDL_DRIVES : CSIDL_DESKTOP,

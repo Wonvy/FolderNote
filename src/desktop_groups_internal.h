@@ -364,6 +364,8 @@ struct Panel {
   struct MappedItem { std::wstring path; ULONGLONG modified; DWORD attributes; };
   std::vector<MappedItem> mappedItems;
   std::future<std::vector<MappedItem>> mappedResult;
+  HANDLE mappedWatch = INVALID_HANDLE_VALUE;
+  ULONGLONG mappedLastScan = 0;
   std::vector<RECT> tabAreas;
   HFONT font = nullptr, titleFont = nullptr;
   HIMAGELIST scaledIcons = nullptr;
@@ -506,6 +508,7 @@ struct Panel {
   void place(RECT bounds);
   Panel(Desktop &owner, size_t position) : desktop(owner), index(position) {}
   ~Panel() {
+    if (mappedWatch != INVALID_HANDLE_VALUE) { FindCloseChangeNotification(mappedWatch); mappedWatch = INVALID_HANDLE_VALUE; }
     if (window) KillTimer(window, collapseHoldTimer);
     if (tabDrag && tabDrag->preview) DestroyWindow(tabDrag->preview);
 #ifdef FOLDERNOTE_WINUI
@@ -624,6 +627,8 @@ public:
     std::vector<CompletedTransfer> items;
   };
   std::shared_ptr<TransferCompletionQueue> completionQueue = std::make_shared<TransferCompletionQueue>();
+  std::shared_ptr<std::atomic<int>> inFlightTransfers = std::make_shared<std::atomic<int>>(0);
+  void recoverOrphanedBoxStorage();
   void ensureTransferTimer();
   void addSettlePulse(Panel &panel, const std::wstring &storedPath);
   void addOutgoingFarewell(Panel &panel, const std::wstring &removedPath, size_t slotHint, bool isDir);
@@ -648,12 +653,14 @@ public:
       : instance(module), layoutFile(std::move(layout)), groups(load(layoutFile)),
         roots(customRoots ? std::move(*customRoots) : desktopRoots()) {
     ensureHiddenBoxStorage(roots);
+    recoverOrphanedBoxStorage();
   }
   ~Desktop() {
     quitting = true;
     previewKeys.reset();
     panels.clear();
     if (window) DestroyWindow(window);
+    for (int i = 0; i < 100 && inFlightTransfers->load() > 0; ++i) Sleep(50);
   }
   bool openPanel(size_t index);
   void updateShadows();

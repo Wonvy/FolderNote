@@ -29,7 +29,13 @@ jobs:
             throw "Git tag must match product version v$version."
           }
       - name: Test
-        run: ctest --preset release --timeout 120 --repeat until-pass:3
+        run: |
+          $out = ctest --preset release --timeout 120 --repeat until-pass:2 --output-on-failure 2>&1 | Tee-Object -Variable log
+          $out | Write-Host
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($out -match 'Passed \(after') {
+            Write-Host "::warning::One or more tests only passed after retry."
+          }
       - name: Package installers
         run: .\packaging\build-release.ps1 -StableNames
       - name: Prepare release notes
@@ -42,9 +48,14 @@ jobs:
           ($intro + $section.Groups[1].Value.Trim()) | Set-Content dist/ReleaseNotes.md -Encoding utf8
       - name: Collect debug symbols
         run: |
-          $pdbs = 'FolderNote', 'FolderNoteShell', 'FolderNoteNavigation' | ForEach-Object { "build/Release/$_.pdb" } | Where-Object { Test-Path $_ }
-          if (!$pdbs) { throw "No release PDBs were produced." }
-          Compress-Archive -Path $pdbs -DestinationPath dist/FolderNote-symbols-x64.zip -Force
+          $expected = 'FolderNote', 'FolderNoteShell', 'FolderNoteNavigation', 'Install', 'Uninstall', 'Install-Win11' |
+            ForEach-Object { "build/Release/$_.pdb" }
+          $missing = $expected | Where-Object { !(Test-Path $_) }
+          if ($missing) { throw "Missing release PDBs: $($missing -join ', ')" }
+          $symbols = 'dist/FolderNote-symbols-x64.zip'
+          Compress-Archive -Path $expected -DestinationPath $symbols -Force
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $symbols).Hash
+          Add-Content -LiteralPath dist/SHA256SUMS.txt -Value "$hash  FolderNote-symbols-x64.zip" -Encoding ascii
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: FolderNote-windows-x64

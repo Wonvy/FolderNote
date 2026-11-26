@@ -69,24 +69,26 @@ LRESULT CALLBACK proc(HWND window, UINT message, WPARAM w, LPARAM l, UINT_PTR, D
     gate->destroyed = true; gate->ownsCloak = false; detach(gate);
     return DefSubclassProc(window, message, w, l);
   }
-  if (message == routing::releaseGateMessage) { reveal(gate); return 0; }
+  if (message == routing::releaseGateMessage()) { reveal(gate); return 0; }
   if (message == WM_TIMER && w == gateId) {
     if (gate->releaseRequested || GetTickCount64() >= gate->deadline || !routing::enabled()) reveal(gate);
     return 0;
   }
-  if (message == RegisterWindowMessageW(L"FolderNote.Navigation.Shutdown.v2") ||
-      (message == RegisterWindowMessageW(L"FolderNote.Navigation.SettingsChanged.v2") && !routing::enabled())) reveal(gate);
+  static const UINT shutdownMsg = RegisterWindowMessageW(L"FolderNote.Navigation.Shutdown.v2");
+  static const UINT settingsChanged = RegisterWindowMessageW(L"FolderNote.Navigation.SettingsChanged.v2");
+  if (message == shutdownMsg || (message == settingsChanged && !routing::enabled())) reveal(gate);
   return DefSubclassProc(window, message, w, l);
 }
 bool hiddenExplorerFrame(HWND frame) {
   DWORD process = 0;
   if (!frame || GetWindowThreadProcessId(frame, &process) != GetCurrentThreadId() ||
       process != GetCurrentProcessId() || GetAncestor(frame, GA_ROOT) != frame || IsWindowVisible(frame)) return false;
-  wchar_t cls[64]{}, path[32768]{}, windowsDir[MAX_PATH]{};
+  wchar_t cls[64]{}, windowsDir[MAX_PATH]{};
   if (!GetClassNameW(frame, cls, ARRAYSIZE(cls)) || (wcscmp(cls, L"CabinetWClass") && wcscmp(cls, L"ExploreWClass"))) return false;
-  auto length = GetModuleFileNameW(nullptr, path, ARRAYSIZE(path));
-  if (!length || length >= ARRAYSIZE(path) || !GetWindowsDirectoryW(windowsDir, ARRAYSIZE(windowsDir))) return false;
-  return !_wcsicmp(path, (std::wstring(windowsDir) + L"\\explorer.exe").c_str());
+  std::wstring path(32768, L'\0');
+  auto length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+  if (!length || length >= path.size() || !GetWindowsDirectoryW(windowsDir, ARRAYSIZE(windowsDir))) return false;
+  return !_wcsicmp(path.c_str(), (std::wstring(windowsDir) + L"\\explorer.exe").c_str());
 }
 bool uncloaked(HWND frame) {
   DWORD state = 0;

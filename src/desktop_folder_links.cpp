@@ -278,8 +278,22 @@ size_t restoreAll() try {
     if (result != ERROR_SUCCESS) fn::fail(readError, result);
     paths.emplace_back(name.data(), length);
   }
+  const auto personal = desktop(FOLDERID_Desktop);
   size_t failed = 0;
   for (const auto &path : paths) {
+    const fn::fs::path shortcut(path);
+    const bool wrongFolder = !personal.empty() && !equal(shortcut.parent_path().native(), personal.native());
+    const DWORD attrs = GetFileAttributesW(path.c_str());
+    const DWORD err = attrs == INVALID_FILE_ATTRIBUTES ? GetLastError() : ERROR_SUCCESS;
+    const bool gone = attrs == INVALID_FILE_ATTRIBUTES &&
+                      (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND);
+    if (wrongFolder || gone) {
+      try {
+        Key writable(true);
+        RegDeleteValueW(writable.handle, path.c_str());
+      } catch (const fn::Error &) { ++failed; }
+      continue;
+    }
     try { changeVisibility(path, std::nullopt, nullptr); }
     catch (const fn::Error &) { ++failed; }
   }
