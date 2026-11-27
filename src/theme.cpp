@@ -95,7 +95,7 @@ LRESULT CALLBACK controlProc(HWND window, UINT message, WPARAM w, LPARAM l, UINT
     auto title = caption(window);
     if (button && GetPropW(window, switchKey)) {
       const bool checked = SendMessageW(window, BM_GETCHECK, 0, 0) == BST_CHECKED;
-      const bool keyboardFocus = focus && !(SendMessageW(window, WM_QUERYUISTATE, 0, 0) & UISF_HIDEFOCUS);
+      const bool keyboardFocus = focus && GetKeyState(VK_LBUTTON) >= 0 && !(SendMessageW(window, WM_QUERYUISTATE, 0, 0) & UISF_HIDEFOCUS);
       const int height = px(window, 18), width = px(window, 34);
       const int top = (rect.bottom - height) / 2;
       RECT track{rect.right - width - 1, top, rect.right - 1, top + height};
@@ -136,15 +136,40 @@ LRESULT CALLBACK controlProc(HWND window, UINT message, WPARAM w, LPARAM l, UINT
         SelectObject(dc, old); DeleteObject(pen);
       }
       rect.left = px(window, 28); text(dc, title, rect, color);
+    } else if (button && ((style & BS_TYPEMASK) == BS_AUTORADIOBUTTON || (style & BS_TYPEMASK) == BS_RADIOBUTTON)) {
+      const int size = px(window, 18), top = (rect.bottom - size) / 2;
+      RECT circle{1, top, size + 1, top + size};
+      const bool checked = SendMessageW(window, BM_GETCHECK, 0, 0) == BST_CHECKED;
+      const COLORREF bg = GetPropW(window, surfaceKey) ? p.surface : p.background;
+      if (checked && enabled) {
+        smoothPill(dc, circle, p.accent, p.accent, bg);
+        const int inset = px(window, 5);
+        RECT dot{circle.left + inset, circle.top + inset, circle.right - inset, circle.bottom - inset};
+        smoothPill(dc, dot, p.onAccent, p.onAccent, p.accent);
+      } else {
+        const COLORREF fill = checked ? p.muted : (hot && enabled ? p.hover : p.field);
+        const COLORREF edge = p.highContrast ? p.border
+            : (hot && enabled ? mixColor(p.border, p.muted, 30) : mixColor(p.field, p.border, p.dark ? 70 : 78));
+        smoothPill(dc, circle, fill, edge, bg);
+        if (checked) {
+          const int inset = px(window, 5);
+          RECT dot{circle.left + inset, circle.top + inset, circle.right - inset, circle.bottom - inset};
+          const COLORREF dotColor = GetPropW(window, surfaceKey) ? p.surface : p.background;
+          smoothPill(dc, dot, dotColor, dotColor, fill);
+        }
+      }
+      rect.left = px(window, 28);
+      text(dc, title, rect, color);
     } else {
       bool primary = button && (style & BS_TYPEMASK) == BS_DEFPUSHBUTTON;
       bool down = button && (SendMessageW(window, BM_GETSTATE, 0, 0) & BST_PUSHED);
+      const bool keyboardFocus = focus && !down && GetKeyState(VK_LBUTTON) >= 0 && !(SendMessageW(window, WM_QUERYUISTATE, 0, 0) & UISF_HIDEFOCUS);
       const COLORREF ctrlFill = p.highContrast
           ? (primary && enabled ? p.accent : down ? p.pressed : hot ? p.hover : p.field)
           : (primary && enabled ? p.accent : down ? p.pressed : hot ? mixColor(p.field, p.hover, p.dark ? 75 : 55) : p.field);
       const COLORREF ctrlBorder = p.highContrast
-          ? (focus ? p.accent : p.border)
-          : (focus ? p.accent : (hot && enabled ? mixColor(p.border, p.muted, p.dark ? 32 : 28) : mixColor(p.field, p.border, p.dark ? 70 : 78)));
+          ? (keyboardFocus ? p.accent : p.border)
+          : (keyboardFocus ? p.accent : (hot && enabled ? mixColor(p.border, p.muted, p.dark ? 32 : 28) : mixColor(p.field, p.border, p.dark ? 70 : 78)));
       rounded(dc, rect, ctrlFill, ctrlBorder, px(window, 6));
       rect.left += px(window, 12); rect.right -= px(window, combo ? 32 : 12);
       text(dc, title, rect, primary && enabled ? p.onAccent : color,
@@ -178,8 +203,14 @@ LRESULT CALLBACK controlProc(HWND window, UINT message, WPARAM w, LPARAM l, UINT
   return result;
 }
 BOOL CALLBACK styleControl(HWND child, LPARAM data) {
-  SetWindowSubclass(child, controlProc, 0x464e, static_cast<DWORD_PTR>(data));
-  InvalidateRect(child, nullptr, TRUE); return TRUE;
+  wchar_t name[32]{}; GetClassNameW(child, name, ARRAYSIZE(name));
+  const bool button = !wcscmp(name, L"Button"), combo = !wcscmp(name, L"ComboBox");
+  const bool customPaint = combo || (button && (GetWindowLongPtrW(child, GWL_STYLE) & BS_TYPEMASK) != BS_OWNERDRAW);
+  if (customPaint) {
+    SetWindowSubclass(child, controlProc, 0x464e, static_cast<DWORD_PTR>(data));
+    InvalidateRect(child, nullptr, FALSE);
+  }
+  return TRUE;
 }
 }
 ThemeMode configuredTheme() {
@@ -253,14 +284,14 @@ void Theme::reset(ThemeMode value) {
   background = CreateSolidBrush(colors.background); card = CreateSolidBrush(colors.surface); field = CreateSolidBrush(colors.field);
 }
 void Theme::apply(HWND window) {
-  BOOL dark = colors.dark;
-  if (FAILED(DwmSetWindowAttribute(window, 20, &dark, sizeof(dark)))) DwmSetWindowAttribute(window, 19, &dark, sizeof(dark));
-  DWORD corners = 2; DwmSetWindowAttribute(window, 33, &corners, sizeof(corners));
-  DwmSetWindowAttribute(window, 35, &colors.background, sizeof(COLORREF));
-  DwmSetWindowAttribute(window, 36, &colors.text, sizeof(COLORREF));
-  DwmSetWindowAttribute(window, 34, &colors.border, sizeof(COLORREF));
+  const bool topLevel = (GetWindowLongPtrW(window, GWL_STYLE) & WS_CHILD) == 0;
+  if (topLevel) {
+    BOOL dark = colors.dark;
+    if (FAILED(DwmSetWindowAttribute(window, 20, &dark, sizeof(dark))))
+      DwmSetWindowAttribute(window, 19, &dark, sizeof(dark));
+  }
   EnumChildWindows(window, styleControl, reinterpret_cast<LPARAM>(this));
-  RedrawWindow(window, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_FRAME);
+  RedrawWindow(window, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN | (topLevel ? RDW_FRAME : 0));
 }
 bool Theme::handle(HWND window, UINT message, WPARAM w, LPARAM l, LRESULT &result) {
   if (message == WM_ERASEBKGND) {

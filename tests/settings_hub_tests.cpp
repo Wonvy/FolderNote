@@ -49,8 +49,8 @@ struct Hub {
     cls.lpfnWndProc = navigation::settingsProc; cls.lpszClassName = L"FolderNote.Settings.HiddenTest"; RegisterClassW(&cls);
     navigation::appearance = std::make_unique<ui::Theme>();
     navigation::dpi = 96;
-    window = CreateWindowExW(WS_EX_CONTROLPARENT, cls.lpszClassName, L"Hidden settings layout test",
-        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_CLIPCHILDREN,
+    window = CreateWindowExW(0, cls.lpszClassName, L"Hidden settings layout test",
+        WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
         0, 0, 980, 660, nullptr, nullptr, instance, nullptr);
     check(window != nullptr, "create hidden settings controller");
   }
@@ -408,13 +408,14 @@ void scenarios() {
 
     // Double-click page via sidebar or card Edit
     SendDlgItemMessageW(body, cardEditDoubleClick, BM_CLICK, 0, 0);
-    check(activePage == SettingsPage::DoubleClick && visibleStyle(choice), "double-click card routes to DoubleClick page");
-    SendMessageW(choice, CB_SETCURSEL, 1, 0);
-    SendMessageW(hub.window, WM_COMMAND, MAKEWPARAM(10, CBN_SELCHANGE), reinterpret_cast<LPARAM>(choice));
+    check(activePage == SettingsPage::DoubleClick && visibleStyle(dblClickParentRadio) &&
+          visibleStyle(dblClickBackRadio), "double-click card routes to DoubleClick page");
+    SendMessageW(dblClickBackRadio, BM_CLICK, 0, 0);
     check(preferredAction() == Action::Back && configuredAction() == Action::Back,
           "double-click action persists immediately");
-    SendMessageW(choice, CB_SETCURSEL, 0, 0);
-    SendMessageW(hub.window, WM_COMMAND, MAKEWPARAM(10, CBN_SELCHANGE), reinterpret_cast<LPARAM>(choice));
+    SendMessageW(dblClickParentRadio, BM_CLICK, 0, 0);
+    check(preferredAction() == Action::Parent && configuredAction() == Action::Parent,
+          "double-click radio switches back immediately");
     SendDlgItemMessageW(hub.window, 40, BM_CLICK, 0, 0);
     SendDlgItemMessageW(body, 12, BM_CLICK, 0, 0);
     check(configuredAction() == Action::Off && !visibleStyle(GetDlgItem(hub.window, 59)) &&

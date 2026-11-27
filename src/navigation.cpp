@@ -256,7 +256,7 @@ void saveSettings(bool notes, Action action, Action preferred, bool quick, bool 
 void syncNoteMenus() {
   applySettings(notesEnabled(), configuredAction(), preferredAction(), quickEnabled(), dialogQuickEnabled(), ui::configuredTheme(), tabsEnabled(), preferNewTabEnabled(), false);
 }
-static HWND choice;
+static HWND dblClickParentRadio, dblClickBackRadio;
 static HWND notesCheck;
 static HWND navigationCheck;
 static HWND quickCheck;
@@ -264,12 +264,12 @@ static HWND dialogCheck;
 static HWND tabsCheck;
 static HWND preferNewTabCheck;
 static HWND desktopGroupsCheck, desktopGroupsManager, quickFindCheck;
-static HFONT font, sidebarActiveFont, brandFont, headingFont, cardTitleFont, smallFont, symbolFont;
+static HFONT font, sidebarActiveFont, brandFont, headingFont, cardTitleFont, cardDescFont, cardIconFont, smallFont, symbolFont;
 static HBRUSH sidebarBrush = nullptr;
 static HWND body, themeChoice, settingsWindow, managerPage, contextPage, entriesPage;
 static SettingsPage activePage = SettingsPage::Features;
 static int settingsSidebarWidth = 208;
-static int sidebarDividerY = 0;
+static std::vector<int> sidebarDividers;
 static int hoveredCard = -1;
 static int hoveredCardAction = -1;
 static int hoveredSidebarId = 0;
@@ -279,19 +279,19 @@ struct SidebarItem {
   int id;
   SettingsPage page;
   bool conditional;
-  bool bottomGroup;
+  int group;
 };
 static constexpr std::array<SidebarItem, 10> sidebarItems{{
-    {40, SettingsPage::Features, false, false},
-    {77, SettingsPage::Notes, true, false},
-    {59, SettingsPage::DoubleClick, true, false},
-    {41, SettingsPage::QuickFolders, true, false},
-    {50, SettingsPage::BoxAppearance, true, false},
-    {75, SettingsPage::QuickFind, true, false},
-    {76, SettingsPage::Tabs, true, false},
-    {47, SettingsPage::ContextMenus, false, true},
-    {49, SettingsPage::ExplorerEntries, false, true},
-    {48, SettingsPage::Preferences, false, true},
+    {40, SettingsPage::Features, false, 0},
+    {48, SettingsPage::Preferences, false, 0},
+    {77, SettingsPage::Notes, true, 1},
+    {59, SettingsPage::DoubleClick, true, 1},
+    {41, SettingsPage::QuickFolders, true, 1},
+    {50, SettingsPage::BoxAppearance, true, 1},
+    {75, SettingsPage::QuickFind, true, 1},
+    {76, SettingsPage::Tabs, true, 1},
+    {47, SettingsPage::ContextMenus, false, 2},
+    {49, SettingsPage::ExplorerEntries, false, 2},
 }};
 static const wchar_t *sidebarLabel(SettingsPage page) {
   switch (page) {
@@ -311,7 +311,7 @@ static const wchar_t *sidebarLabel(SettingsPage page) {
 static const wchar_t *sidebarIcon(SettingsPage page) {
   switch (page) {
   case SettingsPage::Features: return L"\xE80F";
-  case SettingsPage::Notes: return L"\xE70F";
+  case SettingsPage::Notes: return L"\xE70B";
   case SettingsPage::DoubleClick: return L"\xE74A";
   case SettingsPage::QuickFolders: return L"\xE718";
   case SettingsPage::BoxAppearance: return L"\xE80A";
@@ -349,6 +349,7 @@ static constexpr int boxShadowOpacity = 60, boxShadowBlur = 61, boxShadowOffset 
 static constexpr int boxShadowOpacityLabel = 63, boxShadowBlurLabel = 64, boxShadowOffsetLabel = 65;
 static constexpr int cardEditNotes = 101, cardEditDoubleClick = 102, cardEditQuick = 103,
                      cardEditDesktopGroups = 104, cardEditQuickFind = 105, cardEditTabs = 106;
+static constexpr int dblClickParent = 10, dblClickBack = 145;
 static constexpr int dblClickLabel = 130, dblClickDesc = 131, quickDesc = 132, boxDesc = 133,
                      tabsDesc = 134, tabsNewTabDesc = 135, diagnosticsLabel = 136, diagnosticsDesc = 137,
                      notesDesc = 138, notesMenuLabel = 139, notesCmdEdit = 140, notesCmdClear = 141,
@@ -879,7 +880,7 @@ static int contentHeight() {
   const int visibleCount = static_cast<int>(std::count_if(cards.begin(), cards.end(),
       [](const auto &card) { return card.visible; }));
   const int rows = std::max(1, (visibleCount + 1) / 2);
-  return scale(8 + rows * 126 + std::max(0, rows - 1) * 12 + 16);
+  return scale(8 + rows * 120 + std::max(0, rows - 1) * 12 + 16);
 }
 
 static COLORREF blend(COLORREF a, COLORREF b, int weight) {
@@ -1097,9 +1098,12 @@ static void loadSettingsToControls(HWND owner) {
   SendMessageW(notesCheck, BM_SETCHECK, notesEnabled() ? BST_CHECKED : BST_UNCHECKED, 0);
   refreshNotesControls(owner);
   const auto action = configuredAction();
+  const auto preferred = preferredAction();
   SendMessageW(navigationCheck, BM_SETCHECK, action != Action::Off ? BST_CHECKED : BST_UNCHECKED, 0);
-  SendMessageW(choice, CB_SETCURSEL, preferredAction() == Action::Back ? 1 : 0, 0);
-  EnableWindow(choice, action != Action::Off);
+  SendMessageW(dblClickParentRadio, BM_SETCHECK, preferred == Action::Parent ? BST_CHECKED : BST_UNCHECKED, 0);
+  SendMessageW(dblClickBackRadio, BM_SETCHECK, preferred == Action::Back ? BST_CHECKED : BST_UNCHECKED, 0);
+  EnableWindow(dblClickParentRadio, action != Action::Off);
+  EnableWindow(dblClickBackRadio, action != Action::Off);
   const bool quick = quickEnabled();
   SendMessageW(quickCheck, BM_SETCHECK, quick ? BST_CHECKED : BST_UNCHECKED, 0);
   SendMessageW(dialogCheck, BM_SETCHECK, dialogQuickEnabled() ? BST_CHECKED : BST_UNCHECKED, 0);
@@ -1130,9 +1134,8 @@ enum class CommitScope { Notes, Navigation, Quick, DesktopGroups, BoxStyle, Tabs
 
 static void commitSettings(HWND owner, CommitScope scope) {
   try {
-    const auto selection = SendMessageW(choice, CB_GETCURSEL, 0, 0);
-    if (selection != 0 && selection != 1) throw fn::Error{lang::text(L"请选择有效的双击操作。")};
-    const auto preferred = selection == 1 ? Action::Back : Action::Parent;
+    const bool backSelected = dblClickBackRadio && SendMessageW(dblClickBackRadio, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    const auto preferred = backSelected ? Action::Back : Action::Parent;
     const bool navOn = SendMessageW(navigationCheck, BM_GETCHECK, 0, 0) == BST_CHECKED;
     const auto action = navOn ? preferred : Action::Off;
     const bool notes = SendMessageW(notesCheck, BM_GETCHECK, 0, 0) == BST_CHECKED;
@@ -1146,7 +1149,8 @@ static void commitSettings(HWND owner, CommitScope scope) {
         DesktopGroupsSettings{boxes, boxStyle.glass, boxStyle.radius, boxStyle.opacity, boxStyle.shadow,
                               boxStyle.shadowOpacity, boxStyle.shadowBlur, boxStyle.shadowOffset});
 
-    EnableWindow(choice, navOn);
+    EnableWindow(dblClickParentRadio, navOn);
+    EnableWindow(dblClickBackRadio, navOn);
     EnableWindow(dialogCheck, quick);
     if (preferNewTabCheck) EnableWindow(preferNewTabCheck, tabs);
     refreshNotesControls(owner);
@@ -1251,7 +1255,7 @@ static void layoutBody() {
   settingsScroll.configure(contentHeight(), client.bottom, scrollPosition, dpi, scale(16));
   if (activePage != SettingsPage::Features) ShowWindow(settingsScroll.window(), SW_HIDE);
   const int padX = scale(20), padTop = scale(8), gapX = scale(14), gapY = scale(12);
-  const int cardH = scale(126), btnW = scale(74);
+  const int cardH = scale(120), btnW = scale(28), btnH = scale(26);
   const int cardW = std::max(scale(220), (int(client.right) - padX * 2 - gapX) / 2);
   int visibleIndex = 0;
   for (auto &card : cards) {
@@ -1262,9 +1266,9 @@ static void layoutBody() {
     const int x = padX + col * (cardW + gapX);
     const int y = padTop + row * (cardH + gapY) - scrollPosition;
     card.rect = {x, y, x + cardW, y + cardH};
-    MoveWindow(card.toggle, x + scale(52), y + scale(15), std::max(0, cardW - scale(68)), scale(28), FALSE);
-    MoveWindow(card.description, x + scale(16), y + scale(50), std::max(0, cardW - scale(32)), scale(36), FALSE);
-    MoveWindow(card.action, x + cardW - scale(14) - btnW, y + scale(88), btnW, scale(26), FALSE);
+    MoveWindow(card.toggle, x + scale(72), y + scale(16), std::max(0, cardW - scale(88)), scale(26), FALSE);
+    MoveWindow(card.description, x + scale(72), y + scale(45), std::max(0, cardW - scale(88)), scale(36), FALSE);
+    MoveWindow(card.action, x + cardW - scale(14) - btnW, y + scale(84), btnW, btnH, FALSE);
   }
   RedrawWindow(body, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
 }
@@ -1285,58 +1289,43 @@ static int measureControlWidth(HWND control, HFONT textFont, int extra) {
   return width;
 }
 
-static int measureComboWidth(HWND combo, HFONT textFont, int extra) {
-  int longest = 0;
-  if (auto dc = GetDC(combo)) {
-    auto previous = SelectObject(dc, textFont);
-    const auto count = SendMessageW(combo, CB_GETCOUNT, 0, 0);
-    for (LRESULT index = 0; index < count; ++index) {
-      const auto length = SendMessageW(combo, CB_GETLBTEXTLEN, index, 0);
-      if (length < 0) continue;
-      std::wstring label(size_t(length) + 1, L'\0');
-      const auto copied = SendMessageW(combo, CB_GETLBTEXT, index, reinterpret_cast<LPARAM>(label.data()));
-      SIZE extent{};
-      if (copied >= 0 && GetTextExtentPoint32W(dc, label.c_str(), static_cast<int>(copied), &extent))
-        longest = std::max(longest, int(extent.cx));
-    }
-    SelectObject(dc, previous);
-    ReleaseDC(combo, dc);
-  }
-  return longest + extra;
-}
-
 static void layoutSettings() {
   RECT client{}; GetClientRect(settingsWindow, &client);
   int width = client.right, height = client.bottom;
   const int sidebar = settingsSidebarWidth;
-  MoveWindow(GetDlgItem(settingsWindow, 35), scale(20), scale(20), scale(172), scale(32), TRUE);
-  MoveWindow(GetDlgItem(settingsWindow, 36), scale(20), scale(57), scale(172), scale(22), TRUE);
+  MoveWindow(GetDlgItem(settingsWindow, 35), scale(12), scale(27), scale(sidebar - 24), scale(34), TRUE);
   MoveWindow(GetDlgItem(settingsWindow, 31), scale(20), height - scale(39), scale(sidebar - 79), scale(22), TRUE);
   MoveWindow(GetDlgItem(settingsWindow, updateButton), scale(sidebar - 52), height - scale(44), scale(32), scale(32), TRUE);
 
   int visibleCount = 0;
-  for (const auto &item : sidebarItems)
-    if (sidebarItemVisible(item)) ++visibleCount;
+  int dividerCount = 0;
+  int countGroup = -1;
+  for (const auto &item : sidebarItems) {
+    if (!sidebarItemVisible(item)) continue;
+    if (countGroup >= 0 && item.group != countGroup) ++dividerCount;
+    countGroup = item.group;
+    ++visibleCount;
+  }
   const int navTop = scale(88);
   const int navBottom = height - scale(50);
   const int dividerGap = scale(12);
-  const int available = std::max(scale(120), navBottom - navTop - dividerGap);
+  const int available = std::max(scale(120), navBottom - navTop - dividerCount * dividerGap);
   const int step = std::min(scale(40), std::max(scale(26), available / std::max(1, visibleCount)));
   const int btnH = std::max(scale(24), step - scale(4));
   int navY = navTop;
-  bool placedBottom = false;
-  sidebarDividerY = 0;
+  int lastGroup = -1;
+  sidebarDividers.clear();
   for (const auto &item : sidebarItems) {
     HWND ctrl = GetDlgItem(settingsWindow, item.id);
     if (!sidebarItemVisible(item)) {
       ShowWindow(ctrl, SW_HIDE);
       continue;
     }
-    if (item.bottomGroup && !placedBottom) {
-      sidebarDividerY = navY + scale(5);
+    if (lastGroup >= 0 && item.group != lastGroup) {
+      sidebarDividers.push_back(navY + scale(4));
       navY += dividerGap;
-      placedBottom = true;
     }
+    lastGroup = item.group;
     MoveWindow(ctrl, scale(12), navY, scale(sidebar - 24), btnH, TRUE);
     ShowWindow(ctrl, SW_SHOWNA);
     navY += step;
@@ -1371,9 +1360,11 @@ static void layoutSettings() {
 
   // DoubleClick page
   placeForPage(SettingsPage::DoubleClick, dblClickLabel, 0, 84, contentWidth, scale(22));
-  const int choiceWidth = std::min(contentWidth, std::max(scale(220), measureComboWidth(choice, font, scale(48))));
-  placeForPage(SettingsPage::DoubleClick, 10, 0, 112, choiceWidth, scale(180));
-  placeForPage(SettingsPage::DoubleClick, dblClickDesc, 0, 154, contentWidth, scale(40));
+  const int parentRadioWidth = std::min(contentWidth, measureControlWidth(dblClickParentRadio, font, scale(34)));
+  const int backRadioWidth = std::min(contentWidth, measureControlWidth(dblClickBackRadio, font, scale(34)));
+  placeForPage(SettingsPage::DoubleClick, dblClickParent, 0, 114, parentRadioWidth, scale(26));
+  placeForPage(SettingsPage::DoubleClick, dblClickBack, 0, 146, backRadioWidth, scale(26));
+  placeForPage(SettingsPage::DoubleClick, dblClickDesc, 0, 184, contentWidth, scale(40));
 
   // QuickFolders page
   const int dialogWidth = std::min(contentWidth, measureControlWidth(dialogCheck, font, scale(34)));
@@ -1392,20 +1383,20 @@ static void layoutSettings() {
   auto preference = [&](int id, int x, int y, int w, int h) {
     placeForPage(SettingsPage::Preferences, id, scale(x), y, scale(w), scale(h));
   };
-  preference(46, 0, 84, 210, 22);
-  preference(languageChoice, 0, 110, 210, 130);
-  preference(languageExport, 0, 150, 174, 32);
-  preference(languageImport, 184, 150, 174, 32);
-  preference(32, 300, 84, 210, 22);
-  preference(17, 300, 110, 210, 130);
-  preference(automaticUpdateCheck, 0, 208, std::min(210, preferencesWidth), 26);
-  preference(automaticUpdateDescription, 0, 238, preferencesWidth, 40);
-  constexpr int statusTop = 282;
-  const int statusHeight = std::clamp(MulDiv(height, 96, dpi) - 125 - statusTop, 0, 44);
+  preference(46, 0, 78, 210, 20);
+  preference(languageChoice, 0, 102, 176, 130);
+  preference(languageExport, 186, 102, 172, 32);
+  preference(languageImport, 368, 102, 172, 32);
+  preference(32, 0, 152, 210, 20);
+  preference(17, 0, 176, 176, 130);
+  preference(automaticUpdateCheck, 0, 226, std::min(210, preferencesWidth), 26);
+  preference(automaticUpdateDescription, 0, 256, preferencesWidth, 36);
+  constexpr int statusTop = 294, diagTop = 342;
+  const int statusHeight = std::clamp(diagTop - statusTop - 6, 18, 42);
   preference(updateStatusLabel, 0, statusTop, preferencesWidth, statusHeight);
-  preference(diagnosticsLabel, 0, 334, preferencesWidth, 20);
-  preference(diagnosticsDesc, 0, 356, preferencesWidth, 22);
-  preference(13, 0, 384, 152, 32);
+  preference(diagnosticsLabel, 0, diagTop, preferencesWidth, 20);
+  preference(diagnosticsDesc, 0, diagTop + 22, preferencesWidth, 22);
+  preference(13, 0, diagTop + 50, 152, 32);
 
   // QuickFind page
   const int findColumn = (preferencesWidth - 24) / 2;
@@ -1585,11 +1576,10 @@ static LRESULT CALLBACK sidebarProc(HWND h, UINT message, WPARAM w, LPARAM l, UI
 }
 
 static LRESULT CALLBACK contentProc(HWND h, UINT message, WPARAM w, LPARAM l) {
+  if (message == WM_ERASEBKGND) return 1;
   LRESULT result = 0;
   if (appearance && appearance->handle(h, message, w, l, result)) return result;
   switch (message) {
-  case WM_ERASEBKGND:
-    return 1;
   case WM_SETCURSOR:
     if (hoveredCard != -1 && reinterpret_cast<HWND>(w) != body && GetParent(reinterpret_cast<HWND>(w)) != body)
       setHoveredCard(-1);
@@ -1643,6 +1633,8 @@ static LRESULT CALLBACK contentProc(HWND h, UINT message, WPARAM w, LPARAM l) {
       const bool btnHov = hoveredCardAction == cardIdx;
       const bool pressed = (item->itemState & ODS_SELECTED) != 0;
       const bool focused = (item->itemState & ODS_FOCUS) != 0;
+      const bool keyboardFocus = focused && !pressed && GetKeyState(VK_LBUTTON) >= 0 && !(SendMessageW(item->hwndItem, WM_QUERYUISTATE, 0, 0) & UISF_HIDEFOCUS);
+      const bool showIcon = enabled && (cardHov || btnHov || pressed || keyboardFocus);
       RECT rc = item->rcItem;
       const int bufW = rc.right - rc.left, bufH = rc.bottom - rc.top;
       HDC bufferDc = bufW > 0 && bufH > 0 ? CreateCompatibleDC(item->hDC) : nullptr;
@@ -1656,45 +1648,30 @@ static LRESULT CALLBACK contentProc(HWND h, UINT message, WPARAM w, LPARAM l) {
       RECT drawRc = bufferDc ? RECT{0, 0, bufW, bufH} : rc;
       FillRect(dc, &drawRc, appearance->card);
 
-      wchar_t labelBuf[64]{};
-      const int labelLen = GetWindowTextW(item->hwndItem, labelBuf, ARRAYSIZE(labelBuf));
-      const std::wstring labelText(labelBuf, size_t(std::max(0, labelLen)));
-
-      COLORREF textColor = colors.muted;
-      if (!enabled) {
-        textColor = colors.highContrast ? colors.muted : blend(colors.surface, colors.muted, colors.dark ? 55 : 50);
-      } else {
+      if (showIcon) {
         COLORREF fill = colors.surface, border = colors.surface;
+        COLORREF iconColor = (btnHov || pressed) ? colors.accent
+            : (colors.highContrast ? colors.text : blend(colors.text, colors.muted, 20));
         if (colors.highContrast) {
           fill = (btnHov || pressed) ? colors.accent : colors.surface;
-          border = (focused || btnHov || cardHov) ? colors.accent : colors.border;
-          textColor = (btnHov || pressed) ? colors.onAccent : colors.text;
+          border = (keyboardFocus || btnHov) ? colors.accent : colors.surface;
+          if (btnHov || pressed) iconColor = colors.onAccent;
         } else {
           if (pressed) {
-            fill = blend(colors.surface, colors.accent, colors.dark ? 26 : 18);
-            border = blend(colors.surface, colors.accent, colors.dark ? 42 : 30);
+            fill = blend(colors.surface, colors.text, colors.dark ? 12 : 9);
+            border = fill;
           } else if (btnHov) {
-            fill = blend(colors.surface, colors.accent, colors.dark ? 18 : 12);
-            border = blend(colors.surface, colors.accent, colors.dark ? 34 : 24);
-          } else if (cardHov) {
-            fill = blend(colors.surface, colors.accent, colors.dark ? 11 : 7);
+            fill = blend(colors.surface, colors.text, colors.dark ? 8 : 5);
             border = fill;
           }
-          if (focused) border = colors.accent;
-          textColor = (cardHov || btnHov || pressed) ? colors.accent : blend(colors.text, colors.muted, 22);
+          if (keyboardFocus) border = colors.accent;
         }
-        if (fill != colors.surface || border != colors.surface || focused) {
-          RECT pillRect = drawRc;
-          InflateRect(&pillRect, 0, -scale(1));
-          ui::rounded(dc, pillRect, fill, border, scale(6));
-        }
+        if (fill != colors.surface || border != colors.surface)
+          ui::rounded(dc, drawRc, fill, border, scale(6));
+        auto oldSym = SelectObject(dc, symbolFont);
+        ui::text(dc, L"\xE70F", drawRc, iconColor, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        SelectObject(dc, oldSym);
       }
-
-      RECT textRect = drawRc;
-      if (enabled && (cardHov || btnHov)) OffsetRect(&textRect, scale(2), 0);
-      auto oldFont = SelectObject(dc, smallFont ? smallFont : font);
-      ui::text(dc, labelText, textRect, textColor, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-      SelectObject(dc, oldFont);
 
       if (bufferDc) {
         BitBlt(item->hDC, rc.left, rc.top, bufW, bufH, bufferDc, 0, 0, SRCCOPY);
@@ -1743,23 +1720,14 @@ static LRESULT CALLBACK contentProc(HWND h, UINT message, WPARAM w, LPARAM l) {
         SetDCBrushColor(dc, blend(colors.surface, RGB(255, 255, 255), hovered ? 11 : 5));
         FillRect(dc, &spec, reinterpret_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
       }
-      RECT badge{card.rect.left + scale(16), card.rect.top + scale(15),
-                 card.rect.left + scale(44), card.rect.top + scale(43)};
-      COLORREF badgeFill = colors.background, badgeBorder = restBorder, glyphColor = colors.muted;
-      if (enabled) {
-        badgeFill = colors.highContrast ? colors.surface
-            : blend(colors.surface, colors.accent, colors.dark ? (hovered ? 22 : 15) : (hovered ? 14 : 9));
-        badgeBorder = colors.highContrast ? colors.accent
-            : blend(colors.surface, colors.accent, colors.dark ? (hovered ? 38 : 26) : (hovered ? 28 : 18));
-        glyphColor = colors.accent;
-      } else {
-        badgeFill = colors.highContrast ? colors.background
-            : blend(colors.surface, colors.background, colors.dark ? 45 : 55);
-        badgeBorder = hovered ? hoverBorder : restBorder;
-        glyphColor = hovered ? colors.text : colors.muted;
-      }
-      ui::rounded(dc, badge, badgeFill, badgeBorder, scale(7));
-      auto oldSym = SelectObject(dc, symbolFont);
+      RECT badge{card.rect.left + scale(16), card.rect.top + scale(18),
+                 card.rect.left + scale(58), card.rect.top + scale(60)};
+      const COLORREF badgeFill = colors.highContrast ? colors.surface
+          : blend(colors.surface, colors.background, colors.dark ? 45 : 55);
+      const COLORREF badgeBorder = hovered ? hoverBorder : restBorder;
+      const COLORREF glyphColor = enabled ? (hovered ? colors.text : blend(colors.text, colors.muted, 25)) : colors.muted;
+      ui::rounded(dc, badge, badgeFill, badgeBorder, scale(10));
+      auto oldSym = SelectObject(dc, cardIconFont ? cardIconFont : symbolFont);
       ui::text(dc, sidebarIcon(card.detailPage), badge, glyphColor,
                DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
       SelectObject(dc, oldSym);
@@ -1817,7 +1785,7 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
   if (m == WM_CTLCOLORSTATIC && appearance && sidebarBrush) {
     HWND ctrl = reinterpret_cast<HWND>(l);
     const int id = GetDlgCtrlID(ctrl);
-    if (id == 35 || id == 36 || id == 31) {
+    if (id == 35 || id == 31) {
       HDC dc = reinterpret_cast<HDC>(w);
       const auto &p = appearance->colors;
       SetBkColor(dc, sidebarBackground(p));
@@ -1838,6 +1806,7 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
       const bool disabled = (item->itemState & ODS_DISABLED) != 0;
       const bool hovered = hoveredSidebarId == updateButton || (item->itemState & ODS_HOTLIGHT) != 0;
       const bool focused = (item->itemState & ODS_FOCUS) != 0;
+      const bool keyboardFocus = focused && !selected && GetKeyState(VK_LBUTTON) >= 0 && !(SendMessageW(item->hwndItem, WM_QUERYUISTATE, 0, 0) & UISF_HIDEFOCUS);
       if (sidebarBrush) FillRect(item->hDC, &item->rcItem, sidebarBrush);
       else FillRect(item->hDC, &item->rcItem, appearance->background);
       RECT rect = item->rcItem;
@@ -1846,16 +1815,15 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
           ? (selected ? p.pressed : hovered ? p.hover : sidebarBg)
           : (selected ? blend(sidebarBg, p.text, p.dark ? 14 : 10) : hovered ? blend(sidebarBg, p.text, p.dark ? 8 : 6) : sidebarBg);
       const COLORREF border = p.highContrast
-          ? (focused ? p.accent : p.border)
-          : (focused ? p.accent : fill);
+          ? (keyboardFocus ? p.accent : p.border)
+          : (keyboardFocus ? p.accent : fill);
       if (fill != sidebarBg || border != sidebarBg || p.highContrast)
         ui::rounded(item->hDC, rect, fill, border, scale(6));
-      auto symbols = ui::makeSymbolFont(dpi, 15);
-      auto old = SelectObject(item->hDC, symbols);
+      auto old = SelectObject(item->hDC, symbolFont);
       const auto color = disabled ? p.muted : availableUpdate ? p.accent : (hovered ? p.text : p.muted);
       ui::text(item->hDC, availableUpdate ? L"\xE896" : L"\xE72C", item->rcItem, color,
                DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-      SelectObject(item->hDC, old); DeleteObject(symbols);
+      SelectObject(item->hDC, old);
       return TRUE;
     }
     auto button = std::find_if(sidebarItems.begin(), sidebarItems.end(),
@@ -1865,49 +1833,79 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
       const COLORREF sidebarBg = sidebarBackground(p);
       const auto target = button->page;
       const bool selected = target == activePage;
+      const bool pressed = (item->itemState & ODS_SELECTED) != 0;
       const bool hovered = !selected && (hoveredSidebarId == button->id || (item->itemState & (ODS_SELECTED | ODS_HOTLIGHT)) != 0);
       const bool focused = (item->itemState & ODS_FOCUS) != 0;
-      if (sidebarBrush) FillRect(item->hDC, &item->rcItem, sidebarBrush);
-      else FillRect(item->hDC, &item->rcItem, appearance->background);
-      RECT rect = item->rcItem;
+      const bool keyboardFocus = focused && !pressed && GetKeyState(VK_LBUTTON) >= 0 && !(SendMessageW(item->hwndItem, WM_QUERYUISTATE, 0, 0) & UISF_HIDEFOCUS);
+      RECT rc = item->rcItem;
+      const int bufW = rc.right - rc.left, bufH = rc.bottom - rc.top;
+      HDC bufferDc = bufW > 0 && bufH > 0 ? CreateCompatibleDC(item->hDC) : nullptr;
+      HBITMAP bufferBmp = bufferDc ? CreateCompatibleBitmap(item->hDC, bufW, bufH) : nullptr;
+      HGDIOBJ oldBmp = bufferBmp ? SelectObject(bufferDc, bufferBmp) : nullptr;
+      if (!oldBmp && bufferDc) {
+        DeleteDC(bufferDc); bufferDc = nullptr;
+        if (bufferBmp) { DeleteObject(bufferBmp); bufferBmp = nullptr; }
+      }
+      HDC dc = bufferDc ? bufferDc : item->hDC;
+      RECT rect = bufferDc ? RECT{0, 0, bufW, bufH} : rc;
+      if (sidebarBrush) FillRect(dc, &rect, sidebarBrush);
+      else FillRect(dc, &rect, appearance->background);
       InflateRect(&rect, -scale(2), -scale(1));
       COLORREF iconColor = p.muted, textColor = p.text;
       if (p.highContrast) {
         const auto fill = selected ? p.accent : hovered ? p.hover : sidebarBg;
-        ui::rounded(item->hDC, rect, fill, focused && !selected ? p.accent : fill, scale(6));
+        ui::rounded(dc, rect, fill, keyboardFocus && !selected ? p.accent : fill, scale(6));
         iconColor = textColor = selected ? p.onAccent : p.text;
       } else if (selected) {
-        const COLORREF fill = blend(sidebarBg, p.accent, p.dark ? 16 : 11);
-        const COLORREF border = blend(sidebarBg, p.accent, p.dark ? 30 : 22);
-        ui::rounded(item->hDC, rect, fill, focused ? p.accent : border, scale(7));
-        RECT bar{rect.left + scale(4), rect.top + scale(7), rect.left + scale(7), rect.bottom - scale(7)};
-        ui::rounded(item->hDC, bar, p.accent, p.accent, scale(2));
-        iconColor = p.accent;
-        textColor = p.text;
+        ui::rounded(dc, rect, p.accent, p.accent, scale(7));
+        iconColor = p.onAccent;
+        textColor = p.onAccent;
       } else {
-        const COLORREF fill = hovered ? blend(sidebarBg, p.text, p.dark ? 7 : 5) : sidebarBg;
-        const COLORREF border = focused ? p.accent : fill;
-        if (fill != sidebarBg || focused)
-          ui::rounded(item->hDC, rect, fill, border, scale(7));
-        iconColor = hovered ? p.text : p.muted;
-        textColor = hovered ? p.text : blend(p.text, p.muted, p.dark ? 18 : 15);
+        const COLORREF fill = hovered ? blend(sidebarBg, p.text, p.dark ? 6 : 4) : sidebarBg;
+        const COLORREF border = keyboardFocus ? p.accent : fill;
+        if (fill != sidebarBg || keyboardFocus)
+          ui::rounded(dc, rect, fill, border, scale(7));
+        iconColor = hovered ? blend(p.text, p.muted, p.dark ? 15 : 12)
+                            : blend(sidebarBg, p.muted, p.dark ? 78 : 76);
+        textColor = hovered ? blend(p.text, p.muted, p.dark ? 15 : 12)
+                            : blend(p.text, p.muted, p.dark ? 68 : 65);
       }
-      RECT iconRect{rect.left + scale(14), rect.top, rect.left + scale(32), rect.bottom};
-      auto oldSym = SelectObject(item->hDC, symbolFont);
-      ui::text(item->hDC, sidebarIcon(target), iconRect, iconColor,
+      const wchar_t *label = sidebarLabel(target);
+      HFONT labelFont = (selected && !p.highContrast && sidebarActiveFont) ? sidebarActiveFont : font;
+      auto oldFont = SelectObject(dc, labelFont);
+      SIZE extent{};
+      GetTextExtentPoint32W(dc, label, static_cast<int>(wcslen(label)), &extent);
+      const int iconW = scale(18), gap = scale(8);
+      const int maxW = std::max(0, int(rect.right - rect.left) - scale(16));
+      const int contentW = std::min(maxW, iconW + gap + int(extent.cx));
+      const int startX = rect.left + (int(rect.right - rect.left) - contentW) / 2;
+      RECT iconRect{startX, rect.top, startX + iconW, rect.bottom};
+      SelectObject(dc, symbolFont);
+      ui::text(dc, sidebarIcon(target), iconRect, iconColor,
                DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-      SelectObject(item->hDC, oldSym);
-      RECT textRect{rect.left + scale(40), rect.top, rect.right - scale(10), rect.bottom};
-      auto old = SelectObject(item->hDC, (selected && !p.highContrast && sidebarActiveFont) ? sidebarActiveFont : font);
-      ui::text(item->hDC, sidebarLabel(target), textRect, textColor,
+      RECT textRect{startX + iconW + gap, rect.top, std::min(int(rect.right) - scale(8), startX + contentW + scale(2)), rect.bottom};
+      SelectObject(dc, labelFont);
+      ui::text(dc, label, textRect, textColor,
                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
-      SelectObject(item->hDC, old);
+      SelectObject(dc, oldFont);
+      if (bufferDc) {
+        BitBlt(item->hDC, rc.left, rc.top, bufW, bufH, bufferDc, 0, 0, SRCCOPY);
+        SelectObject(bufferDc, oldBmp);
+        DeleteObject(bufferBmp);
+        DeleteDC(bufferDc);
+      }
       return TRUE;
     }
   }
   LRESULT result = 0;
   if (appearance && appearance->handle(h, m, w, l, result)) return result;
   switch (m) {
+  case WM_ENTERSIZEMOVE:
+    hoveredCardAction = -1;
+    setHoveredCard(-1);
+    hoveredSidebarId = 0;
+    draggingSettingsSidebar = false;
+    break;
   case WM_SETCURSOR:
     if (hoveredCard != -1 && reinterpret_cast<HWND>(w) != body && GetParent(reinterpret_cast<HWND>(w)) != body)
       setHoveredCard(-1);
@@ -1953,24 +1951,28 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     RECT separator{sidebar.right - 1, client.top, sidebar.right, client.bottom};
     SetDCBrushColor(dc, colors.highContrast ? colors.border : blend(colors.background, colors.border, colors.dark ? 65 : 75));
     FillRect(dc, &separator, reinterpret_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
-    if (sidebarDividerY > 0) {
-      RECT sidebarDivider{scale(16), sidebarDividerY, sidebar.right - scale(16), sidebarDividerY + 1};
+    if (!sidebarDividers.empty()) {
       const COLORREF sidebarBg = sidebarBackground(colors);
       SetDCBrushColor(dc, colors.highContrast ? colors.border : blend(sidebarBg, colors.border, colors.dark ? 55 : 65));
-      FillRect(dc, &sidebarDivider, reinterpret_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+      for (const int divY : sidebarDividers) {
+        RECT sidebarDivider{scale(16), divY, sidebar.right - scale(16), divY + 1};
+        FillRect(dc, &sidebarDivider, reinterpret_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+      }
     }
     EndPaint(h, &paint);
     return 0;
   }
   case WM_CREATE: {
     SetPropW(h, app::settingsWindowTag, reinterpret_cast<HANDLE>(1));
-    settingsWindow = h; dpi = GetDpiForWindow(h); scrollPosition = 0; cards = {}; sidebarDividerY = 0;
+    settingsWindow = h; dpi = GetDpiForWindow(h); scrollPosition = 0; cards = {}; sidebarDividers.clear();
     hoveredCard = -1; hoveredCardAction = -1; hoveredSidebarId = 0;
     font = ui::makeFont(dpi, 14, FW_NORMAL);
     sidebarActiveFont = ui::makeFont(dpi, 14, FW_SEMIBOLD);
     brandFont = ui::makeFont(dpi, 18, FW_SEMIBOLD);
-    headingFont = ui::makeFont(dpi, 20, FW_SEMIBOLD);
+    headingFont = ui::makeFont(dpi, 18, FW_LIGHT);
     cardTitleFont = ui::makeFont(dpi, 14, FW_SEMIBOLD);
+    cardDescFont = ui::makeFont(dpi, 12, FW_NORMAL);
+    cardIconFont = ui::makeSymbolFont(dpi, 22);
     smallFont = ui::makeFont(dpi, 13, FW_NORMAL);
     symbolFont = ui::makeSymbolFont(dpi, 14);
     syncSidebarBrush();
@@ -1998,11 +2000,8 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     ui::muted(add(h, L"STATIC", lang::text(L"由 Windows 管理桌面图标。拖入盒子的桌面文件和文件夹会移到隐藏的 .desktop 目录。"), SS_NOPREFIX, boxDesc));
     desktopGroupsManager = add(h, L"BUTTON", lang::text(L"管理桌面盒子"), WS_TABSTOP | BS_NOTIFY, desktopGroupsManage);
 
-    HWND logo = add(h, L"STATIC", L"FolderNote", 0, 35);
+    HWND logo = add(h, L"STATIC", L"FolderNote", SS_CENTER | SS_CENTERIMAGE | SS_NOPREFIX, 35);
     SendMessageW(logo, WM_SETFONT, reinterpret_cast<WPARAM>(brandFont), TRUE);
-    HWND sidebarSub = add(h, L"STATIC", lang::text(L"系统工具"), 0, 36);
-    SendMessageW(sidebarSub, WM_SETFONT, reinterpret_cast<WPARAM>(smallFont), TRUE);
-    ui::muted(sidebarSub);
     for (const auto &item : sidebarItems) {
       auto button = add(h, L"BUTTON", sidebarLabel(item.page), BS_OWNERDRAW | WS_TABSTOP, item.id);
       SetWindowSubclass(button, sidebarProc, 1, 0);
@@ -2042,14 +2041,14 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
 
     // DoubleClick detail page controls
     ui::muted(add(h, L"STATIC", lang::text(L"双击空白处执行的动作"), SS_NOPREFIX, dblClickLabel));
-    choice = add(h, L"COMBOBOX", L"", comboStyle, 10);
-    for (auto titleText : {lang::text(L"返回上一级文件夹"), lang::text(L"后退到上一次浏览的位置")})
-      SendMessageW(choice, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(titleText));
-    SendMessageW(choice, CB_SETITEMHEIGHT, WPARAM(-1), scale(26));
+    dblClickParentRadio = add(h, L"BUTTON", lang::text(L"返回上一级文件夹"),
+        BS_AUTORADIOBUTTON | WS_GROUP | WS_TABSTOP, dblClickParent);
+    dblClickBackRadio = add(h, L"BUTTON", lang::text(L"后退到上一次浏览的位置"),
+        BS_AUTORADIOBUTTON | WS_TABSTOP, dblClickBack);
     ui::muted(add(h, L"STATIC", lang::text(L"在资源管理器文件列表的空白处双击时触发，修改立即生效。"), SS_NOPREFIX, dblClickDesc));
 
     // QuickFolders detail page controls
-    dialogCheck = add(h, L"BUTTON", lang::text(L"同时支持文件与文件夹选择对话框"), BS_AUTOCHECKBOX | WS_TABSTOP, 15);
+    dialogCheck = add(h, L"BUTTON", lang::text(L"同时支持文件与文件夹选择对话框"), BS_AUTOCHECKBOX | WS_GROUP | WS_TABSTOP, 15);
     ui::muted(add(h, L"STATIC", lang::text(L"桌面和资源管理器中均可使用，悬停展开子目录。选中项目后按中键支持复制或移动。"), SS_NOPREFIX, quickDesc));
 
     // Tabs detail page controls (Win10 only)
@@ -2139,7 +2138,7 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
       ui::toggleSwitch(card.toggle);
       ui::surface(card.toggle);
       card.description = add(body, L"STATIC", lang::text(desc), SS_NOPREFIX, 111 + int(index));
-      SendMessageW(card.description, WM_SETFONT, reinterpret_cast<WPARAM>(smallFont), TRUE);
+      SendMessageW(card.description, WM_SETFONT, reinterpret_cast<WPARAM>(cardDescFont), TRUE);
       ui::muted(card.description);
       ui::surface(card.description);
       card.action = add(body, L"BUTTON", lang::text(actionLabel), BS_OWNERDRAW | WS_TABSTOP, actionId);
@@ -2218,7 +2217,7 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     } else if (LOWORD(w) == notesOpenContextMenu && HIWORD(w) == BN_CLICKED) {
       showPage(SettingsPage::ContextMenus);
       SetFocus(GetDlgItem(h, 47));
-    } else if (LOWORD(w) == 10 && HIWORD(w) == CBN_SELCHANGE) {
+    } else if ((LOWORD(w) == dblClickParent || LOWORD(w) == dblClickBack) && HIWORD(w) == BN_CLICKED) {
       commitSettings(h, CommitScope::Navigation);
     } else if (LOWORD(w) == 15 && HIWORD(w) == BN_CLICKED) {
       commitSettings(h, CommitScope::Quick);
@@ -2307,43 +2306,56 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
   case WM_GETMINMAXINFO: {
     auto *limits = reinterpret_cast<MINMAXINFO *>(l); limits->ptMinTrackSize = {scale(900), scale(500)}; return 0;
   }
-  case WM_SETTINGCHANGE: case WM_THEMECHANGED:
+  case WM_SETTINGCHANGE:
+    if (l && _wcsicmp(reinterpret_cast<LPCWSTR>(l), L"ImmersiveColorSet") != 0) return 0;
+    [[fallthrough]];
+  case WM_THEMECHANGED:
     appearance->reset(appearance->mode); syncSidebarBrush(); appearance->apply(h); quick::setManagerTheme(managerPage, appearance->mode);
     SendMessageW(entriesPage, WM_THEMECHANGED, 0, 0); return 0;
   case WM_DPICHANGED: {
     UINT oldDpi = dpi; dpi = HIWORD(w); scrollPosition = MulDiv(scrollPosition, dpi, oldDpi);
     auto oldFont = font, oldSidebarActive = sidebarActiveFont, oldBrand = brandFont,
-         oldHeading = headingFont, oldCardTitle = cardTitleFont, oldSmall = smallFont, oldSymbol = symbolFont;
+         oldHeading = headingFont, oldCardTitle = cardTitleFont, oldCardDesc = cardDescFont,
+         oldCardIcon = cardIconFont, oldSmall = smallFont, oldSymbol = symbolFont;
     font = ui::makeFont(dpi, 14, FW_NORMAL);
     sidebarActiveFont = ui::makeFont(dpi, 14, FW_SEMIBOLD);
     brandFont = ui::makeFont(dpi, 18, FW_SEMIBOLD);
-    headingFont = ui::makeFont(dpi, 20, FW_SEMIBOLD);
+    headingFont = ui::makeFont(dpi, 18, FW_LIGHT);
     cardTitleFont = ui::makeFont(dpi, 14, FW_SEMIBOLD);
+    cardDescFont = ui::makeFont(dpi, 12, FW_NORMAL);
+    cardIconFont = ui::makeSymbolFont(dpi, 22);
     smallFont = ui::makeFont(dpi, 13, FW_NORMAL);
     symbolFont = ui::makeSymbolFont(dpi, 14);
-    EnumChildWindows(h, [](HWND child, LPARAM value) -> BOOL { SendMessageW(child, WM_SETFONT, value, TRUE); return TRUE; }, reinterpret_cast<LPARAM>(font));
-    SendMessageW(GetDlgItem(h, 30), WM_SETFONT, reinterpret_cast<WPARAM>(headingFont), TRUE);
-    SendMessageW(GetDlgItem(h, 35), WM_SETFONT, reinterpret_cast<WPARAM>(brandFont), TRUE);
-    SendMessageW(GetDlgItem(h, 36), WM_SETFONT, reinterpret_cast<WPARAM>(smallFont), TRUE);
-    SendMessageW(GetDlgItem(h, 31), WM_SETFONT, reinterpret_cast<WPARAM>(smallFont), TRUE);
-    SendMessageW(GetDlgItem(h, featuresSubtitle), WM_SETFONT, reinterpret_cast<WPARAM>(smallFont), TRUE);
+    for (HWND child = GetWindow(h, GW_CHILD); child; child = GetWindow(child, GW_HWNDNEXT)) {
+      if (child != body && child != managerPage && child != contextPage && child != entriesPage)
+        SendMessageW(child, WM_SETFONT, reinterpret_cast<WPARAM>(font), FALSE);
+    }
+    SendMessageW(GetDlgItem(h, 30), WM_SETFONT, reinterpret_cast<WPARAM>(headingFont), FALSE);
+    SendMessageW(GetDlgItem(h, 35), WM_SETFONT, reinterpret_cast<WPARAM>(brandFont), FALSE);
+    SendMessageW(GetDlgItem(h, 31), WM_SETFONT, reinterpret_cast<WPARAM>(smallFont), FALSE);
+    SendMessageW(GetDlgItem(h, featuresSubtitle), WM_SETFONT, reinterpret_cast<WPARAM>(smallFont), FALSE);
     for (const auto &card : cards)
       if (card.visible) {
-        if (card.toggle) SendMessageW(card.toggle, WM_SETFONT, reinterpret_cast<WPARAM>(cardTitleFont), TRUE);
-        if (card.description) SendMessageW(card.description, WM_SETFONT, reinterpret_cast<WPARAM>(smallFont), TRUE);
+        if (card.toggle) SendMessageW(card.toggle, WM_SETFONT, reinterpret_cast<WPARAM>(cardTitleFont), FALSE);
+        if (card.description) SendMessageW(card.description, WM_SETFONT, reinterpret_cast<WPARAM>(cardDescFont), FALSE);
+        if (card.action) SendMessageW(card.action, WM_SETFONT, reinterpret_cast<WPARAM>(smallFont), FALSE);
       }
-    for (auto combo : {themeChoice, choice, GetDlgItem(h, languageChoice), GetDlgItem(h, findFolderAction),
+    for (auto combo : {themeChoice, GetDlgItem(h, languageChoice), GetDlgItem(h, findFolderAction),
          GetDlgItem(h, findFileAction), GetDlgItem(h, findPosition), GetDlgItem(h, findRows)}) {
       SendMessageW(combo, CB_SETITEMHEIGHT, WPARAM(-1), scale(26));
       for (int i = 0; i < SendMessageW(combo, CB_GETCOUNT, 0, 0); ++i) SendMessageW(combo, CB_SETITEMHEIGHT, i, scale(26));
     }
     DeleteObject(oldFont); DeleteObject(oldSidebarActive); DeleteObject(oldBrand);
-    DeleteObject(oldHeading); DeleteObject(oldCardTitle); DeleteObject(oldSmall); DeleteObject(oldSymbol);
+    DeleteObject(oldHeading); DeleteObject(oldCardTitle); DeleteObject(oldCardDesc);
+    DeleteObject(oldCardIcon); DeleteObject(oldSmall); DeleteObject(oldSymbol);
     auto *rect = reinterpret_cast<RECT *>(l);
-    SetWindowPos(h, nullptr, rect->left, rect->top, rect->right - rect->left, rect->bottom - rect->top, SWP_NOZORDER);
+    SetWindowPos(h, nullptr, rect->left, rect->top, rect->right - rect->left, rect->bottom - rect->top, SWP_NOZORDER | SWP_NOACTIVATE);
     SendMessageW(managerPage, WM_DPICHANGED_AFTERPARENT, 0, 0);
+    SendMessageW(contextPage, WM_DPICHANGED_AFTERPARENT, 0, 0);
     SendMessageW(entriesPage, WM_DPICHANGED_AFTERPARENT, 0, 0);
-    layoutSettings(); return 0;
+    layoutSettings();
+    InvalidateRect(h, nullptr, FALSE);
+    return 0;
   }
   case WM_DESTROY:
     if (!reopenForLanguage) restoreBoxStylePreview();
@@ -2355,13 +2367,14 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
   case WM_NCDESTROY:
     RemovePropW(h, app::settingsWindowTag);
     DeleteObject(font); DeleteObject(sidebarActiveFont); DeleteObject(brandFont);
-    DeleteObject(headingFont); DeleteObject(cardTitleFont); DeleteObject(smallFont); DeleteObject(symbolFont);
+    DeleteObject(headingFont); DeleteObject(cardTitleFont); DeleteObject(cardDescFont);
+    DeleteObject(cardIconFont); DeleteObject(smallFont); DeleteObject(symbolFont);
     if (sidebarBrush) { DeleteObject(sidebarBrush); sidebarBrush = nullptr; }
-    font = sidebarActiveFont = brandFont = headingFont = cardTitleFont = smallFont = symbolFont = nullptr;
+    font = sidebarActiveFont = brandFont = headingFont = cardTitleFont = cardDescFont = cardIconFont = smallFont = symbolFont = nullptr;
     body = managerPage = contextPage = entriesPage = settingsWindow = nullptr;
-    cards = {}; hoveredCard = -1; hoveredCardAction = -1; hoveredSidebarId = 0;
-    notesCheck = navigationCheck = quickCheck = dialogCheck = tabsCheck = preferNewTabCheck =
-        desktopGroupsCheck = desktopGroupsManager = quickFindCheck = choice = themeChoice = nullptr;
+    cards = {}; sidebarDividers.clear(); hoveredCard = -1; hoveredCardAction = -1; hoveredSidebarId = 0;
+    notesCheck = navigationCheck = dblClickParentRadio = dblClickBackRadio = quickCheck = dialogCheck =
+        tabsCheck = preferNewTabCheck = desktopGroupsCheck = desktopGroupsManager = quickFindCheck = themeChoice = nullptr;
     break;
   }
   return DefWindowProcW(h, m, w, l);
@@ -2385,8 +2398,8 @@ int settings(HINSTANCE instance, SettingsPage page) {
     reopenForLanguage = false;
     appearance = std::make_unique<ui::Theme>(); dpi = GetDpiForSystem();
     const RECT work = ui::mouseWorkArea();
-    HWND window = CreateWindowExW(WS_EX_CONTROLPARENT, cls.lpszClassName, lang::text(L"FolderNote 系统工具设置"),
-        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_MAXIMIZEBOX | WS_CLIPCHILDREN,
+    HWND window = CreateWindowExW(0, cls.lpszClassName, lang::text(L"FolderNote 系统工具设置"),
+        WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
         work.left, work.top, scale(980), scale(660), nullptr, nullptr, instance, nullptr);
     if (!window) {
       restoreBoxStylePreview();
@@ -2394,6 +2407,7 @@ int settings(HINSTANCE instance, SettingsPage page) {
       return 1;
     }
     ui::centerLogical(window, work, 980, 660); ShowWindow(window, SW_SHOW);
+    SendMessageW(window, WM_CHANGEUISTATE, MAKEWPARAM(UIS_SET, UISF_HIDEFOCUS), 0);
     SetFocus(GetDlgItem(window, sidebarItems[0].id));
     if (workingAutomatically()) SetTimer(window, updateTimer, 100, nullptr);
     else checkAutomatically(window);
@@ -2401,7 +2415,7 @@ int settings(HINSTANCE instance, SettingsPage page) {
     while (GetMessageW(&message, nullptr, 0, 0) > 0) {
       if (message.message == WM_KEYDOWN && (message.wParam == VK_ESCAPE || message.wParam == VK_RETURN)) {
         HWND dropped = nullptr;
-        for (auto combo : {themeChoice, choice, GetDlgItem(window, languageChoice),
+        for (auto combo : {themeChoice, GetDlgItem(window, languageChoice),
              GetDlgItem(window, findFolderAction), GetDlgItem(window, findFileAction), GetDlgItem(window, findPosition), GetDlgItem(window, findRows),
              explorer_entries_page::locationControl(entriesPage)})
           if (SendMessageW(combo, CB_GETDROPPEDSTATE, 0, 0)) dropped = combo;

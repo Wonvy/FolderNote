@@ -198,6 +198,8 @@ LRESULT CALLBACK managerProc(HWND window, UINT message, WPARAM w, LPARAM l) {
       add(L"BUTTON", lang::text(L"清空历史…"), WS_TABSTOP, 25);
       state->theme.apply(window); state->layout(window); state->refresh(); return 0;
     }
+    if (message == WM_SETTINGCHANGE && l && _wcsicmp(reinterpret_cast<LPCWSTR>(l), L"ImmersiveColorSet") != 0)
+      return 0;
     if (message == WM_SETTINGCHANGE || message == WM_THEMECHANGED) {
       state->theme.reset(state->theme.mode); state->theme.apply(window); state->style(); return 0;
     }
