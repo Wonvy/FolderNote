@@ -77,8 +77,8 @@ void inspectVersion(HWND window) {
         "update icon and version share one row");
   check(bounds.left >= 0 && bounds.top >= 0 && bounds.right <= client.right && bounds.bottom <= client.bottom,
         "version stays inside resized settings window");
-  auto secondTab = childBounds(GetDlgItem(window, 41), window);
-  check(bounds.top >= secondTab.bottom, "version does not overlap navigation tabs");
+  auto lastTab = childBounds(GetDlgItem(window, navigation::sidebarItems.back().id), window);
+  check(bounds.top >= lastTab.bottom, "version does not overlap navigation tabs");
   auto page = childBounds(navigation::managerPage ? navigation::managerPage : navigation::body, window);
   check(bounds.right <= page.left, "version stays clear of the right-hand page");
   HDC dc = GetDC(version); auto oldFont = SelectObject(dc, reinterpret_cast<HFONT>(SendMessageW(version, WM_GETFONT, 0, 0)));
@@ -91,9 +91,15 @@ void quickSearchSettings() {
   using namespace navigation;
   {
     Hub hub;
-    SendDlgItemMessageW(hub.window, pageButtons[size_t(SettingsPage::QuickFind)], BM_CLICK, 0, 0);
-    check(activePage == SettingsPage::QuickFind && windowText(GetDlgItem(hub.window, 30)) == L"快捷搜索", "dedicated search page routes from sidebar");
-    check(!visibleStyle(body) && !visibleStyle(GetDlgItem(hub.window, IDOK)), "search preferences save immediately without feature form");
+    check(!GetDlgItem(hub.window, IDOK) && !GetDlgItem(hub.window, IDCANCEL) && !GetDlgItem(hub.window, 33) &&
+          !GetDlgItem(hub.window, 96) && !GetDlgItem(hub.window, 97),
+          "classic two-column settings omit footer Save/Cancel and detail-header back/toggle controls");
+    check(visibleStyle(GetDlgItem(hub.window, 75)) && IsWindowEnabled(GetDlgItem(body, cardEditQuickFind)),
+          "quick search sidebar tab and Edit button start active because default scopes are enabled");
+    SendDlgItemMessageW(body, cardEditQuickFind, BM_CLICK, 0, 0);
+    check(activePage == SettingsPage::QuickFind && windowText(GetDlgItem(hub.window, 30)) == L"快捷搜索",
+          "quick search card Edit button routes to QuickFind page");
+    check(!visibleStyle(body), "overview cards hide on QuickFind page");
     check(SendDlgItemMessageW(hub.window, findFolderAction, CB_GETCURSEL, 0, 0) == 1 &&
           SendDlgItemMessageW(hub.window, findFileAction, CB_GETCURSEL, 0, 0) == 0, "existing folder-open file-select defaults appear");
     const auto choose = [&](int id, int row) {
@@ -110,19 +116,31 @@ void quickSearchSettings() {
       RECT target{0, 0, MulDiv(900, scaleDpi, 96), MulDiv(500, scaleDpi, 96)};
       SendMessageW(hub.window, WM_DPICHANGED, MAKEWPARAM(scaleDpi, scaleDpi), reinterpret_cast<LPARAM>(&target));
       RECT client{}; GetClientRect(hub.window, &client);
-      const auto close = childBounds(GetDlgItem(hub.window, IDCANCEL), hub.window);
       for (int id = findDescription; id <= findHint; ++id) {
         const auto control = GetDlgItem(hub.window, id);
         const auto bounds = childBounds(control, hub.window);
         check(visibleStyle(control) && bounds.left >= scale(settingsSidebarWidth) && bounds.right <= client.right &&
-              bounds.top >= 0 && bounds.bottom <= close.top, "search controls fit at minimum size and every DPI");
+              bounds.top >= scale(68) && bounds.bottom <= client.bottom, "search controls fit at minimum size and every DPI");
       }
-      const auto lastTab = childBounds(GetDlgItem(hub.window, pageButtons.back()), hub.window);
-      check(lastTab.bottom < childBounds(GetDlgItem(hub.window, updateButton), hub.window).top, "seventh sidebar tab fits above version and update");
+      const auto lastTab = childBounds(GetDlgItem(hub.window, sidebarItems.back().id), hub.window);
+      check(lastTab.bottom < childBounds(GetDlgItem(hub.window, updateButton), hub.window).top, "bottom sidebar tab fits above version and update");
       check(SendDlgItemMessageW(hub.window, findRows, CB_GETITEMHEIGHT, WPARAM(-1), 0) == scale(26), "search combo scales on DPI change");
     }
-    showPage(SettingsPage::Features);
-    check(!visibleStyle(GetDlgItem(hub.window, findFolderAction)) && visibleStyle(body), "search controls hide on other pages");
+    SendDlgItemMessageW(hub.window, sidebarItems[0].id, BM_CLICK, 0, 0);
+    check(activePage == SettingsPage::Features && !visibleStyle(GetDlgItem(hub.window, findFolderAction)) && visibleStyle(body),
+          "sidebar overview button returns to feature cards and hides search controls");
+    SendDlgItemMessageW(body, quickFindToggle, BM_CLICK, 0, 0);
+    const auto disabled = quick_find::settings();
+    check(!disabled.boxes && !disabled.lists && !disabled.explorer && !disabled.dialogs &&
+          SendMessageW(quickFindCheck, BM_GETCHECK, 0, 0) == BST_UNCHECKED &&
+          !visibleStyle(GetDlgItem(hub.window, 75)) && !IsWindowEnabled(GetDlgItem(body, cardEditQuickFind)),
+          "disabling quick search turns off scopes, hides its sidebar tab, and disables Edit");
+    SendDlgItemMessageW(body, quickFindToggle, BM_CLICK, 0, 0);
+    const auto restored = quick_find::settings();
+    check(!restored.boxes && restored.lists && !restored.explorer && !restored.dialogs &&
+          SendMessageW(quickFindCheck, BM_GETCHECK, 0, 0) == BST_CHECKED &&
+          visibleStyle(GetDlgItem(hub.window, 75)) && IsWindowEnabled(GetDlgItem(body, cardEditQuickFind)),
+          "re-enabling quick search restores scopes, reveals its sidebar tab, and enables Edit");
   }
   {
     Hub reopened; showPage(SettingsPage::QuickFind);
@@ -131,6 +149,7 @@ void quickSearchSettings() {
           SendDlgItemMessageW(reopened.window, findRows, CB_GETCURSEL, 0, 0) == 0, "reopening settings restores selections");
   }
   quick_find::saveSettings({});
+  RegDeleteKeyValueW(HKEY_CURRENT_USER, configKey, quickFindSavedScopesValue);
   activePage = SettingsPage::Features;
 }
 void automaticUpdates() {
@@ -166,282 +185,321 @@ void automaticUpdates() {
         "a background check reports an available Win11 update for manual confirmation");
   SetWindowPos(hub.window, nullptr, 0, 0, scale(900), scale(500), SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
   const auto status = childBounds(GetDlgItem(hub.window, updateStatusLabel), hub.window);
-  const auto footer = childBounds(GetDlgItem(hub.window, 33), hub.window);
-  check(status.bottom > status.top && status.bottom <= footer.top, "update status fits above the footer at minimum size");
+  const auto diag = childBounds(GetDlgItem(hub.window, diagnosticsLabel), hub.window);
+  check(status.bottom > status.top && status.bottom <= diag.top, "update status fits above troubleshooting at minimum size");
   availableUpdate.reset();
   updateStatus.clear();
   updateControls(hub.window);
   showPage(SettingsPage::Features);
   check(!visibleStyle(toggle), "automatic update controls stay on the preferences page");
 }
-void inspectNewTabOption() {
-  if (!navigation::tabsSupported()) return;
-  navigation::showPage(navigation::SettingsPage::Features);
-  navigation::scrollPosition = navigation::contentHeight();
-  navigation::layoutBody();
-  RECT client{}; GetClientRect(navigation::body, &client);
-  auto bounds = childBounds(navigation::preferNewTabCheck, navigation::body);
-  check(bounds.left >= 0 && bounds.top >= 0 && bounds.right <= client.right && bounds.bottom <= client.bottom,
-        "new-tab option is reachable within the feature scroller at every scale");
-  auto description = childBounds(navigation::placements.back().window, navigation::body);
-  check(description.top >= bounds.bottom && description.bottom <= client.bottom,
-        "new-tab description stays below its control and inside scrollable content");
-  HDC dc = GetDC(navigation::preferNewTabCheck);
-  auto oldFont = SelectObject(dc, reinterpret_cast<HFONT>(SendMessageW(navigation::preferNewTabCheck, WM_GETFONT, 0, 0)));
-  SIZE extent{}; auto text = windowText(navigation::preferNewTabCheck);
-  GetTextExtentPoint32W(dc, text.c_str(), int(text.size()), &extent);
-  SelectObject(dc, oldFont); ReleaseDC(navigation::preferNewTabCheck, dc);
-  check(extent.cx + navigation::scale(28) <= bounds.right - bounds.left && extent.cy <= bounds.bottom - bounds.top,
-        "new-tab checkbox text fits at current scale");
-  navigation::showPage(navigation::SettingsPage::QuickFolders);
+void inspectCardGrid(HWND window) {
+  using namespace navigation;
+  showPage(SettingsPage::Features);
+  RECT bodyClient{}; GetClientRect(body, &bodyClient);
+  const auto subtitle = childBounds(GetDlgItem(window, featuresSubtitle), window);
+  const auto bodyBounds = childBounds(body, window);
+  check(visibleStyle(GetDlgItem(window, featuresSubtitle)) && subtitle.bottom <= bodyBounds.top,
+        "overview subtitle sits cleanly above card grid");
+  std::vector<RECT> cardRects;
+  for (const auto &card : cards) {
+    if (!card.visible) continue;
+    check(card.rect.right > card.rect.left && card.rect.bottom > card.rect.top, "feature card has valid bounds");
+    check(card.rect.left >= 0 && card.rect.right <= bodyClient.right, "feature card fits horizontally in grid");
+    for (HWND child : {card.toggle, card.description, card.action}) {
+      check(visibleStyle(child), "card child control is visible");
+      const auto b = childBounds(child, body);
+      check(b.left >= card.rect.left && b.right <= card.rect.right &&
+            b.top >= card.rect.top && b.bottom <= card.rect.bottom,
+            "card child control stays inside its card");
+    }
+    for (const auto &other : cardRects) {
+      RECT intersection{};
+      check(!IntersectRect(&intersection, &card.rect, &other), "feature cards do not overlap");
+    }
+    cardRects.push_back(card.rect);
+  }
+  const int expectedCards = tabsSupported() ? 6 : 5;
+  check(int(cardRects.size()) == expectedCards, "expected number of feature cards are visible");
 }
-void inspectDesktopGroupsOption() {
-  navigation::showPage(navigation::SettingsPage::Features);
-  auto placement = std::find_if(navigation::placements.begin(), navigation::placements.end(), [](const auto &item) {
-    return item.window == navigation::desktopGroupsCheck;
-  });
-  check(placement != navigation::placements.end(), "desktop groups switch is in the feature scroller");
-  navigation::scrollPosition = navigation::scale(placement->y - 8);
-  navigation::layoutBody();
-  RECT client{}; GetClientRect(navigation::body, &client);
-  auto toggle = childBounds(navigation::desktopGroupsCheck, navigation::body);
-  auto manage = childBounds(navigation::desktopGroupsManager, navigation::body);
-  auto glass = childBounds(navigation::desktopGroupsGlassCheck, navigation::body);
-  auto preview = childBounds(navigation::desktopGroupsPreview, navigation::body);
-  check(toggle.left >= 0 && toggle.top >= 0 && toggle.right <= client.right && toggle.bottom <= client.bottom &&
-        glass.top >= toggle.bottom && manage.top >= glass.bottom && manage.bottom <= client.bottom &&
-        glass.right < preview.left && manage.right < preview.left && preview.right <= client.right && preview.bottom <= client.bottom,
-        "desktop groups switch, management button and preview fit in the scroller at every scale");
-  navigation::showPage(navigation::SettingsPage::QuickFolders);
+
+void inspectSidebarTabs(HWND window) {
+  using namespace navigation;
+  int previousBottom = scale(88);
+  const int updateTop = childBounds(GetDlgItem(window, updateButton), window).top;
+  const int sidebarRight = scale(settingsSidebarWidth);
+  for (const auto &item : sidebarItems) {
+    HWND ctrl = GetDlgItem(window, item.id);
+    if (!visibleStyle(ctrl)) continue;
+    const auto b = childBounds(ctrl, window);
+    check(b.left >= 0 && b.right <= sidebarRight && b.top >= previousBottom && b.bottom <= updateTop,
+          "visible sidebar tab fits without overlapping neighbors or version row");
+    previousBottom = b.bottom;
+  }
 }
-void inspectDesktopGroupsPreview() {
-  auto dc = CreateCompatibleDC(nullptr);
-  auto display = GetDC(nullptr);
-  auto bitmap = CreateCompatibleBitmap(display, 300, 120);
-  ReleaseDC(nullptr, display);
-  auto original = SelectObject(dc, bitmap);
-  DRAWITEMSTRUCT item{};
-  item.CtlID = navigation::desktopGroupsPreviewId;
-  item.hDC = dc;
-  item.rcItem = {0, 0, 300, 120};
-  SendMessageW(navigation::desktopGroupsCheck, BM_SETCHECK, BST_CHECKED, 0);
-  SendMessageW(navigation::desktopGroupsGlassCheck, BM_SETCHECK, BST_CHECKED, 0);
-  SendMessageW(navigation::body, WM_DRAWITEM, item.CtlID, reinterpret_cast<LPARAM>(&item));
-  const auto glass = GetPixel(dc, 130, 101);
-  SendMessageW(navigation::desktopGroupsGlassCheck, BM_SETCHECK, BST_UNCHECKED, 0);
-  SendMessageW(navigation::body, WM_DRAWITEM, item.CtlID, reinterpret_cast<LPARAM>(&item));
-  const auto opaque = GetPixel(dc, 130, 101);
-  SendMessageW(navigation::desktopGroupsCheck, BM_SETCHECK, BST_UNCHECKED, 0);
-  SendMessageW(navigation::body, WM_DRAWITEM, item.CtlID, reinterpret_cast<LPARAM>(&item));
-  const auto disabled = GetPixel(dc, 130, 101);
-  SelectObject(dc, original);
-  DeleteObject(bitmap);
-  DeleteDC(dc);
-  const auto &colors = navigation::appearance->colors;
-  check(opaque == colors.field && (colors.highContrast ? glass == opaque : glass != opaque),
-        "preview depicts the staged glass choice and respects high contrast");
-  check(disabled != opaque, "disabled desktop groups preview omits the panel");
-  check(navigation::configuredDesktopGroupsGlass(), "toggling the preview does not persist the glass choice");
-}
+
 void scenarios() {
-  Hub hub;
-  navigation::showPage(navigation::SettingsPage::BoxAppearance);
-  const auto radius = GetDlgItem(hub.window, navigation::boxRadius);
-  const auto shadow = GetDlgItem(hub.window, navigation::boxShadow);
-  const auto shadowOpacity = GetDlgItem(hub.window, navigation::boxShadowOpacity);
-  const auto shadowBlur = GetDlgItem(hub.window, navigation::boxShadowBlur);
-  const auto shadowOffset = GetDlgItem(hub.window, navigation::boxShadowOffset);
-  check(visibleStyle(radius) && visibleStyle(shadowOpacity) && visibleStyle(shadowBlur) && visibleStyle(shadowOffset) &&
-        visibleStyle(GetDlgItem(hub.window, navigation::boxPreview)), "box appearance page shows its controls");
-  const auto savedAppearance = desktop_groups::configuredAppearance();
-  check(!IsWindowEnabled(shadowOpacity) && !IsWindowEnabled(shadowBlur) && !IsWindowEnabled(shadowOffset),
-        "shadow sliders start disabled when shadow is off");
-  SendMessageW(shadow, BM_SETCHECK, BST_CHECKED, 0);
-  SendMessageW(hub.window, WM_COMMAND, MAKEWPARAM(navigation::boxShadow, BN_CLICKED), reinterpret_cast<LPARAM>(shadow));
-  SendMessageW(radius, TBM_SETPOS, TRUE, 4);
-  SendMessageW(shadowOpacity, TBM_SETPOS, TRUE, 78);
-  SendMessageW(shadowBlur, TBM_SETPOS, TRUE, 24);
-  SendMessageW(shadowOffset, TBM_SETPOS, TRUE, 16);
-  SendMessageW(hub.window, WM_HSCROLL, TB_THUMBTRACK, reinterpret_cast<LPARAM>(shadowOffset));
-  check(IsWindowEnabled(shadowOffset) && navigation::boxStyle.radius == 4 &&
-        navigation::boxStyle.shadowOpacity == 78 && navigation::boxStyle.shadowBlur == 24 &&
-        navigation::boxStyle.shadowOffset == 16 &&
-        desktop_groups::configuredAppearance() == savedAppearance, "appearance preview stages values before saving");
-  SendMessageW(shadow, BM_SETCHECK, BST_UNCHECKED, 0);
-  SendMessageW(hub.window, WM_COMMAND, MAKEWPARAM(navigation::boxShadow, BN_CLICKED), reinterpret_cast<LPARAM>(shadow));
-  check(!IsWindowEnabled(shadowOpacity) && SendMessageW(shadowOpacity, TBM_GETPOS, 0, 0) == 78,
-        "turning off shadow disables its controls and preserves the draft values");
-  SendMessageW(radius, TBM_SETPOS, TRUE, savedAppearance.radius);
-  SendMessageW(shadowOpacity, TBM_SETPOS, TRUE, savedAppearance.shadowOpacity);
-  SendMessageW(shadowBlur, TBM_SETPOS, TRUE, savedAppearance.shadowBlur);
-  SendMessageW(shadowOffset, TBM_SETPOS, TRUE, savedAppearance.shadowOffset);
-  SendMessageW(hub.window, WM_HSCROLL, TB_THUMBPOSITION, reinterpret_cast<LPARAM>(radius));
-  navigation::showPage(navigation::SettingsPage::Preferences);
-  check(visibleStyle(GetDlgItem(hub.window, navigation::languageChoice)) && visibleStyle(navigation::themeChoice),
-        "language and theme controls are visible on Preferences");
-  navigation::showPage(navigation::SettingsPage::ContextMenus);
-  check(!visibleStyle(GetDlgItem(hub.window, navigation::languageChoice)) && !visibleStyle(navigation::themeChoice),
-        "preferences are hidden on other pages");
-  check(visibleStyle(navigation::contextPage) && GetParent(navigation::contextPage) == hub.window &&
-        !visibleStyle(navigation::body) && !visibleStyle(navigation::managerPage),
-        "context manager is an embedded settings page");
-  SendMessageW(hub.window, WM_COMMAND, MAKEWPARAM(49, BN_CLICKED), reinterpret_cast<LPARAM>(GetDlgItem(hub.window, 49)));
-  check(visibleStyle(navigation::entriesPage) && !visibleStyle(navigation::contextPage) &&
-        !visibleStyle(GetDlgItem(hub.window, IDOK)), "folder entry manager is embedded and applies changes directly");
-  auto location = explorer_entries_page::locationControl(navigation::entriesPage);
-  check(SendMessageW(location, CB_GETCOUNT, 0, 0) == 3 &&
-        windowText(GetDlgItem(hub.window, 30)) == L"文件夹入口管理", "folder manager exposes three locations");
-  RECT pageBounds{};
-  GetClientRect(navigation::entriesPage, &pageBounds);
-  const auto locationBounds = childBounds(location, navigation::entriesPage);
-  check(locationBounds.left >= 0 && locationBounds.right <= pageBounds.right &&
-        locationBounds.top >= 0 && locationBounds.bottom <= pageBounds.bottom,
-        "folder location picker fits the page");
-  const auto entries = FindWindowExW(navigation::entriesPage, nullptr, WC_LISTVIEWW, nullptr);
-  check(entries && (GetWindowLongPtrW(entries, GWL_STYLE) & (LVS_OWNERDRAWFIXED | LVS_NOCOLUMNHEADER)) ==
-        (LVS_OWNERDRAWFIXED | LVS_NOCOLUMNHEADER) && Header_GetItemCount(ListView_GetHeader(entries)) == 1,
-        "folder entries use a compact owner-drawn list without metadata columns");
-  check(ListView_IsGroupViewEnabled(entries) && ListView_GetGroupCount(entries) == 3,
-        "This PC uses the three Explorer groups");
-  SendMessageW(explorer_entries_page::viewControl(navigation::entriesPage, true), BM_CLICK, 0, 0);
-  check(ListView_GetView(entries) == LV_VIEW_ICON && ListView_GetGroupCount(entries) == 3,
-        "icon view retains the This PC groups");
-  check(!(GetWindowLongPtrW(entries, GWL_STYLE) & LVS_OWNERDRAWFIXED),
-        "icon view uses native layout without the report row style");
-  for (int i = 0; i < ListView_GetItemCount(entries); ++i) {
-    LVITEMW item{};
-    item.mask = LVIF_GROUPID;
-    item.iItem = i;
-    RECT group{}, icon{};
-    if (ListView_GetItem(entries, &item) && ListView_GetGroupRect(entries, item.iGroupId, LVGGR_GROUP, &group) &&
-        ListView_GetItemRect(entries, i, &icon, LVIR_ICON))
-      check(icon.top >= group.top && icon.bottom <= group.bottom, "icon is positioned inside its own group");
-  }
-  SendMessageW(explorer_entries_page::viewControl(navigation::entriesPage, false), BM_CLICK, 0, 0);
-  check(ListView_GetView(entries) == LV_VIEW_DETAILS && (GetWindowLongPtrW(entries, GWL_STYLE) & LVS_OWNERDRAWFIXED),
-        "switching back restores the owner-drawn list rows");
-  navigation::showPage(navigation::SettingsPage::Features);
-  check(visibleStyle(navigation::body) && !visibleStyle(navigation::managerPage), "only feature page initially visible");
-  check(!navigation::notesEnabled(), "isolated notes default remains off");
-  check(!GetDlgItem(navigation::body, 19) && !GetDlgItem(navigation::body, 20),
-        "copy and move no longer require separate settings controls");
-  check(!navigation::preferNewTabEnabled(), "new-tab preference defaults off");
-  check(!desktop_groups::enabled() && SendMessageW(navigation::desktopGroupsCheck, BM_GETCHECK, 0, 0) == BST_UNCHECKED &&
-        !IsWindowEnabled(navigation::desktopGroupsManager), "desktop groups are off by default");
-  check(!GetDlgItem(navigation::body, 26), "desktop boxes use native desktop icons without an optional mode");
-  check(SendMessageW(navigation::desktopGroupsGlassCheck, BM_GETCHECK, 0, 0) == BST_CHECKED,
-        "new desktop groups use glass by default");
-  inspectDesktopGroupsPreview();
-  SendMessageW(navigation::desktopGroupsCheck, BM_SETCHECK, BST_CHECKED, 0);
-  SendMessageW(hub.window, WM_COMMAND, MAKEWPARAM(navigation::desktopGroupsToggle, BN_CLICKED), 0);
-  check(!desktop_groups::enabled() && !IsWindowEnabled(navigation::desktopGroupsManager),
-        "desktop groups only become available after saving the draft");
-  if (navigation::tabsSupported()) {
-    check(GetDlgItem(navigation::body, 21) == navigation::preferNewTabCheck &&
-          !IsWindowEnabled(navigation::preferNewTabCheck), "new-tab option starts disabled when tabs are off");
-    SendMessageW(navigation::tabsCheck, BM_SETCHECK, BST_CHECKED, 0);
-    SendMessageW(hub.window, WM_COMMAND, MAKEWPARAM(18, BN_CLICKED), 0);
-    check(IsWindowEnabled(navigation::preferNewTabCheck), "enabling tabs enables new-tab preference");
-    SendMessageW(navigation::preferNewTabCheck, BM_SETCHECK, BST_CHECKED, 0);
-    SendMessageW(navigation::tabsCheck, BM_SETCHECK, BST_UNCHECKED, 0);
-    SendMessageW(hub.window, WM_COMMAND, MAKEWPARAM(18, BN_CLICKED), 0);
-    check(!IsWindowEnabled(navigation::preferNewTabCheck) &&
-          SendMessageW(navigation::preferNewTabCheck, BM_GETCHECK, 0, 0) == BST_CHECKED,
-          "disabling tabs retains the subordinate draft choice");
-    SendMessageW(navigation::tabsCheck, BM_SETCHECK, BST_CHECKED, 0);
-    SendMessageW(hub.window, WM_COMMAND, MAKEWPARAM(18, BN_CLICKED), 0);
-    check(IsWindowEnabled(navigation::preferNewTabCheck) &&
-          SendMessageW(navigation::preferNewTabCheck, BM_GETCHECK, 0, 0) == BST_CHECKED,
-          "reenabling tabs restores the checked subordinate option");
-  } else {
-    check(!navigation::tabsCheck && !navigation::preferNewTabCheck, "unsupported systems do not show Win10-only options");
-  }
-  SendMessageW(navigation::quickCheck, BM_SETCHECK, BST_CHECKED, 0);
-  SendMessageW(hub.window, WM_COMMAND, MAKEWPARAM(14, BN_CLICKED), 0);
-  check(IsWindowEnabled(navigation::dialogCheck), "enabling quick folders still enables dialog support");
-  SendMessageW(navigation::notesCheck, BM_SETCHECK, BST_CHECKED, 0);
-  SendMessageW(navigation::themeChoice, CB_SETCURSEL, DWORD(ui::ThemeMode::Dark), 0);
-  SendMessageW(hub.window, WM_COMMAND, MAKEWPARAM(17, CBN_SELCHANGE), reinterpret_cast<LPARAM>(navigation::themeChoice));
-  check(navigation::appearance->mode == ui::ThemeMode::Dark && ui::configuredTheme() == ui::ThemeMode::System,
-        "theme preview is not prematurely persisted");
+  using namespace navigation;
+  {
+    Hub hub;
+    inspectCardGrid(hub.window);
+    inspectSidebarTabs(hub.window);
+    // Initially double-click (59) and quick-find (75) are on; notes (77), quick (41), boxes (50), tabs (76) are off
+    check(visibleStyle(GetDlgItem(hub.window, 59)) && visibleStyle(GetDlgItem(hub.window, 75)) &&
+          !visibleStyle(GetDlgItem(hub.window, 77)) && !visibleStyle(GetDlgItem(hub.window, 41)) &&
+          !visibleStyle(GetDlgItem(hub.window, 50)) && !visibleStyle(GetDlgItem(hub.window, 76)),
+          "sidebar displays parameter tabs only for enabled features");
+    check(!IsWindowEnabled(GetDlgItem(body, cardEditNotes)) &&
+          !IsWindowEnabled(GetDlgItem(body, cardEditQuick)) &&
+          !IsWindowEnabled(GetDlgItem(body, cardEditDesktopGroups)),
+          "disabled feature cards disable their Edit buttons");
 
-  // Route through real sidebar notifications instead of constructing a second
-  // manager. Switching pages must not save or discard feature drafts.
-  SendMessageW(hub.window, WM_COMMAND, MAKEWPARAM(41, BN_CLICKED), reinterpret_cast<LPARAM>(GetDlgItem(hub.window, 41)));
-  HWND manager = navigation::managerPage;
-  check(manager && GetParent(manager) == hub.window && GetAncestor(manager, GA_ROOT) == hub.window,
-        "folder manager is embedded in the same settings window");
-  check((GetWindowLongPtrW(manager, GWL_STYLE) & WS_CHILD) != 0, "folder manager is a child page");
-  check(!visibleStyle(navigation::body) && visibleStyle(manager), "manager and feature pages are mutually exclusive");
-  check(!navigation::notesEnabled() && SendMessageW(navigation::notesCheck, BM_GETCHECK, 0, 0) == BST_CHECKED,
-        "switching pages retains unsaved feature selection");
-  check(navigation::appearance->mode == ui::ThemeMode::Dark, "page switch retains theme preview");
-  check(!visibleStyle(navigation::settingsScroll.window()), "feature scrollbar hides on manager page");
-  inspectVersion(hub.window);
+    // Enable Desktop boxes -> sidebar tab 50 appears and Edit button enables
+    SendDlgItemMessageW(body, desktopGroupsToggle, BM_CLICK, 0, 0);
+    check(desktop_groups::enabled() && visibleStyle(GetDlgItem(hub.window, 50)) &&
+          IsWindowEnabled(GetDlgItem(body, cardEditDesktopGroups)),
+          "enabling desktop boxes persists immediately and shows its sidebar tab");
+    SendDlgItemMessageW(body, cardEditDesktopGroups, BM_CLICK, 0, 0);
+    check(activePage == SettingsPage::BoxAppearance, "desktop box card Edit button opens BoxAppearance");
+    const auto radius = GetDlgItem(hub.window, boxRadius);
+    const auto shadow = GetDlgItem(hub.window, boxShadow);
+    const auto shadowOpacity = GetDlgItem(hub.window, boxShadowOpacity);
+    const auto shadowBlur = GetDlgItem(hub.window, boxShadowBlur);
+    const auto shadowOffset = GetDlgItem(hub.window, boxShadowOffset);
+    check(visibleStyle(radius) && visibleStyle(shadowOpacity) && visibleStyle(shadowBlur) && visibleStyle(shadowOffset) &&
+          visibleStyle(GetDlgItem(hub.window, boxPreview)) && visibleStyle(desktopGroupsManager) &&
+          IsWindowEnabled(desktopGroupsManager),
+          "box appearance page shows its controls and enabled manager button");
+    const auto savedAppearance = desktop_groups::configuredAppearance();
+    check(!IsWindowEnabled(shadowOpacity) && !IsWindowEnabled(shadowBlur) && !IsWindowEnabled(shadowOffset),
+          "shadow sliders start disabled when shadow is off");
+    SendMessageW(shadow, BM_SETCHECK, BST_CHECKED, 0);
+    SendMessageW(hub.window, WM_COMMAND, MAKEWPARAM(boxShadow, BN_CLICKED), reinterpret_cast<LPARAM>(shadow));
+    check(desktop_groups::configuredAppearance().shadow, "toggling shadow persists immediately");
+    SendMessageW(radius, TBM_SETPOS, TRUE, 4);
+    SendMessageW(shadowOpacity, TBM_SETPOS, TRUE, 78);
+    SendMessageW(shadowBlur, TBM_SETPOS, TRUE, 24);
+    SendMessageW(shadowOffset, TBM_SETPOS, TRUE, 16);
+    SendMessageW(hub.window, WM_HSCROLL, TB_THUMBTRACK, reinterpret_cast<LPARAM>(shadowOffset));
+    check(IsWindowEnabled(shadowOffset) && boxStyle.radius == 4 &&
+          boxStyle.shadowOpacity == 78 && boxStyle.shadowBlur == 24 && boxStyle.shadowOffset == 16 &&
+          desktop_groups::configuredAppearance().radius == savedAppearance.radius,
+          "slider drag previews values before release");
+    SendMessageW(hub.window, WM_HSCROLL, TB_THUMBPOSITION, reinterpret_cast<LPARAM>(shadowOffset));
+    const auto persisted = desktop_groups::configuredAppearance();
+    check(persisted.radius == 4 && persisted.shadowOpacity == 78 && persisted.shadowBlur == 24 && persisted.shadowOffset == 16,
+          "releasing slider commits box appearance immediately");
+    SendMessageW(shadow, BM_SETCHECK, BST_UNCHECKED, 0);
+    SendMessageW(hub.window, WM_COMMAND, MAKEWPARAM(boxShadow, BN_CLICKED), reinterpret_cast<LPARAM>(shadow));
+    check(!IsWindowEnabled(shadowOpacity) && SendMessageW(shadowOpacity, TBM_GETPOS, 0, 0) == 78 &&
+          !desktop_groups::configuredAppearance().shadow,
+          "turning off shadow persists immediately, disables sliders, and preserves values");
+    SendMessageW(radius, TBM_SETPOS, TRUE, savedAppearance.radius);
+    SendMessageW(shadowOpacity, TBM_SETPOS, TRUE, savedAppearance.shadowOpacity);
+    SendMessageW(shadowBlur, TBM_SETPOS, TRUE, savedAppearance.shadowBlur);
+    SendMessageW(shadowOffset, TBM_SETPOS, TRUE, savedAppearance.shadowOffset);
+    SendMessageW(hub.window, WM_HSCROLL, TB_THUMBPOSITION, reinterpret_cast<LPARAM>(radius));
+    SendDlgItemMessageW(hub.window, 40, BM_CLICK, 0, 0);
+    SendDlgItemMessageW(body, desktopGroupsToggle, BM_CLICK, 0, 0);
+    check(!desktop_groups::enabled() && !visibleStyle(GetDlgItem(hub.window, 50)) &&
+          !IsWindowEnabled(GetDlgItem(body, cardEditDesktopGroups)),
+          "disabling desktop boxes hides its sidebar tab and disables Edit");
 
-  for (UINT dpi : {96u, 144u, 192u}) {
-    RECT target{0, 0, MulDiv(980, dpi, 96), MulDiv(660, dpi, 96)};
-    SendMessageW(hub.window, WM_DPICHANGED, MAKEWPARAM(dpi, dpi), reinterpret_cast<LPARAM>(&target));
-    inspectVersion(hub.window);
-    inspectNewTabOption();
-    inspectDesktopGroupsOption();
-    MoveWindow(hub.window, 0, 0, MulDiv(900, dpi, 96), MulDiv(500, dpi, 96), FALSE);
-    inspectVersion(hub.window);
-    inspectNewTabOption();
-    inspectDesktopGroupsOption();
-    check(visibleStyle(manager) && !visibleStyle(navigation::body), "resize preserves selected page");
-    SendMessageW(hub.window, WM_MOUSEWHEEL, MAKEWPARAM(0, -WHEEL_DELTA), 0);
-    check(!visibleStyle(navigation::settingsScroll.window()), "wheel over hub does not resurrect the hidden feature scrollbar");
+    // Preferences (General) page
+    SendDlgItemMessageW(hub.window, 48, BM_CLICK, 0, 0);
+    check(activePage == SettingsPage::Preferences && visibleStyle(GetDlgItem(hub.window, languageChoice)) &&
+          visibleStyle(themeChoice) && visibleStyle(GetDlgItem(hub.window, 13)),
+          "language, theme, and diagnostics controls are visible on General");
+    SendMessageW(themeChoice, CB_SETCURSEL, DWORD(ui::ThemeMode::Dark), 0);
+    SendMessageW(hub.window, WM_COMMAND, MAKEWPARAM(17, CBN_SELCHANGE), reinterpret_cast<LPARAM>(themeChoice));
+    check(appearance->mode == ui::ThemeMode::Dark && ui::configuredTheme() == ui::ThemeMode::Dark,
+          "theme selection persists immediately");
+    SendMessageW(themeChoice, CB_SETCURSEL, DWORD(ui::ThemeMode::System), 0);
+    SendMessageW(hub.window, WM_COMMAND, MAKEWPARAM(17, CBN_SELCHANGE), reinterpret_cast<LPARAM>(themeChoice));
+    check(ui::configuredTheme() == ui::ThemeMode::System, "theme resets cleanly");
+
+    // Context menu page
+    SendDlgItemMessageW(hub.window, 47, BM_CLICK, 0, 0);
+    check(activePage == SettingsPage::ContextMenus && visibleStyle(contextPage) &&
+          GetParent(contextPage) == hub.window && !visibleStyle(body) && !visibleStyle(managerPage),
+          "context manager is an embedded settings page");
+    check(!visibleStyle(GetDlgItem(hub.window, languageChoice)) && !visibleStyle(themeChoice),
+          "preferences are hidden on other pages");
+
+    // Explorer entries page
+    SendDlgItemMessageW(hub.window, 49, BM_CLICK, 0, 0);
+    check(visibleStyle(entriesPage) && !visibleStyle(contextPage), "folder entry manager is embedded");
+    auto location = explorer_entries_page::locationControl(entriesPage);
+    check(SendMessageW(location, CB_GETCOUNT, 0, 0) == 3 &&
+          windowText(GetDlgItem(hub.window, 30)) == L"文件夹入口管理", "folder manager exposes three locations");
+    RECT pageBounds{};
+    GetClientRect(entriesPage, &pageBounds);
+    const auto locationBounds = childBounds(location, entriesPage);
+    check(locationBounds.left >= 0 && locationBounds.right <= pageBounds.right &&
+          locationBounds.top >= 0 && locationBounds.bottom <= pageBounds.bottom,
+          "folder location picker fits the page");
+    const auto entries = FindWindowExW(entriesPage, nullptr, WC_LISTVIEWW, nullptr);
+    check(entries && (GetWindowLongPtrW(entries, GWL_STYLE) & (LVS_OWNERDRAWFIXED | LVS_NOCOLUMNHEADER)) ==
+          (LVS_OWNERDRAWFIXED | LVS_NOCOLUMNHEADER) && Header_GetItemCount(ListView_GetHeader(entries)) == 1,
+          "folder entries use a compact owner-drawn list without metadata columns");
+    check(ListView_IsGroupViewEnabled(entries) && ListView_GetGroupCount(entries) == 3,
+          "This PC uses the three Explorer groups");
+    SendMessageW(explorer_entries_page::viewControl(entriesPage, true), BM_CLICK, 0, 0);
+    check(ListView_GetView(entries) == LV_VIEW_ICON && ListView_GetGroupCount(entries) == 3,
+          "icon view retains the This PC groups");
+    check(!(GetWindowLongPtrW(entries, GWL_STYLE) & LVS_OWNERDRAWFIXED),
+          "icon view uses native layout without the report row style");
+    for (int i = 0; i < ListView_GetItemCount(entries); ++i) {
+      LVITEMW item{};
+      item.mask = LVIF_GROUPID;
+      item.iItem = i;
+      RECT group{}, icon{};
+      if (ListView_GetItem(entries, &item) && ListView_GetGroupRect(entries, item.iGroupId, LVGGR_GROUP, &group) &&
+          ListView_GetItemRect(entries, i, &icon, LVIR_ICON))
+        check(icon.top >= group.top && icon.bottom <= group.bottom, "icon is positioned inside its own group");
+    }
+    SendMessageW(explorer_entries_page::viewControl(entriesPage, false), BM_CLICK, 0, 0);
+    check(ListView_GetView(entries) == LV_VIEW_DETAILS && (GetWindowLongPtrW(entries, GWL_STYLE) & LVS_OWNERDRAWFIXED),
+          "switching back restores the owner-drawn list rows");
+
+    // Back to Features cards
+    SendDlgItemMessageW(hub.window, 40, BM_CLICK, 0, 0);
+    check(visibleStyle(body) && !visibleStyle(managerPage), "overview cards visible on Features");
+    check(!notesEnabled(), "isolated notes default remains off");
+    check(!preferNewTabEnabled(), "new-tab preference defaults off");
+    check(!desktop_groups::enabled() && SendMessageW(desktopGroupsCheck, BM_GETCHECK, 0, 0) == BST_UNCHECKED,
+          "desktop groups are off by default");
+
+    // Card hover & body click tests
+    {
+      const auto &card1 = cards[1];
+      const LPARAM center = MAKELPARAM((card1.rect.left + card1.rect.right) / 2,
+                                       (card1.rect.top + card1.rect.bottom) / 2);
+      SendMessageW(body, WM_MOUSEMOVE, 0, center);
+      check(hoveredCard == 1, "moving mouse over a card sets hoveredCard");
+      SendMessageW(body, WM_LBUTTONUP, 0, center);
+      check(activePage == SettingsPage::DoubleClick, "clicking an enabled card body opens its page");
+      SendDlgItemMessageW(hub.window, 40, BM_CLICK, 0, 0);
+      check(hoveredCard == -1, "switching pages clears hoveredCard");
+    }
+
+    // Notes card toggle & dedicated Notes tab (77)
+    SendDlgItemMessageW(body, 11, BM_CLICK, 0, 0);
+    check(notesEnabled() && visibleStyle(GetDlgItem(hub.window, 77)) &&
+          IsWindowEnabled(GetDlgItem(body, cardEditNotes)),
+          "notes card toggle persists immediately and shows its sidebar tab");
+    SendDlgItemMessageW(body, cardEditNotes, BM_CLICK, 0, 0);
+    check(activePage == SettingsPage::Notes && windowText(GetDlgItem(hub.window, 30)) == L"文件夹备注" &&
+          visibleStyle(GetDlgItem(hub.window, notesCmdEdit)) &&
+          visibleStyle(GetDlgItem(hub.window, notesCmdClear)) &&
+          visibleStyle(GetDlgItem(hub.window, notesCmdRepair)),
+          "notes Edit button opens dedicated Folder Notes page");
+    SendDlgItemMessageW(hub.window, notesCmdClear, BM_CLICK, 0, 0);
+    check(noteCommandHidden(1), "unchecking a note command hides it immediately");
+    SendDlgItemMessageW(hub.window, notesCmdClear, BM_CLICK, 0, 0);
+    check(!noteCommandHidden(1), "rechecking a note command restores it immediately");
+    SendDlgItemMessageW(hub.window, notesOpenContextMenu, BM_CLICK, 0, 0);
+    check(activePage == SettingsPage::ContextMenus, "notes page shortcut opens ContextMenus");
+    SendDlgItemMessageW(hub.window, 40, BM_CLICK, 0, 0);
+    SendDlgItemMessageW(body, 11, BM_CLICK, 0, 0);
+    check(!notesEnabled() && !visibleStyle(GetDlgItem(hub.window, 77)) &&
+          !IsWindowEnabled(GetDlgItem(body, cardEditNotes)),
+          "notes card toggle off hides its sidebar tab and disables Edit");
+
+    // Double-click page via sidebar or card Edit
+    SendDlgItemMessageW(body, cardEditDoubleClick, BM_CLICK, 0, 0);
+    check(activePage == SettingsPage::DoubleClick && visibleStyle(choice), "double-click card routes to DoubleClick page");
+    SendMessageW(choice, CB_SETCURSEL, 1, 0);
+    SendMessageW(hub.window, WM_COMMAND, MAKEWPARAM(10, CBN_SELCHANGE), reinterpret_cast<LPARAM>(choice));
+    check(preferredAction() == Action::Back && configuredAction() == Action::Back,
+          "double-click action persists immediately");
+    SendMessageW(choice, CB_SETCURSEL, 0, 0);
+    SendMessageW(hub.window, WM_COMMAND, MAKEWPARAM(10, CBN_SELCHANGE), reinterpret_cast<LPARAM>(choice));
+    SendDlgItemMessageW(hub.window, 40, BM_CLICK, 0, 0);
+    SendDlgItemMessageW(body, 12, BM_CLICK, 0, 0);
+    check(configuredAction() == Action::Off && !visibleStyle(GetDlgItem(hub.window, 59)) &&
+          !IsWindowEnabled(GetDlgItem(body, cardEditDoubleClick)),
+          "disabling double-click hides its sidebar tab");
+    SendDlgItemMessageW(body, 12, BM_CLICK, 0, 0);
+    check(configuredAction() == Action::Parent && visibleStyle(GetDlgItem(hub.window, 59)),
+          "re-enabling double-click restores its sidebar tab");
+
+    // QuickFolders page (middle-click)
+    SendDlgItemMessageW(body, 14, BM_CLICK, 0, 0);
+    check(quickEnabled() && visibleStyle(GetDlgItem(hub.window, 41)) && IsWindowEnabled(GetDlgItem(body, cardEditQuick)),
+          "enabling quick folders shows its sidebar tab and enables Edit");
+    SendDlgItemMessageW(hub.window, 41, BM_CLICK, 0, 0);
+    check(activePage == SettingsPage::QuickFolders && visibleStyle(managerPage) && visibleStyle(dialogCheck) &&
+          IsWindowEnabled(dialogCheck),
+          "clicking sidebar tab 41 opens embedded manager and enabled dialog checkbox");
+    SendDlgItemMessageW(hub.window, 15, BM_CLICK, 0, 0);
+    check(!dialogQuickEnabled(), "dialog checkbox persists immediately");
+    SendDlgItemMessageW(hub.window, 15, BM_CLICK, 0, 0);
+
+    // Tabs page (Win10 only)
+    if (tabsSupported()) {
+      SendDlgItemMessageW(hub.window, 40, BM_CLICK, 0, 0);
+      check(!visibleStyle(GetDlgItem(hub.window, 76)) && !IsWindowEnabled(GetDlgItem(body, cardEditTabs)),
+            "tabs sidebar tab starts hidden while off");
+      SendDlgItemMessageW(body, 18, BM_CLICK, 0, 0);
+      check(tabsEnabled() && visibleStyle(GetDlgItem(hub.window, 76)) && IsWindowEnabled(GetDlgItem(body, cardEditTabs)),
+            "enabling tabs shows its sidebar tab immediately");
+      SendDlgItemMessageW(hub.window, 76, BM_CLICK, 0, 0);
+      check(activePage == SettingsPage::Tabs && visibleStyle(preferNewTabCheck) && IsWindowEnabled(preferNewTabCheck),
+            "tabs sidebar tab opens Tabs page with new-tab checkbox enabled");
+      SendDlgItemMessageW(hub.window, 21, BM_CLICK, 0, 0);
+      check(preferNewTabEnabled(), "prefer-new-tab checkbox persists immediately");
+      SendDlgItemMessageW(hub.window, 40, BM_CLICK, 0, 0);
+      SendDlgItemMessageW(body, 18, BM_CLICK, 0, 0);
+      check(!tabsEnabled() && !visibleStyle(GetDlgItem(hub.window, 76)) &&
+            SendMessageW(preferNewTabCheck, BM_GETCHECK, 0, 0) == BST_CHECKED,
+            "disabling tabs hides its sidebar tab while retaining subordinate choice");
+      SendDlgItemMessageW(body, 18, BM_CLICK, 0, 0);
+      check(tabsEnabled() && visibleStyle(GetDlgItem(hub.window, 76)) && preferNewTabEnabled(),
+            "reenabling tabs restores sidebar tab and checked subordinate option");
+    } else {
+      check(!tabsCheck && !preferNewTabCheck && !visibleStyle(GetDlgItem(hub.window, 76)),
+            "unsupported systems do not show Win10-only options");
+      SendDlgItemMessageW(hub.window, 40, BM_CLICK, 0, 0);
+    }
+
+    // Turn on notes & desktop boxes as well so ALL sidebar items are visible simultaneously for DPI/size layout check
+    SendDlgItemMessageW(body, 11, BM_CLICK, 0, 0);
+    SendDlgItemMessageW(body, desktopGroupsToggle, BM_CLICK, 0, 0);
+    for (UINT scaleDpi : {96u, 144u, 192u}) {
+      RECT target{0, 0, MulDiv(980, scaleDpi, 96), MulDiv(660, scaleDpi, 96)};
+      SendMessageW(hub.window, WM_DPICHANGED, MAKEWPARAM(scaleDpi, scaleDpi), reinterpret_cast<LPARAM>(&target));
+      inspectVersion(hub.window);
+      inspectCardGrid(hub.window);
+      inspectSidebarTabs(hub.window);
+      MoveWindow(hub.window, 0, 0, MulDiv(900, scaleDpi, 96), MulDiv(500, scaleDpi, 96), FALSE);
+      inspectVersion(hub.window);
+      inspectCardGrid(hub.window);
+      inspectSidebarTabs(hub.window);
+      showPage(SettingsPage::BoxAppearance);
+      SendMessageW(hub.window, WM_MOUSEWHEEL, MAKEWPARAM(0, -WHEEL_DELTA), 0);
+      check(!visibleStyle(settingsScroll.window()), "wheel over parameter page does not show feature scrollbar");
+      showPage(SettingsPage::Features);
+    }
   }
-  for (int pass = 0; pass < 4; ++pass) {
-    SendMessageW(hub.window, WM_COMMAND, MAKEWPARAM(40, BN_CLICKED), reinterpret_cast<LPARAM>(GetDlgItem(hub.window, 40)));
-    check(visibleStyle(navigation::body) && !visibleStyle(manager), "sidebar returns to feature page");
-    check(SendMessageW(navigation::notesCheck, BM_GETCHECK, 0, 0) == BST_CHECKED &&
-          SendMessageW(navigation::desktopGroupsCheck, BM_GETCHECK, 0, 0) == BST_CHECKED &&
-          SendMessageW(navigation::desktopGroupsGlassCheck, BM_GETCHECK, 0, 0) == BST_UNCHECKED &&
-          SendMessageW(navigation::themeChoice, CB_GETCURSEL, 0, 0) == DWORD(ui::ThemeMode::Dark),
-          "repeated switches keep all draft controls");
-    if (navigation::preferNewTabCheck)
-      check(SendMessageW(navigation::preferNewTabCheck, BM_GETCHECK, 0, 0) == BST_CHECKED,
-            "switching settings pages preserves new-tab draft");
-    SendMessageW(hub.window, WM_COMMAND, MAKEWPARAM(41, BN_CLICKED), reinterpret_cast<LPARAM>(GetDlgItem(hub.window, 41)));
-    check(navigation::managerPage == manager, "switches reuse the embedded manager instance");
-  }
-  HWND features = navigation::body, version = GetDlgItem(hub.window, 31);
-  SendMessageW(hub.window, WM_COMMAND, MAKEWPARAM(IDCANCEL, BN_CLICKED), 0);
-  check(!IsWindow(hub.window) && !IsWindow(manager) && !IsWindow(features) && !IsWindow(version),
-        "closing the hub destroys both pages and fixed controls");
-  check(!navigation::notesEnabled() && ui::configuredTheme() == ui::ThemeMode::System &&
-        !navigation::preferNewTabEnabled() && !desktop_groups::enabled() &&
-        navigation::configuredDesktopGroupsGlass(),
-        "cancel does not commit feature, theme or glass drafts");
-  navigation::applySettings(false, navigation::Action::Parent, navigation::Action::Parent,
-                            false, true, ui::ThemeMode::System, false, false, true,
-                            navigation::DesktopGroupsSettings{true, false, 8, 55, true, 72, 18, 9});
+
+  // Verify persistence across close/reopen
+  applySettings(false, Action::Parent, Action::Parent, false, true, ui::ThemeMode::System, false, false, true,
+                DesktopGroupsSettings{true, false, 8, 55, true, 72, 18, 9});
   const auto savedShadow = desktop_groups::configuredAppearance();
   check(desktop_groups::enabled() && !savedShadow.glass && savedShadow.shadow &&
         savedShadow.shadowOpacity == 72 && savedShadow.shadowBlur == 18 && savedShadow.shadowOffset == 9,
         "settings save persists the desktop groups and appearance choices");
-  navigation::saveSettings(false, navigation::Action::Parent, navigation::Action::Parent,
-                          false, true, ui::ThemeMode::System, false, true);
-  Hub reopened;
-  check(desktop_groups::enabled() && SendMessageW(navigation::desktopGroupsCheck, BM_GETCHECK, 0, 0) == BST_CHECKED &&
-        SendMessageW(navigation::desktopGroupsGlassCheck, BM_GETCHECK, 0, 0) == BST_UNCHECKED &&
-        IsWindowEnabled(navigation::desktopGroupsManager), "existing save callers preserve the desktop groups and glass choices");
-  SendMessageW(navigation::desktopGroupsCheck, BM_SETCHECK, BST_UNCHECKED, 0);
-  SendMessageW(reopened.window, WM_COMMAND, MAKEWPARAM(navigation::desktopGroupsToggle, BN_CLICKED), 0);
-  check(desktop_groups::enabled() && !IsWindowEnabled(navigation::desktopGroupsManager),
-        "unchecking desktop groups stages a change and disables management");
-  if (navigation::tabsSupported()) {
-    check(!IsWindowEnabled(navigation::preferNewTabCheck) &&
-          SendMessageW(navigation::preferNewTabCheck, BM_GETCHECK, 0, 0) == BST_CHECKED,
-          "reopening settings retains saved new-tab choice while tabs are disabled");
+  {
+    Hub reopened;
+    check(desktop_groups::enabled() && SendMessageW(desktopGroupsCheck, BM_GETCHECK, 0, 0) == BST_CHECKED &&
+          visibleStyle(GetDlgItem(reopened.window, 50)) &&
+          SendDlgItemMessageW(reopened.window, boxGlass, BM_GETCHECK, 0, 0) == BST_UNCHECKED &&
+          IsWindowEnabled(desktopGroupsManager), "reopening settings restores desktop groups, sidebar tab, and appearance choices");
   }
-  SendMessageW(reopened.window, WM_COMMAND, MAKEWPARAM(IDCANCEL, BN_CLICKED), 0);
-  check(navigation::preferNewTabEnabled(), "cancel leaves previously saved new-tab choice untouched");
-  navigation::applySettings(false, navigation::Action::Parent, navigation::Action::Parent,
-                            false, true, ui::ThemeMode::System, false, true, true, navigation::DesktopGroupsSettings{false, true});
-  check(!desktop_groups::enabled() && navigation::configuredDesktopGroupsGlass(),
+  applySettings(false, Action::Parent, Action::Parent, false, true, ui::ThemeMode::System, false, false, true,
+                DesktopGroupsSettings{false, true});
+  check(!desktop_groups::enabled() && desktop_groups::configuredAppearance().glass,
         "settings save can turn off desktop groups without losing the appearance choice");
 }
 void languages() {
@@ -449,10 +507,17 @@ void languages() {
   {
     Hub hub;
     check(windowText(GetDlgItem(hub.window, navigation::languageExport)) == L"Export language template" &&
-          windowText(GetDlgItem(hub.window, IDOK)) == L"Save" &&
+          windowText(GetDlgItem(hub.window, 30)) == L"Features" &&
+          windowText(GetDlgItem(navigation::body, navigation::cardEditNotes)) == L"Edit →" &&
+          windowText(GetDlgItem(navigation::body, navigation::cardEditDesktopGroups)) == L"Edit →" &&
+          windowText(GetDlgItem(hub.window, 77)) == L"Notes" &&
+          windowText(GetDlgItem(hub.window, 59)) == L"Double-click" &&
+          windowText(GetDlgItem(hub.window, 47)) == L"Context menu" &&
+          windowText(GetDlgItem(hub.window, 48)) == L"General" &&
           windowText(navigation::desktopGroupsCheck) == L"Desktop boxes" &&
-          windowText(navigation::desktopGroupsGlassCheck) == L"Frosted glass (Acrylic)" &&
           windowText(navigation::desktopGroupsManager) == L"Manage desktop boxes", "English settings labels load");
+    if (navigation::tabsSupported())
+      check(windowText(GetDlgItem(hub.window, 76)) == L"Explorer tabs", "English tabs sidebar label loads");
   }
   wchar_t directory[MAX_PATH]{}, file[MAX_PATH]{};
   check(GetTempPathW(ARRAYSIZE(directory), directory) && GetTempFileNameW(directory, L"fnl", 0, file),

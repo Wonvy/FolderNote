@@ -8,7 +8,12 @@ namespace {
 constexpr wchar_t surfaceKey[] = L"FolderNote.Theme.Surface";
 constexpr wchar_t mutedKey[] = L"FolderNote.Theme.Muted";
 constexpr wchar_t switchKey[] = L"FolderNote.Theme.Switch";
+constexpr wchar_t hoverKey[] = L"FolderNote.Theme.Hover";
 int px(HWND window, int n) { return MulDiv(n, GetDpiForWindow(window), 96); }
+COLORREF mixColor(COLORREF a, COLORREF b, int weight) {
+  const auto channel = [weight](int from, int to) { return (from * (100 - weight) + to * weight) / 100; };
+  return RGB(channel(GetRValue(a), GetRValue(b)), channel(GetGValue(a), GetGValue(b)), channel(GetBValue(a), GetBValue(b)));
+}
 void smoothPill(HDC dc, RECT bounds, COLORREF fill, COLORREF edge, COLORREF background) {
   const int width = bounds.right - bounds.left, height = bounds.bottom - bounds.top;
   const auto inside = [=](int x, int y, int inset) {
@@ -47,16 +52,38 @@ LRESULT CALLBACK controlProc(HWND window, UINT message, WPARAM w, LPARAM l, UINT
   const bool customPaint = combo || (button && (GetWindowLongPtrW(window, GWL_STYLE) & BS_TYPEMASK) != BS_OWNERDRAW);
   if (message == WM_NCDESTROY) {
     RemoveWindowSubclass(window, controlProc, id);
-    RemovePropW(window, surfaceKey); RemovePropW(window, mutedKey); RemovePropW(window, switchKey);
+    RemovePropW(window, surfaceKey); RemovePropW(window, mutedKey);
+    RemovePropW(window, switchKey); RemovePropW(window, hoverKey);
     return DefSubclassProc(window, message, w, l);
   }
+  if (customPaint && message == WM_ERASEBKGND) return 1;
   if (customPaint && message == WM_MOUSEMOVE) {
-    TRACKMOUSEEVENT track{sizeof(track), TME_LEAVE, window, 0}; TrackMouseEvent(&track);
-    InvalidateRect(window, nullptr, FALSE);
+    if (!GetPropW(window, hoverKey)) {
+      SetPropW(window, hoverKey, reinterpret_cast<HANDLE>(1));
+      TRACKMOUSEEVENT track{sizeof(track), TME_LEAVE, window, 0}; TrackMouseEvent(&track);
+      InvalidateRect(window, nullptr, FALSE);
+    }
+    if (button && GetCapture() != window) return 0;
+  }
+  if (customPaint && message == WM_MOUSELEAVE) {
+    if (GetPropW(window, hoverKey)) {
+      RemovePropW(window, hoverKey);
+      InvalidateRect(window, nullptr, FALSE);
+    }
+    if (button && GetCapture() != window) return 0;
   }
   if (message == WM_PAINT && customPaint) {
-    PAINTSTRUCT paint{}; HDC dc = BeginPaint(window, &paint);
+    PAINTSTRUCT paint{}; HDC paintDc = BeginPaint(window, &paint);
     RECT rect{}; GetClientRect(window, &rect);
+    const int bufW = rect.right - rect.left, bufH = rect.bottom - rect.top;
+    HDC bufferDc = bufW > 0 && bufH > 0 ? CreateCompatibleDC(paintDc) : nullptr;
+    HBITMAP bufferBmp = bufferDc ? CreateCompatibleBitmap(paintDc, bufW, bufH) : nullptr;
+    HGDIOBJ oldBmp = bufferBmp ? SelectObject(bufferDc, bufferBmp) : nullptr;
+    if (!oldBmp && bufferDc) {
+      DeleteDC(bufferDc); bufferDc = nullptr;
+      if (bufferBmp) { DeleteObject(bufferBmp); bufferBmp = nullptr; }
+    }
+    HDC dc = bufferDc ? bufferDc : paintDc;
     auto oldFont = SelectObject(dc, reinterpret_cast<HFONT>(SendMessageW(window, WM_GETFONT, 0, 0)));
     const auto &p = theme.colors;
     const bool enabled = IsWindowEnabled(window) != FALSE, focus = GetFocus() == window;
@@ -69,16 +96,28 @@ LRESULT CALLBACK controlProc(HWND window, UINT message, WPARAM w, LPARAM l, UINT
     if (button && GetPropW(window, switchKey)) {
       const bool checked = SendMessageW(window, BM_GETCHECK, 0, 0) == BST_CHECKED;
       const bool keyboardFocus = focus && !(SendMessageW(window, WM_QUERYUISTATE, 0, 0) & UISF_HIDEFOCUS);
-      const int height = px(window, 20), width = px(window, 36);
+      const int height = px(window, 18), width = px(window, 34);
       const int top = (rect.bottom - height) / 2;
       RECT track{rect.right - width - 1, top, rect.right - 1, top + height};
-      const auto fill = checked && enabled ? p.accent : hot ? p.hover : p.background;
-      const auto edge = keyboardFocus || (checked && enabled) ? p.accent : enabled ? p.muted : p.border;
-      smoothPill(dc, track, fill, edge, GetPropW(window, surfaceKey) ? p.surface : p.background);
-      const int inset = px(window, 4), knobSize = height - inset * 2;
+      const COLORREF bg = GetPropW(window, surfaceKey) ? p.surface : p.background;
+      COLORREF fill = p.background, edge = p.border, knobColor = p.muted;
+      if (p.highContrast) {
+        fill = checked && enabled ? p.accent : hot ? p.hover : p.background;
+        edge = keyboardFocus || (checked && enabled) ? p.accent : enabled ? p.muted : p.border;
+        knobColor = checked && enabled ? p.onAccent : enabled ? p.text : p.muted;
+      } else if (checked && enabled) {
+        fill = hot ? mixColor(p.accent, p.onAccent, 10) : p.accent;
+        edge = fill;
+        knobColor = p.onAccent;
+      } else {
+        fill = mixColor(bg, p.muted, p.dark ? (hot ? 46 : 34) : (hot ? 38 : 26));
+        edge = keyboardFocus ? p.accent : fill;
+        knobColor = enabled ? (p.dark ? RGB(236, 239, 244) : RGB(255, 255, 255)) : p.muted;
+      }
+      smoothPill(dc, track, fill, edge, bg);
+      const int inset = px(window, 3), knobSize = height - inset * 2;
       const int x = checked ? track.right - inset - knobSize : track.left + inset;
       RECT knob{x, top + inset, x + knobSize, top + inset + knobSize};
-      const auto knobColor = checked && enabled ? p.onAccent : enabled ? p.text : p.muted;
       smoothPill(dc, knob, knobColor, knobColor, fill);
       rect.right = track.left - px(window, 10);
       text(dc, title, rect, color);
@@ -86,7 +125,9 @@ LRESULT CALLBACK controlProc(HWND window, UINT message, WPARAM w, LPARAM l, UINT
       int size = px(window, 18), top = (rect.bottom - size) / 2;
       RECT box{1, top, size + 1, top + size};
       bool checked = SendMessageW(window, BM_GETCHECK, 0, 0) == BST_CHECKED;
-      rounded(dc, box, checked ? p.accent : (hot ? p.hover : p.field), checked ? p.accent : p.border, px(window, 4));
+      const COLORREF uncheckedBorder = p.highContrast ? p.border
+          : (hot ? mixColor(p.border, p.muted, 30) : mixColor(p.field, p.border, p.dark ? 70 : 78));
+      rounded(dc, box, checked ? p.accent : (hot ? p.hover : p.field), checked ? p.accent : uncheckedBorder, px(window, 4));
       if (checked) {
         auto pen = CreatePen(PS_SOLID, std::max(1, px(window, 2)), p.onAccent);
         auto old = SelectObject(dc, pen);
@@ -98,8 +139,13 @@ LRESULT CALLBACK controlProc(HWND window, UINT message, WPARAM w, LPARAM l, UINT
     } else {
       bool primary = button && (style & BS_TYPEMASK) == BS_DEFPUSHBUTTON;
       bool down = button && (SendMessageW(window, BM_GETSTATE, 0, 0) & BST_PUSHED);
-      rounded(dc, rect, primary && enabled ? p.accent : down ? p.pressed : hot ? p.hover : p.field,
-              focus ? p.accent : p.border, px(window, 6));
+      const COLORREF ctrlFill = p.highContrast
+          ? (primary && enabled ? p.accent : down ? p.pressed : hot ? p.hover : p.field)
+          : (primary && enabled ? p.accent : down ? p.pressed : hot ? mixColor(p.field, p.hover, p.dark ? 75 : 55) : p.field);
+      const COLORREF ctrlBorder = p.highContrast
+          ? (focus ? p.accent : p.border)
+          : (focus ? p.accent : (hot && enabled ? mixColor(p.border, p.muted, p.dark ? 32 : 28) : mixColor(p.field, p.border, p.dark ? 70 : 78)));
+      rounded(dc, rect, ctrlFill, ctrlBorder, px(window, 6));
       rect.left += px(window, 12); rect.right -= px(window, combo ? 32 : 12);
       text(dc, title, rect, primary && enabled ? p.onAccent : color,
            DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX | (combo ? DT_LEFT : DT_CENTER));
@@ -111,12 +157,19 @@ LRESULT CALLBACK controlProc(HWND window, UINT message, WPARAM w, LPARAM l, UINT
         SelectObject(dc, old); DeleteObject(pen);
       }
     }
-    SelectObject(dc, oldFont); EndPaint(window, &paint); return 0;
+    SelectObject(dc, oldFont);
+    if (bufferDc) {
+      BitBlt(paintDc, 0, 0, bufW, bufH, bufferDc, 0, 0, SRCCOPY);
+      SelectObject(bufferDc, oldBmp);
+      DeleteObject(bufferBmp);
+      DeleteDC(bufferDc);
+    }
+    EndPaint(window, &paint); return 0;
   }
   auto result = DefSubclassProc(window, message, w, l);
   if (customPaint) {
     switch (message) {
-    case WM_MOUSELEAVE: case WM_ENABLE: case WM_SETFOCUS: case WM_KILLFOCUS:
+    case WM_ENABLE: case WM_SETFOCUS: case WM_KILLFOCUS:
     case BM_SETCHECK: case BM_SETSTATE: case CB_SETCURSEL: case WM_SETTEXT:
     case WM_LBUTTONDOWN: case WM_LBUTTONUP: case WM_KEYDOWN: case WM_KEYUP:
     case WM_UPDATEUISTATE: InvalidateRect(window, nullptr, FALSE); break;
