@@ -43,6 +43,7 @@ struct Lock {
     if (ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(), SDDL_REVISION_1, &sd, nullptr))
       sa.lpSecurityDescriptor = sd;
     handle = CreateMutexW(sa.lpSecurityDescriptor ? &sa : nullptr, FALSE, name.c_str());
+    if (!handle && sd) handle = CreateMutexW(nullptr, FALSE, name.c_str());
     if (sd) LocalFree(sd);
     if (!handle) fn::fail(lang::text(L"无法读取快速文件夹"));
     DWORD result = WaitForSingleObject(handle, 1000);

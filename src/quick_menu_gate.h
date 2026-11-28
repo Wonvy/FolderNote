@@ -40,6 +40,7 @@ public:
     PSECURITY_DESCRIPTOR sd = sameUserMediumLabelSecurity();
     SECURITY_ATTRIBUTES sa{sizeof(sa), sd, FALSE};
     handle = CreateMutexW(sd ? &sa : nullptr, FALSE, name);
+    if (!handle && sd) handle = CreateMutexW(nullptr, FALSE, name);
     if (!handle) failure = GetLastError();
     if (sd) LocalFree(sd);
   }

@@ -81,6 +81,7 @@ HANDLE createSharedLogMutex() noexcept {
   }
   SECURITY_ATTRIBUTES sa{sizeof(sa), sd, FALSE};
   HANDLE mutex = CreateMutexW(sd ? &sa : nullptr, FALSE, logMutexName);
+  if (!mutex && sd) mutex = CreateMutexW(nullptr, FALSE, logMutexName);
   if (sd) LocalFree(sd);
   return mutex;
 }

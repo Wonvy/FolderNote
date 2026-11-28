@@ -1508,7 +1508,7 @@ static void routingTests() {
     SendMessageW(destination.window, tabs::actionMessage, tabs::Duplicate, 0); pump();
     destination.finish(second);
     for (size_t i = 2; i < tabs::Model::limit; ++i) {
-      SendMessageW(destination.window, tabs::actionMessage, tabs::Duplicate, 1); pump();
+      SendMessageW(destination.window, tabs::actionMessage, tabs::Duplicate, LPARAM(i - 1)); pump();
     }
     require(destination.count() == int(tabs::Model::limit) && TabCtrl_GetCurSel(destination.control) == int(tabs::Model::limit) - 1,
             "destination reaches max tab limit with target folder at index zero");
