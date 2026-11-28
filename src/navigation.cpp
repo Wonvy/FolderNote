@@ -261,6 +261,7 @@ static HWND notesCheck;
 static HWND navigationCheck;
 static HWND quickCheck;
 static HWND dialogCheck;
+static HWND elevatedDialogCheck;
 static HWND tabsCheck;
 static HWND preferNewTabCheck;
 static HWND desktopGroupsCheck, desktopGroupsManager, quickFindCheck;
@@ -353,7 +354,8 @@ static constexpr int dblClickParent = 10, dblClickBack = 145;
 static constexpr int dblClickLabel = 130, dblClickDesc = 131, quickDesc = 132, boxDesc = 133,
                      tabsDesc = 134, tabsNewTabDesc = 135, diagnosticsLabel = 136, diagnosticsDesc = 137,
                      notesDesc = 138, notesMenuLabel = 139, notesCmdEdit = 140, notesCmdClear = 141,
-                     notesCmdRepair = 142, notesTip = 143, notesOpenContextMenu = 144;
+                     notesCmdRepair = 142, notesTip = 143, notesOpenContextMenu = 144,
+                     elevatedDialogToggle = 146;
 struct FeatureCard {
   SettingsPage detailPage = SettingsPage::Features;
   HWND toggle = nullptr;
@@ -1105,9 +1107,14 @@ static void loadSettingsToControls(HWND owner) {
   EnableWindow(dblClickParentRadio, action != Action::Off);
   EnableWindow(dblClickBackRadio, action != Action::Off);
   const bool quick = quickEnabled();
+  const bool dialogs = dialogQuickEnabled();
   SendMessageW(quickCheck, BM_SETCHECK, quick ? BST_CHECKED : BST_UNCHECKED, 0);
-  SendMessageW(dialogCheck, BM_SETCHECK, dialogQuickEnabled() ? BST_CHECKED : BST_UNCHECKED, 0);
+  SendMessageW(dialogCheck, BM_SETCHECK, dialogs ? BST_CHECKED : BST_UNCHECKED, 0);
   EnableWindow(dialogCheck, quick);
+  if (elevatedDialogCheck) {
+    SendMessageW(elevatedDialogCheck, BM_SETCHECK, elevatedDialogQuickEnabled() ? BST_CHECKED : BST_UNCHECKED, 0);
+    EnableWindow(elevatedDialogCheck, quick && dialogs);
+  }
   const bool boxes = desktop_groups::enabled();
   SendMessageW(desktopGroupsCheck, BM_SETCHECK, boxes ? BST_CHECKED : BST_UNCHECKED, 0);
   updateDesktopGroupsManager();
@@ -1152,6 +1159,7 @@ static void commitSettings(HWND owner, CommitScope scope) {
     EnableWindow(dblClickParentRadio, navOn);
     EnableWindow(dblClickBackRadio, navOn);
     EnableWindow(dialogCheck, quick);
+    if (elevatedDialogCheck) EnableWindow(elevatedDialogCheck, quick && dialogs);
     if (preferNewTabCheck) EnableWindow(preferNewTabCheck, tabs);
     refreshNotesControls(owner);
     updateDesktopGroupsManager();
@@ -1369,7 +1377,11 @@ static void layoutSettings() {
   // QuickFolders page
   const int dialogWidth = std::min(contentWidth, measureControlWidth(dialogCheck, font, scale(34)));
   placeForPage(SettingsPage::QuickFolders, 15, 0, 78, dialogWidth, scale(26));
-  placeForPage(SettingsPage::QuickFolders, quickDesc, 0, 108, contentWidth, scale(34));
+  const int elevatedWidth = elevatedDialogCheck
+      ? std::min(std::max(0, contentWidth - scale(24)), measureControlWidth(elevatedDialogCheck, font, scale(34)))
+      : 0;
+  placeForPage(SettingsPage::QuickFolders, elevatedDialogToggle, scale(24), 108, elevatedWidth, scale(26));
+  placeForPage(SettingsPage::QuickFolders, quickDesc, 0, 138, contentWidth, scale(34));
 
   // Tabs page
   if (preferNewTabCheck) {
@@ -1442,7 +1454,7 @@ static void layoutSettings() {
   const bool overflow = bodyHeight < contentHeight();
   const int contentLeft = scale(sidebar + 5);
   MoveWindow(body, contentLeft, scale(86), width - contentLeft - (overflow ? scale(20) : 0), bodyHeight, TRUE);
-  MoveWindow(managerPage, contentLeft, scale(146), width - contentLeft, std::max(scale(120), height - scale(152)), TRUE);
+  MoveWindow(managerPage, contentLeft, scale(176), width - contentLeft, std::max(scale(120), height - scale(182)), TRUE);
   MoveWindow(contextPage, contentLeft, 0, width - contentLeft, height, TRUE);
   MoveWindow(entriesPage, contentLeft, scale(76), width - contentLeft, std::max(0, height - scale(76)), TRUE);
   settingsScroll.move(width - scale(18), scale(86), scale(12), bodyHeight);
@@ -2049,6 +2061,7 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
 
     // QuickFolders detail page controls
     dialogCheck = add(h, L"BUTTON", lang::text(L"同时支持文件与文件夹选择对话框"), BS_AUTOCHECKBOX | WS_GROUP | WS_TABSTOP, 15);
+    elevatedDialogCheck = add(h, L"BUTTON", lang::text(L"支持管理员权限软件的文件对话框（需管理员授权）"), BS_AUTOCHECKBOX | WS_TABSTOP, elevatedDialogToggle);
     ui::muted(add(h, L"STATIC", lang::text(L"桌面和资源管理器中均可使用，悬停展开子目录。选中项目后按中键支持复制或移动。"), SS_NOPREFIX, quickDesc));
 
     // Tabs detail page controls (Win10 only)
@@ -2221,6 +2234,23 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
       commitSettings(h, CommitScope::Navigation);
     } else if (LOWORD(w) == 15 && HIWORD(w) == BN_CLICKED) {
       commitSettings(h, CommitScope::Quick);
+    } else if (LOWORD(w) == elevatedDialogToggle && HIWORD(w) == BN_CLICKED && elevatedDialogCheck) {
+      const bool wantEnabled = SendMessageW(elevatedDialogCheck, BM_GETCHECK, 0, 0) == BST_CHECKED;
+      if (!IsWindowVisible(h)) {
+        setElevatedDialogQuickEnabled(wantEnabled);
+      } else {
+        try {
+          if (!quick::configureElevatedHelper(quick::executable(), wantEnabled)) {
+            loadSettingsToControls(h);
+          }
+        } catch (const fn::Error &e) {
+          loadSettingsToControls(h);
+          MessageBoxW(h, e.message.c_str(), L"FolderNote", MB_OK | MB_ICONERROR);
+        } catch (...) {
+          loadSettingsToControls(h);
+          MessageBoxW(h, lang::text(L"操作未完成，请稍后重试。"), L"FolderNote", MB_OK | MB_ICONERROR);
+        }
+      }
     } else if (LOWORD(w) == 21 && HIWORD(w) == BN_CLICKED && preferNewTabCheck) {
       commitSettings(h, CommitScope::Tabs);
     } else if (LOWORD(w) == 17 && HIWORD(w) == CBN_SELCHANGE) {
@@ -2373,7 +2403,7 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     font = sidebarActiveFont = brandFont = headingFont = cardTitleFont = cardDescFont = cardIconFont = smallFont = symbolFont = nullptr;
     body = managerPage = contextPage = entriesPage = settingsWindow = nullptr;
     cards = {}; sidebarDividers.clear(); hoveredCard = -1; hoveredCardAction = -1; hoveredSidebarId = 0;
-    notesCheck = navigationCheck = dblClickParentRadio = dblClickBackRadio = quickCheck = dialogCheck =
+    notesCheck = navigationCheck = dblClickParentRadio = dblClickBackRadio = quickCheck = dialogCheck = elevatedDialogCheck =
         tabsCheck = preferNewTabCheck = desktopGroupsCheck = desktopGroupsManager = quickFindCheck = themeChoice = nullptr;
     break;
   }

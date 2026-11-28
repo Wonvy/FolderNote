@@ -182,3 +182,4 @@
 {L"右键菜单命令", L"Context menu commands"},
 {L"在资源管理器切换到详细信息视图，右键列标题并勾选“备注”即可直接查看文件夹备注。", L"Switch File Explorer to Details view, right-click a column header, and enable the Comments column to view folder notes."},
 {L"右键菜单管理 →", L"Context menu manager →"},
+{L"支持管理员权限软件的文件对话框（需管理员授权）", L"Support file dialogs in administrator apps (requires administrator permission)"},

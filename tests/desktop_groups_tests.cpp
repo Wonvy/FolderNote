@@ -1112,6 +1112,29 @@ void exercisePanelAndDesktopFlows(const fn::fs::path &root) {
   check(!PeekMessageW(&rejectedMsg, panel.window, rejectedMessage, rejectedMessage, PM_REMOVE),
         "assigning a path already moved out of .desktop does not post a false error dialog");
 }
+
+void exerciseBoxSurfacePalette() {
+  using namespace desktop_groups;
+  const ui::Palette lightBase{RGB(240, 240, 240), RGB(255, 255, 255), RGB(255, 255, 255), RGB(229, 229, 229),
+                              RGB(214, 214, 214), RGB(214, 214, 214), RGB(12, 12, 12), RGB(110, 110, 110),
+                              RGB(0, 120, 215), RGB(255, 255, 255), false, false};
+  const auto fromLight = boxSurfacePalette(lightBase);
+  check(fromLight.dark && fromLight.text == RGB(255, 255, 255) && fromLight.muted == RGB(204, 204, 204),
+        "light system theme forces pure white text and light muted text on desktop boxes");
+
+  const ui::Palette darkBase{RGB(25, 25, 25), RGB(32, 32, 32), RGB(32, 32, 32), RGB(53, 53, 53),
+                             RGB(64, 64, 64), RGB(64, 64, 64), RGB(240, 240, 240), RGB(166, 166, 166),
+                             RGB(0, 120, 215), RGB(255, 255, 255), true, false};
+  const auto fromDark = boxSurfacePalette(darkBase);
+  check(fromDark.dark && fromDark.text == RGB(255, 255, 255) && fromDark.muted == RGB(204, 204, 204),
+        "dark system theme uses pure white text and light muted text on desktop boxes");
+
+  const ui::Palette hcBase{RGB(0, 0, 0), RGB(0, 0, 0), RGB(0, 0, 0), RGB(30, 144, 255), RGB(30, 144, 255),
+                           RGB(255, 255, 255), RGB(255, 255, 0), RGB(192, 192, 192), RGB(30, 144, 255),
+                           RGB(0, 0, 0), false, true};
+  const auto keptHc = boxSurfacePalette(hcBase);
+  check(keptHc.highContrast && keptHc.text == hcBase.text, "high contrast mode preserves explicit system colors");
+}
 }
 
 int main() {
@@ -1125,6 +1148,7 @@ int main() {
     exerciseNewBoxEnhancements(files.root / L"enhancements-test");
     exerciseTransferProgress(files.root / L"transfer-test");
     exercisePanelAndDesktopFlows(files.root / L"panel-flow-test");
+    exerciseBoxSurfacePalette();
     exerciseShadow();
     exerciseThumbnailMask();
     exerciseThumbnailFit(files.root);

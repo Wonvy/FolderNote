@@ -71,4 +71,14 @@ bool dialogQuickEnabled() {
       RRF_RT_REG_DWORD, nullptr, &value, &bytes);
   return result == ERROR_FILE_NOT_FOUND || result == ERROR_PATH_NOT_FOUND || (result == ERROR_SUCCESS && value == 1);
 }
+bool elevatedDialogQuickEnabled() {
+  DWORD value = 0, bytes = sizeof(value);
+  return RegGetValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"QuickFoldersElevatedDialogs",
+      RRF_RT_REG_DWORD, nullptr, &value, &bytes) == ERROR_SUCCESS && value == 1;
+}
+void setElevatedDialogQuickEnabled(bool enabled) {
+  const DWORD value = enabled ? 1UL : 0UL;
+  RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"QuickFoldersElevatedDialogs",
+      REG_DWORD, &value, sizeof(value));
+}
 } // namespace navigation

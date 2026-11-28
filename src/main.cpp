@@ -331,6 +331,12 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
     CoUninitialize();
     return result;
   }
+  int elevatedConfigResult = 0;
+  if (quick::handleElevatedConfigureCommand(argc, argv, elevatedConfigResult)) {
+    LocalFree(argv);
+    CoUninitialize();
+    return elevatedConfigResult;
+  }
   const bool desktopDelegated = argc == 3 && std::wstring_view(argv[2]) == L"--from-desktop-shell";
   const bool helperSupervised = argc == 3 && std::wstring_view(argv[2]) == L"--supervised";
   if ((argc == 2 || desktopDelegated) && (std::wstring_view(argv[1]) == L"--desktop-groups" ||
@@ -365,6 +371,13 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
     }
     quick::setInProcessMenu(&quick::menu);
     auto result = quick::helper(inst, desktopDelegated, helperSupervised);
+    CoUninitialize();
+    return result;
+  }
+  if ((argc == 2 || helperSupervised) && std::wstring_view(argv[1]) == L"--quick-elevated-helper") {
+    LocalFree(argv);
+    quick::setInProcessMenu(&quick::menu);
+    auto result = quick::elevatedHelper(inst, helperSupervised);
     CoUninitialize();
     return result;
   }

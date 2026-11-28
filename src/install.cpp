@@ -255,6 +255,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
 #endif
       navigation::stop();
 #ifndef FOLDERNOTE_UNINSTALL_TEST
+      try {
+        quick::removeElevatedHelper(quick::executable());
+      } catch (const fn::Error &) {
+        if (quick::elevatedTaskInstalled()) throw;
+      }
       quick::stopHelper();
       if (!desktop_groups::stop())
         throw fn::Error{lang::text(L"无法更新桌面盒子启动项。")};
@@ -381,6 +386,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
       navigation::reload();
 #ifndef FOLDERNOTE_UNINSTALL_TEST
       quick::syncHelper((active / L"FolderNote.exe").native());
+      quick::syncElevatedHelper((active / L"FolderNote.exe").native(), !automaticUpdate);
       if (!desktop_groups::sync((active / L"FolderNote.exe").native()))
         throw fn::Error{lang::text(L"无法更新桌面盒子启动项。")};
 #endif

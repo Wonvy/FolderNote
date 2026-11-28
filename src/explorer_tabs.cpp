@@ -446,8 +446,11 @@ class Band final : public IDeskBand2, public IObjectWithSite, public IPersistStr
     if (!routing::enabled() || source == window || !routing::bandWindow(source) ||
         GetAncestor(source, GA_ROOT) == frame) return FALSE;
     if (changing || waiting || incoming.peer || outgoing.peer || model.items.empty()) return 2;
-    if (model.items.size() >= Model::limit) return FALSE;
     routing::Packet packet; if (!routing::decode(data, packet)) return FALSE;
+    const bool alreadyOpen = std::any_of(model.items.begin(), model.items.end(), [&](const Location &item) {
+      return item.id == packet.folder;
+    });
+    if (model.items.size() >= Model::limit && !alreadyOpen) return FALSE;
     incoming = {source, std::move(packet), epoch, navigationRevision, GetTickCount64() + 20000};
     importStarted = false;
     if (!PostMessageW(window, routing::importMessage, 0, 0)) { incoming = {}; return FALSE; }
@@ -461,8 +464,32 @@ class Band final : public IDeskBand2, public IObjectWithSite, public IPersistStr
     auto destination = location(reinterpret_cast<PCIDLIST_ABSOLUTE>(request.packet.folder.data()));
     if (request.generation != epoch || request.navigation != navigationRevision ||
         incoming.packet.token != request.packet.token || !window || changing || waiting) return;
+    auto existing = model.find(destination);
+    if (!existing && !destination.id.empty()) {
+      const auto snapshot = model.items;
+      const auto activeIndex = model.active;
+      const auto matches = [&](size_t index) {
+        return !snapshot[index].id.empty() &&
+            ILIsEqual(reinterpret_cast<PCIDLIST_ABSOLUTE>(snapshot[index].id.data()),
+                      reinterpret_cast<PCIDLIST_ABSOLUTE>(destination.id.data()));
+      };
+      if (activeIndex < snapshot.size() && matches(activeIndex)) existing = activeIndex;
+      else {
+        for (size_t i = 0; i < snapshot.size(); ++i) {
+          if (i != activeIndex && matches(i)) { existing = i; break; }
+        }
+      }
+      if (request.generation != epoch || request.navigation != navigationRevision ||
+          incoming.packet.token != request.packet.token || !window || changing || waiting) return;
+      if (existing && (*existing >= model.items.size() || model.items[*existing].id != snapshot[*existing].id))
+        existing = model.find(destination);
+    }
     auto next = model;
-    if (!next.add(std::move(destination))) { incoming = {}; return; }
+    if (existing) {
+      if (!next.select(*existing)) { incoming = {}; return; }
+    } else if (!next.add(std::move(destination))) {
+      incoming = {}; return;
+    }
     importStarted = true;
     if (!go(std::move(next))) { incoming = {}; importStarted = false; }
     else if (incoming.peer == request.peer && incoming.packet.token == request.packet.token && epoch == request.generation)
@@ -495,8 +522,8 @@ class Band final : public IDeskBand2, public IObjectWithSite, public IPersistStr
     if (!active || FAILED(active->QueryActiveShellView(&view)) || !view || viewVersion != viewRevision) { retry(); return; }
     if (epoch != generation || revision != navigationRevision) { cancel(); return; }
     if (request.packet.selected.empty()) {
-      // Adding the current folder creates a tab without BrowseObject. Clear
-      // that existing view's selection to match the newly opened window.
+      // Activating the current folder tab skips BrowseObject. Clear that
+      // existing view's selection to match the newly opened window.
       std::vector<std::vector<BYTE>> selected;
       if (!selection(active.Get(), selected) || !selected.empty()) {
         if (FAILED(view->SelectItem(nullptr, SVSI_DESELECTOTHERS))) { retry(); return; }

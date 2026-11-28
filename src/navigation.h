@@ -18,6 +18,8 @@ bool noteCommandHidden(int operation);
 void setNoteCommandHidden(int operation, bool hidden);
 bool quickEnabled();
 bool dialogQuickEnabled();
+bool elevatedDialogQuickEnabled();
+void setElevatedDialogQuickEnabled(bool enabled);
 bool tabsSupported();
 bool tabsEnabled();
 bool preferNewTabEnabled();

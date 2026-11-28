@@ -441,6 +441,7 @@ struct Panel {
   int backgroundBlur() const;
   bool backgroundGlass() const;
   COLORREF backgroundColor() const;
+  ui::Palette surfacePalette() const;
   void applyBackground();
   bool saveColor(std::optional<COLORREF> tint);
   bool saveSpacing(int spacing);

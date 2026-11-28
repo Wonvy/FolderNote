@@ -1,6 +1,7 @@
 #pragma once
 #include <windows.h>
 #include <algorithm>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -25,6 +26,13 @@ struct Model {
     if (value.id.empty() || items.size() >= limit) return false;
     auto copy = value; items.insert(items.begin() + (items.empty() ? 0 : active + 1), std::move(copy));
     if (items.size() > 1) ++active; return true;
+  }
+  std::optional<size_t> find(const Location &value) const {
+    if (value.id.empty()) return std::nullopt;
+    if (active < items.size() && items[active] == value) return active;
+    for (size_t i = 0; i < items.size(); ++i)
+      if (items[i] == value) return i;
+    return std::nullopt;
   }
   bool select(size_t index) { if (index >= items.size()) return false; active = index; return true; }
   bool close(size_t index) {

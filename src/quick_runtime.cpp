@@ -18,7 +18,12 @@
 namespace quick {
 namespace {
 constexpr wchar_t helperClass[] = L"FolderNote.QuickFolders.Helper.v1";
+constexpr wchar_t elevatedHelperClass[] = L"FolderNote.QuickFolders.ElevatedHelper.v1";
+constexpr wchar_t elevatedSupervisorClass[] = L"FolderNote.QuickFolders.ElevatedSupervisor.v1";
 constexpr wchar_t readyProperty[] = L"FolderNote.QuickFolders.Ready.v2";
+constexpr wchar_t elevatedReadyProperty[] = L"FolderNote.QuickFolders.ElevatedReady.v1";
+constexpr wchar_t elevatedMutexName[] = L"Local\\FolderNote.QuickFolders.ElevatedHelper.v1";
+constexpr wchar_t elevatedStopValue[] = L"ElevatedHelperStopGeneration";
 constexpr wchar_t propMouseHook[] = L"FolderNote.QuickFolders.MouseHook.v1";
 constexpr wchar_t propKeyboardHook[] = L"FolderNote.QuickFolders.KeyboardHook.v1";
 constexpr wchar_t propRehookCount[] = L"FolderNote.QuickFolders.RehookCount.v1";
@@ -44,6 +49,13 @@ std::atomic<unsigned> hookRehookCount{0};
 std::atomic<unsigned> lastRehookReasonCode{0};
 std::atomic<DWORD> lastRehookTick{0};
 HWND receiver = nullptr;
+bool elevatedCompanion = false;
+DWORD readElevatedStopGeneration() noexcept {
+  DWORD value = 0, bytes = sizeof(value);
+  RegGetValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", elevatedStopValue,
+               RRF_RT_REG_DWORD, nullptr, &value, &bytes);
+  return value;
+}
 void publishHookInstallState(bool mouseInstalled, bool keyboardInstalled) noexcept {
   if (!receiver) return;
   if (mouseInstalled) SetPropW(receiver, propMouseHook, reinterpret_cast<HANDLE>(1));
@@ -141,11 +153,19 @@ DWORD integrity(DWORD pid) {
 bool eligibleTarget(HWND window, DWORD expectedProcess = 0) {
   DWORD pid = 0; GetWindowThreadProcessId(window, &pid);
   if (!window || !pid || (expectedProcess && pid != expectedProcess) || !navigation::quickEnabled()) return false;
+  if (elevatedCompanion) {
+    if (!navigation::dialogQuickEnabled() || !navigation::elevatedDialogQuickEnabled() || !isFileDialog(window))
+      return false;
+    const auto targetIntegrity = integrity(pid), ownIntegrity = integrity(GetCurrentProcessId());
+    return targetIntegrity != 0xffffffff && ownIntegrity != 0xffffffff &&
+           targetIntegrity > SECURITY_MANDATORY_MEDIUM_RID && targetIntegrity <= ownIntegrity;
+  }
   if (!isDesktop(window) && (!navigation::dialogQuickEnabled() || (!isExplorer(window) && !isFileDialog(window)))) return false;
   const auto targetIntegrity = integrity(pid), ownIntegrity = integrity(GetCurrentProcessId());
   return targetIntegrity != 0xffffffff && ownIntegrity != 0xffffffff && targetIntegrity <= ownIntegrity;
 }
 HWND searchTarget(HWND window) {
+  if (elevatedCompanion) return nullptr;
   HWND search = nullptr;
   const auto findOptions = quick_find::settings();
   if ((findOptions.explorer && (isDesktop(window) || isExplorer(window))) || (findOptions.dialogs && isFileDialog(window))) {
@@ -189,6 +209,12 @@ void updateTarget() {
   HWND window = GetForegroundWindow();
   eligible.store(eligibleTarget(window) ? window : nullptr);
   const bool dialogWindow = isFileDialog(window);
+  if (elevatedCompanion) {
+    const bool track = eligible.load() == window && dialogWindow;
+    dialog::observeHistory(track ? window : nullptr);
+    watchDialog(track ? window : nullptr);
+    return;
+  }
   dialog::observeHistory(eligible.load() == window && dialogWindow ? window : nullptr);
   quick_find::external::target(searchTarget(window));
   watchDialog(dialogWindow ? window : nullptr);
@@ -215,12 +241,47 @@ LRESULT CALLBACK mouseHook(int code, WPARAM message, LPARAM parameter) {
       publishedReceiver = receiver;
       SetPropW(receiver, propMouseTick, reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(publishedTick)));
     }
-    quick_find::external::mouse(message, *reinterpret_cast<const MSLLHOOKSTRUCT *>(parameter));
+    if (!elevatedCompanion) {
+      quick_find::external::mouse(message, *reinterpret_cast<const MSLLHOOKSTRUCT *>(parameter));
+    }
   }
   if (code == HC_ACTION && (message == WM_MBUTTONDOWN || message == WM_MBUTTONDBLCLK ||
                             message == WM_MBUTTONUP || (message == WM_MOUSEMOVE && middle.target))) {
     const auto *mouse = reinterpret_cast<MSLLHOOKSTRUCT *>(parameter);
     if (message == WM_MBUTTONUP && middle.suppressUp) { middle = {}; return 1; }
+    if (elevatedCompanion) {
+      if (!navigation::quickEnabled() || !navigation::dialogQuickEnabled() || !navigation::elevatedDialogQuickEnabled()) {
+        middle = {};
+        return CallNextHookEx(nullptr, code, message, parameter);
+      }
+      const HWND under = WindowFromPoint(mouse->pt), root = GetAncestor(under, GA_ROOT);
+      const bool allowed = !((GetAsyncKeyState(VK_CONTROL) | GetAsyncKeyState(VK_SHIFT) | GetAsyncKeyState(VK_MENU) |
+                             GetAsyncKeyState(VK_LWIN) | GetAsyncKeyState(VK_RWIN)) & 0x8000);
+      HWND foreground = GetForegroundWindow();
+      if (message == WM_MBUTTONDOWN || message == WM_MBUTTONDBLCLK) {
+        middle = {};
+        if (remoteInputCaptured()) return CallNextHookEx(nullptr, code, message, parameter);
+        if (allowed && root && root == foreground && classIs(root, L"#32770")) {
+          middle.target = root; middle.down = mouse->pt; middle.desktopBox = false;
+          GetWindowThreadProcessId(root, &middle.process);
+          middle.swallowed = (root == foreground && eligible.load() == root);
+        }
+        if (middle.swallowed) return 1;
+      } else if (middle.target) {
+        middle.dragged = middle.dragged || !allowed || !middleClickWithin(middle.down, mouse->pt);
+        if (message == WM_MBUTTONUP) {
+          const auto completed = middle; middle = {};
+          DWORD process = 0; GetWindowThreadProcessId(foreground, &process);
+          if (!completed.dragged && root == completed.target && foreground == completed.target &&
+              process == completed.process) {
+            auto request = new (std::nothrow) MenuRequest{completed.target, completed.process, mouse->pt, false};
+            if (request && !PostMessageW(receiver, showMessage, 0, reinterpret_cast<LPARAM>(request))) delete request;
+          }
+          if (completed.swallowed) return 1;
+        }
+      }
+      return CallNextHookEx(nullptr, code, message, parameter);
+    }
     const HWND under = WindowFromPoint(mouse->pt), root = GetAncestor(under, GA_ROOT);
     if (localInputSurface(under, root)) {
       // Old loaded bands close on bare UP. Do not deliver an orphan release
@@ -452,6 +513,19 @@ void showMenu(HINSTANCE instance, HWND target, POINT point) {
       menuBusy = false;
     }
   }
+  if (elevatedCompanion) {
+    try {
+      const auto exe = fn::modulePath().native();
+      auto command = L"\"" + exe + L"\" --quick-menu " + std::to_wstring(reinterpret_cast<UINT_PTR>(target)) +
+                     L" 0 " + std::to_wstring(point.x) + L" " + std::to_wstring(point.y);
+      STARTUPINFOW startup{sizeof(startup)}; PROCESS_INFORMATION process{};
+      if (CreateProcessW(exe.c_str(), command.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &startup, &process)) {
+        AllowSetForegroundWindow(process.dwProcessId);
+        CloseHandle(process.hThread); CloseHandle(process.hProcess);
+      }
+    } catch (...) {}
+    return;
+  }
   launchMenu(target, nullptr, point);
 }
 LRESULT CALLBACK helperProc(HWND window, UINT message, WPARAM w, LPARAM l) {
@@ -459,7 +533,7 @@ LRESULT CALLBACK helperProc(HWND window, UINT message, WPARAM w, LPARAM l) {
   if (tabs::routing::message(window, message, w, l, routingResult)) return routingResult;
   if (message == WM_CLOSE) { DestroyWindow(window); return 0; }
   if (message == WM_DESTROY) {
-    for (const auto *prop : {readyProperty, propMouseHook, propKeyboardHook, propRehookCount,
+    for (const auto *prop : {readyProperty, elevatedReadyProperty, propMouseHook, propKeyboardHook, propRehookCount,
                              propRehookReason, propRehookTick, propMouseTick, propKeyboardTick}) {
       RemovePropW(window, prop);
     }
@@ -847,6 +921,177 @@ int helper(HINSTANCE instance, bool delegated, bool supervised) {
   watchDialog(nullptr);
   if (IsWindow(receiver)) DestroyWindow(receiver);
   receiver = nullptr;
+  ReleaseMutex(mutex); CloseHandle(mutex);
+  joinMenuThread();
+  return ready ? 0 : 1;
+}
+void signalElevatedHelperStop() noexcept {
+  const DWORD next = readElevatedStopGeneration() + 1;
+  RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", elevatedStopValue,
+                  REG_DWORD, &next, sizeof(next));
+}
+bool elevatedHelperRunning() noexcept {
+  const auto window = FindWindowExW(HWND_MESSAGE, nullptr, elevatedHelperClass, nullptr);
+  return window && GetPropW(window, elevatedReadyProperty) != nullptr;
+}
+bool stopElevatedHelper() {
+  signalElevatedHelperStop();
+  HANDLE supProcess = nullptr;
+  if (HWND supWindow = FindWindowExW(HWND_MESSAGE, nullptr, elevatedSupervisorClass, nullptr)) {
+    DWORD supPid = 0; GetWindowThreadProcessId(supWindow, &supPid);
+    supProcess = supPid ? OpenProcess(SYNCHRONIZE, FALSE, supPid) : nullptr;
+    PostMessageW(supWindow, WM_CLOSE, 0, 0);
+  }
+  bool posted = true;
+  if (HWND window = FindWindowExW(HWND_MESSAGE, nullptr, elevatedHelperClass, nullptr)) {
+    DWORD pid = 0; GetWindowThreadProcessId(window, &pid);
+    HANDLE process = pid ? OpenProcess(SYNCHRONIZE, FALSE, pid) : nullptr;
+    posted = PostMessageW(window, WM_CLOSE, 0, 0) != FALSE;
+    if (process) { if (posted) WaitForSingleObject(process, 2000); CloseHandle(process); }
+  }
+  if (supProcess) {
+    WaitForSingleObject(supProcess, 2000);
+    CloseHandle(supProcess);
+  }
+  return posted && !FindWindowExW(HWND_MESSAGE, nullptr, elevatedHelperClass, nullptr) &&
+         !FindWindowExW(HWND_MESSAGE, nullptr, elevatedSupervisorClass, nullptr);
+}
+namespace {
+int superviseElevatedHelper(HINSTANCE instance) {
+  std::wstring exe;
+  try { exe = fn::modulePath().native(); } catch (...) { return 1; }
+  struct SupervisorState {
+    HANDLE stopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    HWND window = nullptr;
+    ~SupervisorState() {
+      if (window && IsWindow(window)) DestroyWindow(window);
+      if (stopEvent) CloseHandle(stopEvent);
+    }
+  } state;
+  if (!state.stopEvent) return 1;
+  WNDCLASSW cls{}; cls.lpfnWndProc = supervisorProc; cls.hInstance = instance; cls.lpszClassName = elevatedSupervisorClass;
+  RegisterClassW(&cls);
+  state.window = CreateWindowExW(0, elevatedSupervisorClass, L"", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, instance, nullptr);
+  if (state.window) SetWindowLongPtrW(state.window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(state.stopEvent));
+
+  const DWORD startStopGen = readElevatedStopGeneration();
+  guard::log(L"管理员文件对话框后台守护进程启动");
+  DWORD windowStart = GetTickCount();
+  int restarts = 0;
+  for (;;) {
+    if (!navigation::elevatedDialogQuickEnabled() || readElevatedStopGeneration() != startStopGen ||
+        WaitForSingleObject(state.stopEvent, 0) == WAIT_OBJECT_0) return 0;
+    auto command = L"\"" + exe + L"\" --quick-elevated-helper --supervised";
+    STARTUPINFOW startup{sizeof(startup)};
+    startup.dwFlags = STARTF_FORCEOFFFEEDBACK;
+    PROCESS_INFORMATION process{};
+    if (!CreateProcessW(exe.c_str(), command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process)) {
+      guard::log(L"无法启动管理员对话框后台组件，错误 " + std::to_wstring(GetLastError()));
+      return 1;
+    }
+    CloseHandle(process.hThread);
+    const DWORD wait = waitWithPump(state.stopEvent, process.hProcess, INFINITE);
+    if (wait == WAIT_OBJECT_0) {
+      if (HWND childWindow = FindWindowExW(HWND_MESSAGE, nullptr, elevatedHelperClass, nullptr))
+        PostMessageW(childWindow, WM_CLOSE, 0, 0);
+      WaitForSingleObject(process.hProcess, 2000);
+      CloseHandle(process.hProcess);
+      return 0;
+    }
+    DWORD code = 1;
+    GetExitCodeProcess(process.hProcess, &code);
+    CloseHandle(process.hProcess);
+    if (code == 0 || !navigation::elevatedDialogQuickEnabled() || readElevatedStopGeneration() != startStopGen ||
+        WaitForSingleObject(state.stopEvent, 0) == WAIT_OBJECT_0) return 0;
+    if (FindWindowExW(HWND_MESSAGE, nullptr, elevatedHelperClass, nullptr)) return 0;
+    const DWORD now = GetTickCount();
+    if (now - windowStart > supervisorRestartWindow) { windowStart = now; restarts = 0; }
+    wchar_t exitText[16]{};
+    swprintf_s(exitText, L"0x%08lX", code);
+    if (++restarts > supervisorRestartLimit) {
+      guard::log(std::wstring(L"管理员对话框后台组件反复异常退出（") + exitText + L"），已停止自动重启");
+      return static_cast<int>(code);
+    }
+    guard::log(std::wstring(L"管理员对话框后台组件异常退出（") + exitText + L"），第 " + std::to_wstring(restarts) + L" 次自动重启");
+    if (waitWithPump(state.stopEvent, nullptr, guard::crashExitCode(code) ? 1000 : 3000) == WAIT_OBJECT_0) return 0;
+    if (!navigation::elevatedDialogQuickEnabled() || readElevatedStopGeneration() != startStopGen ||
+        WaitForSingleObject(state.stopEvent, 0) == WAIT_OBJECT_0 ||
+        FindWindowExW(HWND_MESSAGE, nullptr, elevatedHelperClass, nullptr)) return 0;
+  }
+}
+}
+int elevatedHelper(HINSTANCE instance, bool supervised) {
+  const auto ownIntegrity = integrity(GetCurrentProcessId());
+  if (ownIntegrity == 0xffffffff || ownIntegrity < SECURITY_MANDATORY_HIGH_RID) return 1;
+  if (!navigation::elevatedDialogQuickEnabled()) return 0;
+  if (!supervised) return superviseElevatedHelper(instance);
+  guard::installCrashHandler(L"elevated-helper");
+  HANDLE mutex = CreateMutexW(nullptr, FALSE, elevatedMutexName);
+  if (!mutex) return 1;
+  if (!acquireHelperMutex(mutex)) { CloseHandle(mutex); return 0; }
+  if (!navigation::elevatedDialogQuickEnabled()) { ReleaseMutex(mutex); CloseHandle(mutex); return 0; }
+  if (FindWindowExW(HWND_MESSAGE, nullptr, elevatedHelperClass, nullptr)) { ReleaseMutex(mutex); CloseHandle(mutex); return 0; }
+  WNDCLASSW cls{}; cls.lpfnWndProc = helperProc; cls.hInstance = instance; cls.lpszClassName = elevatedHelperClass;
+  RegisterClassW(&cls);
+  receiver = CreateWindowExW(0, elevatedHelperClass, L"", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, instance, nullptr);
+  if (!receiver) { ReleaseMutex(mutex); CloseHandle(mutex); return 1; }
+  elevatedCompanion = true;
+  const DWORD startStopGen = readElevatedStopGeneration();
+  auto event = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, nullptr, foregroundEvent, 0, 0, WINEVENT_OUTOFCONTEXT);
+  auto desktopSwitch = SetWinEventHook(EVENT_SYSTEM_DESKTOPSWITCH, EVENT_SYSTEM_DESKTOPSWITCH, nullptr, foregroundEvent, 0, 0, WINEVENT_OUTOFCONTEXT);
+  auto shown = SetWinEventHook(EVENT_OBJECT_SHOW, EVENT_OBJECT_SHOW, nullptr, foregroundEvent, 0, 0, WINEVENT_OUTOFCONTEXT);
+  updateTarget();
+  HookStart hook{CreateEventW(nullptr, TRUE, FALSE, nullptr), nullptr, nullptr, false};
+  DWORD threadId = 0;
+  HANDLE thread = hook.ready ? CreateThread(nullptr, 0, hookThread, &hook, 0, &threadId) : nullptr;
+  if (thread) WaitForSingleObject(hook.ready, INFINITE);
+  const bool ready = thread && hook.hook &&
+                     SetPropW(receiver, elevatedReadyProperty, reinterpret_cast<HANDLE>(1));
+  if (ready) {
+    startMenuThread();
+    guard::log(std::wstring(L"管理员文件对话框后台组件就绪：菜单=") + (menuThread ? L"常驻线程" : L"独立进程"));
+    HKEY configHandle = nullptr;
+    RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\FolderNote", 0, nullptr, 0,
+                    KEY_NOTIFY | KEY_QUERY_VALUE, nullptr, &configHandle, nullptr);
+    HANDLE regEvent = configHandle ? CreateEventW(nullptr, FALSE, FALSE, nullptr) : nullptr;
+    if (configHandle && regEvent)
+      RegNotifyChangeKeyValue(configHandle, FALSE, REG_NOTIFY_CHANGE_LAST_SET, regEvent, TRUE);
+    for (;;) {
+      const DWORD waitCount = regEvent ? 1 : 0;
+      const DWORD waited = MsgWaitForMultipleObjects(waitCount, regEvent ? &regEvent : nullptr, FALSE, INFINITE, QS_ALLINPUT);
+      if (regEvent && waited == WAIT_OBJECT_0) {
+        RegNotifyChangeKeyValue(configHandle, FALSE, REG_NOTIFY_CHANGE_LAST_SET, regEvent, TRUE);
+        if (!navigation::elevatedDialogQuickEnabled() || readElevatedStopGeneration() != startStopGen) {
+          if (receiver && IsWindow(receiver)) DestroyWindow(receiver);
+        } else {
+          updateTarget();
+          continue;
+        }
+      }
+      MSG message{};
+      bool quit = false;
+      while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+        if (message.message == WM_QUIT) { quit = true; break; }
+        TranslateMessage(&message); DispatchMessageW(&message);
+      }
+      if (quit) break;
+    }
+    if (regEvent) CloseHandle(regEvent);
+    if (configHandle) RegCloseKey(configHandle);
+  } else {
+    guard::log(std::wstring(L"管理员文件对话框后台组件启动失败：钩子=") + (hook.hook ? L"成功" : L"失败"));
+  }
+  eligible = nullptr;
+  signalMenuThreadQuit();
+  if (thread) { PostThreadMessageW(threadId, WM_QUIT, 0, 0); WaitForSingleObject(thread, INFINITE); CloseHandle(thread); }
+  if (hook.ready) CloseHandle(hook.ready);
+  if (event) UnhookWinEvent(event);
+  if (desktopSwitch) UnhookWinEvent(desktopSwitch);
+  if (shown) UnhookWinEvent(shown);
+  watchDialog(nullptr);
+  if (IsWindow(receiver)) DestroyWindow(receiver);
+  receiver = nullptr;
+  elevatedCompanion = false;
   ReleaseMutex(mutex); CloseHandle(mutex);
   joinMenuThread();
   return ready ? 0 : 1;

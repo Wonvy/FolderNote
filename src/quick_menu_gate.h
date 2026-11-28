@@ -1,8 +1,33 @@
 #pragma once
 #include <windows.h>
+#include <sddl.h>
+#include <string>
+#include <vector>
 
 namespace quick::detail {
 inline constexpr wchar_t popupMutexName[] = L"Local\\FolderNote.QuickFolders.Popup.v1";
+
+inline PSECURITY_DESCRIPTOR sameUserMediumLabelSecurity() noexcept {
+  HANDLE token = nullptr;
+  if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) return nullptr;
+  DWORD size = 0;
+  GetTokenInformation(token, TokenUser, nullptr, 0, &size);
+  std::vector<BYTE> bytes(size);
+  const BOOL ok = size && GetTokenInformation(token, TokenUser, bytes.data(), size, &size);
+  CloseHandle(token);
+  LPWSTR sid = nullptr;
+  if (!ok || !ConvertSidToStringSidW(reinterpret_cast<const TOKEN_USER *>(bytes.data())->User.Sid, &sid) || !sid)
+    return nullptr;
+  PSECURITY_DESCRIPTOR sd = nullptr;
+  try {
+    const auto sddl = std::wstring(L"D:(A;;GA;;;") + sid + L")S:(ML;;NW;;;ME)";
+    ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(), SDDL_REVISION_1, &sd, nullptr);
+  } catch (...) {
+    sd = nullptr;
+  }
+  LocalFree(sid);
+  return sd;
+}
 
 // Ownership, not the existence of a named kernel object, defines a live menu.
 // The handle may remain open briefly after the previous owner releases it.
@@ -12,8 +37,11 @@ class MenuGate {
   DWORD failure = ERROR_SUCCESS;
 public:
   explicit MenuGate(const wchar_t *name = popupMutexName) noexcept {
-    handle = CreateMutexW(nullptr, FALSE, name);
+    PSECURITY_DESCRIPTOR sd = sameUserMediumLabelSecurity();
+    SECURITY_ATTRIBUTES sa{sizeof(sa), sd, FALSE};
+    handle = CreateMutexW(sd ? &sa : nullptr, FALSE, name);
     if (!handle) failure = GetLastError();
+    if (sd) LocalFree(sd);
   }
   ~MenuGate() { release(); if (handle) CloseHandle(handle); }
   MenuGate(const MenuGate &) = delete;

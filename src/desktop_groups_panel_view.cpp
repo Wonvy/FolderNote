@@ -1131,7 +1131,7 @@ LRESULT CALLBACK Panel::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
       const bool grid = item.hwndItem == panel->viewButtons[0];
       const bool rows = item.hwndItem == panel->viewButtons[1];
       if (item.hwndItem != panel->toggle && !grid && !rows) break;
-      const auto &colors = desktop.theme.colors;
+      const auto colors = panel->surfacePalette();
       const auto box = item.rcItem;
       const auto saved = SaveDC(item.hDC);
       if (saved) IntersectClipRect(item.hDC, box.left, box.top, box.right, box.bottom);
@@ -1260,7 +1260,9 @@ LRESULT CALLBACK Panel::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
     }
     case WM_EXITSIZEMOVE: {
       panel->movingOrSizing = false;
-      if (!panel->hasSurface()) RedrawWindow(window, nullptr, nullptr, RDW_INVALIDATE | RDW_NOERASE | RDW_ALLCHILDREN);
+      if (!panel->hasSurface()) {
+        RedrawWindow(window, nullptr, nullptr, RDW_INVALIDATE | RDW_NOERASE | RDW_ALLCHILDREN);
+      }
       if (!panel->windowPositionReady) return 0;
       if (desktop.quitting) return 0;
       auto changed = desktop.groups;

@@ -2,6 +2,7 @@
 #include "../src/navigation.h"
 #include "../src/desktop_groups_process.h"
 #include <iostream>
+#include <map>
 #include <thread>
 #include <stdexcept>
 #include <utility>
@@ -9,6 +10,10 @@
 namespace {
 HWND simulatedForeground = nullptr, underPointer = nullptr;
 HWND simulatedShell = nullptr, foreignProcessWindow = nullptr;
+DWORD simulatedOwnIntegrity = 0;
+std::map<HWND, DWORD> simulatedWindowPids;
+std::map<DWORD, DWORD> simulatedIntegrityByPid;
+constexpr ULONG_PTR fakeIntegrityBase = 0x71000000;
 int modifier = 0, extraModifier = 0, checks = 0;
 desktop_groups::DesktopLaunchContext helperContext{desktop_groups::DesktopLaunchMode::Direct, 0, 8192};
 bool launchSucceeds = true;
@@ -20,8 +25,52 @@ HWND fakeWindowFromPoint(POINT) { return underPointer; }
 HWND fakeShellWindow() { return simulatedShell; }
 DWORD fakeWindowProcess(HWND window, DWORD *pid) {
   const auto thread = GetWindowThreadProcessId(window, pid);
-  if (pid && window && window == foreignProcessWindow) *pid = GetCurrentProcessId() + 1;
+  if (pid && window) {
+    if (const auto it = simulatedWindowPids.find(window); it != simulatedWindowPids.end()) *pid = it->second;
+    else if (window == foreignProcessWindow) *pid = GetCurrentProcessId() + 1;
+  }
   return thread;
+}
+HANDLE fakeOpenProcess(DWORD access, BOOL inherit, DWORD pid) {
+  if (simulatedIntegrityByPid.contains(pid) || (simulatedOwnIntegrity && pid == GetCurrentProcessId()))
+    return reinterpret_cast<HANDLE>(fakeIntegrityBase | (pid & 0xffff));
+  return OpenProcess(access, inherit, pid);
+}
+BOOL fakeOpenProcessToken(HANDLE process, DWORD access, PHANDLE token) {
+  const auto raw = reinterpret_cast<ULONG_PTR>(process);
+  if (process == GetCurrentProcess() && simulatedOwnIntegrity) {
+    if (token) *token = reinterpret_cast<HANDLE>(fakeIntegrityBase | (GetCurrentProcessId() & 0xffff));
+    return TRUE;
+  }
+  if ((raw & ~ULONG_PTR(0xffff)) == fakeIntegrityBase) {
+    if (token) *token = process;
+    return TRUE;
+  }
+  return OpenProcessToken(process, access, token);
+}
+BOOL fakeGetTokenInformation(HANDLE token, TOKEN_INFORMATION_CLASS cls, LPVOID info, DWORD len, PDWORD retLen) {
+  const auto raw = reinterpret_cast<ULONG_PTR>(token);
+  if (cls == TokenIntegrityLevel && (raw & ~ULONG_PTR(0xffff)) == fakeIntegrityBase) {
+    const DWORD pid = static_cast<DWORD>(raw & 0xffff);
+    DWORD level = SECURITY_MANDATORY_MEDIUM_RID;
+    if (pid == (GetCurrentProcessId() & 0xffff) && simulatedOwnIntegrity) level = simulatedOwnIntegrity;
+    else if (const auto it = simulatedIntegrityByPid.find(pid); it != simulatedIntegrityByPid.end()) level = it->second;
+    static SID sid{SID_REVISION, 1, SECURITY_MANDATORY_LABEL_AUTHORITY, {SECURITY_MANDATORY_MEDIUM_RID}};
+    sid.SubAuthority[0] = level;
+    const DWORD needed = sizeof(TOKEN_MANDATORY_LABEL);
+    if (retLen) *retLen = needed;
+    if (!info || len < needed) { SetLastError(ERROR_INSUFFICIENT_BUFFER); return FALSE; }
+    auto *label = static_cast<TOKEN_MANDATORY_LABEL *>(info);
+    label->Label.Sid = &sid;
+    label->Label.Attributes = SE_GROUP_INTEGRITY | SE_GROUP_INTEGRITY_ENABLED;
+    return TRUE;
+  }
+  return GetTokenInformation(token, cls, info, len, retLen);
+}
+BOOL fakeCloseHandle(HANDLE handle) {
+  const auto raw = reinterpret_cast<ULONG_PTR>(handle);
+  if ((raw & ~ULONG_PTR(0xffff)) == fakeIntegrityBase) return TRUE;
+  return CloseHandle(handle);
 }
 SHORT fakeKeys(int key) { return key == modifier || key == extraModifier ? SHORT(-32768) : 0; }
 LRESULT fakeNextHook(HHOOK, int, WPARAM, LPARAM) { return 73; }
@@ -55,6 +104,10 @@ void captureMenu(HWND target, HWND, POINT point) { launches.push_back({target, p
 #define WindowFromPoint fakeWindowFromPoint
 #define GetShellWindow fakeShellWindow
 #define GetWindowThreadProcessId fakeWindowProcess
+#define OpenProcess fakeOpenProcess
+#define OpenProcessToken fakeOpenProcessToken
+#define GetTokenInformation fakeGetTokenInformation
+#define CloseHandle fakeCloseHandle
 #define GetAsyncKeyState fakeKeys
 #define CallNextHookEx fakeNextHook
 #define launchMenu captureMenu
@@ -72,6 +125,10 @@ void captureMenu(HWND target, HWND, POINT point) { launches.push_back({target, p
 #undef GetAsyncKeyState
 #undef WindowFromPoint
 #undef GetShellWindow
+#undef CloseHandle
+#undef GetTokenInformation
+#undef OpenProcessToken
+#undef OpenProcess
 #undef GetWindowThreadProcessId
 #undef GetForegroundWindow
 
@@ -462,6 +519,78 @@ static void legacyDialogTests() {
   if (ownsTreeClass) UnregisterClassW(treeClass.lpszClassName, treeClass.hInstance);
   UnregisterClassW(container.lpszClassName, container.hInstance);
 }
+static void elevatedDialogTests(HWND mediumDialog, HWND highDialog, HWND highOrdinary) {
+  const auto instance = GetModuleHandleW(nullptr);
+  WNDCLASSW desktopCls{}; desktopCls.hInstance = instance; desktopCls.lpfnWndProc = DefWindowProcW; desktopCls.lpszClassName = L"Progman";
+  RegisterClassW(&desktopCls);
+  WNDCLASSW explorerCls = desktopCls; explorerCls.lpszClassName = L"CabinetWClass";
+  RegisterClassW(&explorerCls);
+  HWND highDesktop = CreateWindowW(L"Progman", L"High desktop", WS_OVERLAPPED, 0, 0, 200, 100, nullptr, nullptr, instance, nullptr);
+  HWND highExplorer = CreateWindowW(L"CabinetWClass", L"High explorer", WS_OVERLAPPED, 0, 0, 200, 100, nullptr, nullptr, instance, nullptr);
+  check(highDesktop && highExplorer, "create elevated non-dialog fixtures");
+  constexpr DWORD mediumPid = 10001, highPid = 10002;
+  simulatedOwnIntegrity = SECURITY_MANDATORY_HIGH_RID;
+  simulatedIntegrityByPid[mediumPid] = SECURITY_MANDATORY_MEDIUM_RID;
+  simulatedIntegrityByPid[highPid] = SECURITY_MANDATORY_HIGH_RID;
+  simulatedWindowPids[mediumDialog] = mediumPid;
+  simulatedWindowPids[highDialog] = highPid;
+  simulatedWindowPids[highOrdinary] = highPid;
+  simulatedWindowPids[highDesktop] = highPid;
+  simulatedWindowPids[highExplorer] = highPid;
+  simulatedShell = highDesktop;
+  quick::elevatedCompanion = true;
+  enable(true, true);
+  navigation::setElevatedDialogQuickEnabled(true);
+
+  const auto before = launches.size();
+  simulatedForeground = underPointer = mediumDialog;
+  quick::updateTarget();
+  check(quick::eligible.load() == nullptr && mouse(WM_MBUTTONDOWN) == 73 && mouse(WM_MBUTTONUP) == 73,
+        "elevated companion never swallows or targets medium-integrity file dialogs");
+  drain();
+  check(launches.size() == before, "elevated companion never launches a menu for medium-integrity dialogs");
+
+  for (HWND nonDialog : {highDesktop, highExplorer, highOrdinary}) {
+    simulatedForeground = underPointer = nonDialog;
+    quick::updateTarget();
+    check(quick::eligible.load() == nullptr && mouse(WM_MBUTTONDOWN) == 73 && mouse(WM_MBUTTONUP) == 73,
+          "elevated companion ignores high-integrity desktop, explorer, and non-file dialogs");
+  }
+  drain();
+  check(launches.size() == before, "elevated companion only serves file dialogs");
+
+  simulatedForeground = underPointer = highDialog;
+  quick::updateTarget();
+  check(quick::eligible.load() == highDialog && mouse(WM_MBUTTONDOWN) == 1 && mouse(WM_MBUTTONUP) == 1,
+        "elevated companion intercepts middle click on high-integrity file dialog");
+  drain();
+  check(launches.size() == before + 1 && launches.back().first == highDialog,
+        "elevated companion opens quick folder menu for high-integrity file dialog");
+
+  enable(true, false);
+  quick::updateTarget();
+  check(quick::eligible.load() == nullptr && mouse(WM_MBUTTONDOWN) == 73 && mouse(WM_MBUTTONUP) == 73,
+        "disabling file-dialog support immediately pauses elevated companion");
+  enable(true, true);
+  navigation::setElevatedDialogQuickEnabled(false);
+  quick::updateTarget();
+  check(quick::eligible.load() == nullptr && mouse(WM_MBUTTONDOWN) == 73 && mouse(WM_MBUTTONUP) == 73,
+        "disabling elevated-dialog option immediately pauses elevated companion");
+
+  drain();
+  check(launches.size() == before + 1, "disabled elevated companion never queues menus");
+  quick::elevatedCompanion = false;
+  quick::eligible = nullptr;
+  quick::middle = {};
+  simulatedForeground = underPointer = simulatedShell = nullptr;
+  simulatedWindowPids.clear();
+  simulatedIntegrityByPid.clear();
+  simulatedOwnIntegrity = 0;
+  DestroyWindow(highDesktop);
+  DestroyWindow(highExplorer);
+  UnregisterClassW(L"Progman", instance);
+  UnregisterClassW(L"CabinetWClass", instance);
+}
 int main() {
   CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
   int result = 0;
@@ -570,6 +699,7 @@ int main() {
     desktopTests(first);
     remoteKvmCaptureTests(first);
     legacyDialogTests();
+    elevatedDialogTests(first, second, ordinary);
     quick::publishHookInstallState(true, true);
     mouse(WM_MOUSEMOVE, {20, 20});
     quick::recordHookRehook(quick::HookRehookReason::MissedMouseMove, true, true);

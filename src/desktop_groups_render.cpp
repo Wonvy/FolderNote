@@ -112,6 +112,19 @@ COLORREF boxOutlineColor(COLORREF background, const ui::Palette &colors) {
              mix(GetBValue(background), GetBValue(colors.text)));
 }
 
+ui::Palette boxSurfacePalette(const ui::Palette &base) {
+  if (base.highContrast) return base;
+  ui::Palette box = base;
+  box.dark = true;
+  box.text = RGB(255, 255, 255);
+  box.muted = RGB(204, 204, 204);
+  box.hover = RGB(58, 58, 58);
+  box.pressed = RGB(74, 74, 74);
+  box.surface = RGB(44, 44, 44);
+  box.border = RGB(96, 96, 96);
+  return box;
+}
+
 HRGN createBoxRegion(int width, int height, int diameter) {
   diameter = std::min({diameter, width, height});
   return diameter > 0 ? CreateRoundRectRgn(0, 0, width + 1, height + 1, diameter, diameter)

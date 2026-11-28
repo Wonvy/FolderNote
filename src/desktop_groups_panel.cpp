@@ -4,6 +4,7 @@
 
 namespace desktop_groups::detail {
 void Panel::applyTheme(const ui::Palette &colors) {
+  const auto surfaceColors = surfacePalette();
 #ifdef FOLDERNOTE_WINUI
   if (hasSurface()) {
     applyBackground();
@@ -14,8 +15,8 @@ void Panel::applyTheme(const ui::Palette &colors) {
   // The native list uses a solid background.
   ListView_SetBkColor(list, colors.field);
   ListView_SetTextBkColor(list, CLR_NONE);
-  ListView_SetTextColor(list, colors.text);
-  const auto track = colors.highContrast ? colors.field : colors.hover;
+  ListView_SetTextColor(list, surfaceColors.text);
+  const auto track = colors.highContrast ? colors.field : surfaceColors.hover;
   verticalScroll.setTrackColor(track);
   horizontalScroll.setTrackColor(track);
   if (scrollCorner) InvalidateRect(scrollCorner, nullptr, FALSE);
@@ -37,12 +38,17 @@ COLORREF Panel::backgroundColor() const {
   return colorPreview.value_or(mergeTint.value_or(desktop.groups[index].tint.value_or(colors.field)));
 }
 
+ui::Palette Panel::surfacePalette() const {
+  return boxSurfacePalette(desktop.theme.colors);
+}
+
 void Panel::applyBackground() {
 #ifdef FOLDERNOTE_WINUI
   if (hasSurface()) {
-    const auto &colors = desktop.theme.colors;
+    const auto colors = surfacePalette();
     const auto opacity = static_cast<BYTE>(MulDiv(backgroundOpacity(), 255, 100));
     surface->appearance(colors.dark, colors.highContrast, backgroundColor(), opacity, backgroundGlass());
+    syncSurfaceHeader();
     desktop.updateGlass();
     return;
   }
@@ -69,7 +75,7 @@ bool Panel::saveSpacing(int spacing) {
 void Panel::syncSurfaceHeader() {
   if (!hasSurface()) return;
   const auto &group = desktop.groups[index];
-  const auto &colors = desktop.theme.colors;
+  const auto colors = surfacePalette();
   std::vector<std::wstring> titles{group.name};
   for (const auto &tab : group.tabs) titles.push_back(tab.name);
   surface->header(titles, activeTab, collapsed(), headerActions, desktop.dropHighlight == window,
@@ -953,14 +959,15 @@ LRESULT CALLBACK Panel::tabPreviewProc(HWND window, UINT message, WPARAM w, LPAR
         const auto &colors = panel->desktop.theme.colors;
         const auto dpi = GetDpiForWindow(window);
         const auto fill = colors.highContrast ? colors.field : tint.value_or(group.tint).value_or(colors.hover);
+        const auto previewColors = boxSurfacePalette(colors);
         RECT rect{};
         GetClientRect(window, &rect);
         SetDCBrushColor(dc, fill);
         FillRect(dc, &rect, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
-        ui::rounded(dc, rect, fill, boxOutlineColor(fill, colors), MulDiv(6, dpi, 96));
+        ui::rounded(dc, rect, fill, boxOutlineColor(fill, previewColors), MulDiv(6, dpi, 96));
         InflateRect(&rect, -MulDiv(10, dpi, 96), 0);
         const auto font = SelectObject(dc, panel->titleFont);
-        ui::text(dc, name, rect, colors.text);
+        ui::text(dc, name, rect, previewColors.text);
         if (font) SelectObject(dc, font);
       }
     }
@@ -971,7 +978,7 @@ LRESULT CALLBACK Panel::tabPreviewProc(HWND window, UINT message, WPARAM w, LPAR
 }
 
 void Panel::paintTabs(const DRAWITEMSTRUCT &item) {
-  const auto &colors = desktop.theme.colors;
+  const auto colors = surfacePalette();
   const auto &group = desktop.groups[index];
   POINT offset{};
   MapWindowPoints(tabs, window, &offset, 1);
@@ -1609,7 +1616,7 @@ void Panel::paint(HDC dc, bool backgroundOnly) {
   if (backgroundOnly) return;
   RECT area{};
   GetClientRect(window, &area);
-  const auto &colors = desktop.theme.colors;
+  const auto colors = surfacePalette();
   const auto dpi = GetDpiForWindow(window);
   const auto px = [dpi](int value) { return MulDiv(value, dpi, 96); };
   const int pad = px(14), headerBottom = headerHeight();
@@ -1678,7 +1685,7 @@ bool Panel::paintItem(HDC dc, int row) {
   const auto images = ListView_GetImageList(list, details ? LVSIL_SMALL : LVSIL_NORMAL);
   const auto image = images && item.iImage >= 0 ? ImageList_GetIcon(images, item.iImage, ILD_TRANSPARENT) : nullptr;
   const bool selected = (ListView_GetItemState(list, row, LVIS_SELECTED) & LVIS_SELECTED) != 0;
-  const bool painted = drawFenceItem(dc, bounds, label, icon, image, name, desktop.theme.colors,
+  const bool painted = drawFenceItem(dc, bounds, label, icon, image, name, surfacePalette(),
                                     selected, row == hoverRow, details, GetDpiForWindow(window));
   if (image) DestroyIcon(image);
   return painted;

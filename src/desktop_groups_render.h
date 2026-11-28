@@ -4,6 +4,7 @@
 namespace desktop_groups {
 inline constexpr BYTE boxOutlineAlpha = 46;
 COLORREF boxOutlineColor(COLORREF background, const ui::Palette &colors);
+ui::Palette boxSurfacePalette(const ui::Palette &base);
 HRGN createBoxRegion(int width, int height, int diameter);
 bool drawBoxShadow(DWORD *pixels, int width, int height, int spread, int offset, int diameter, BYTE opacity);
 bool drawFenceItem(HDC dc, RECT row, RECT label, RECT icon, HICON image, const std::wstring &text,

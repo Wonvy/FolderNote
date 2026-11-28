@@ -35,6 +35,15 @@ void ensureHelperRunning() noexcept;
 void configureStartup(const std::wstring &exe, bool enabled);
 bool stopHelper(bool removeStartup = true);
 int helper(HINSTANCE, bool delegated = false, bool supervised = false);
+int elevatedHelper(HINSTANCE, bool supervised = false);
+bool stopElevatedHelper();
+bool elevatedHelperRunning() noexcept;
+void signalElevatedHelperStop() noexcept;
+bool elevatedTaskInstalled();
+bool configureElevatedHelper(const std::wstring &exe, bool enable);
+void syncElevatedHelper(const std::wstring &exe, bool allowElevation);
+void removeElevatedHelper(const std::wstring &exe);
+bool handleElevatedConfigureCommand(int argc, wchar_t **argv, int &exitCode);
 // The helper shows menus on a resident thread through this runner (normally
 // quick::menu). Unset, or set HKCU\Software\FolderNote\QuickMenuInProcess=0,
 // to always use a separate --quick-menu process.

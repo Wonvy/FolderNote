@@ -28,6 +28,18 @@ bool classIs(HWND window, const wchar_t *name) {
   wchar_t actual[128]{};
   return GetClassNameW(window, actual, ARRAYSIZE(actual)) && !_wcsicmp(actual, name);
 }
+bool currentProcessElevated() {
+  HANDLE token = nullptr;
+  if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) return false;
+  DWORD bytes = 0;
+  GetTokenInformation(token, TokenIntegrityLevel, nullptr, 0, &bytes);
+  std::vector<BYTE> buffer(bytes);
+  const BOOL ok = bytes && GetTokenInformation(token, TokenIntegrityLevel, buffer.data(), bytes, &bytes);
+  CloseHandle(token);
+  if (!ok) return false;
+  auto sid = reinterpret_cast<const TOKEN_MANDATORY_LABEL *>(buffer.data())->Label.Sid;
+  return *GetSidSubAuthority(sid, *GetSidSubAuthorityCount(sid) - 1) >= SECURITY_MANDATORY_HIGH_RID;
+}
 bool matches(HWND window, DWORD process) {
   DWORD actual = 0;
   return window && GetWindowThreadProcessId(window, &actual) && actual == process;
@@ -98,7 +110,8 @@ bool navigate(HWND target, const std::wstring &input, const detail::MenuRequest 
     if (path.empty() || path.size() > maximumPath) return false;
     DWORD process = 0;
     if (!GetWindowThreadProcessId(target, &process) || !process) return false;
-    HWND helper = FindWindowExW(HWND_MESSAGE, nullptr, helperClass, nullptr);
+    HWND helper = FindWindowExW(HWND_MESSAGE, nullptr,
+        currentProcessElevated() ? elevatedHelperClass : helperClass, nullptr);
     if (!helper) return false;
     SetForegroundWindow(target);
     if (!request.current() || GetForegroundWindow() != target || !matches(target, process) || !isDialog(target)) return false;

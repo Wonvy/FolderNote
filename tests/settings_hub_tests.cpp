@@ -431,11 +431,20 @@ void scenarios() {
           "enabling quick folders shows its sidebar tab and enables Edit");
     SendDlgItemMessageW(hub.window, 41, BM_CLICK, 0, 0);
     check(activePage == SettingsPage::QuickFolders && visibleStyle(managerPage) && visibleStyle(dialogCheck) &&
-          IsWindowEnabled(dialogCheck),
-          "clicking sidebar tab 41 opens embedded manager and enabled dialog checkbox");
+          IsWindowEnabled(dialogCheck) && visibleStyle(elevatedDialogCheck) && IsWindowEnabled(elevatedDialogCheck) &&
+          !elevatedDialogQuickEnabled(),
+          "clicking sidebar tab 41 opens embedded manager, dialog checkbox, and disabled-by-default elevated dialog checkbox");
+    SendDlgItemMessageW(hub.window, elevatedDialogToggle, BM_CLICK, 0, 0);
+    check(elevatedDialogQuickEnabled(), "elevated dialog checkbox persists immediately in headless mode");
     SendDlgItemMessageW(hub.window, 15, BM_CLICK, 0, 0);
-    check(!dialogQuickEnabled(), "dialog checkbox persists immediately");
+    check(!dialogQuickEnabled() && !IsWindowEnabled(elevatedDialogCheck) &&
+          SendMessageW(elevatedDialogCheck, BM_GETCHECK, 0, 0) == BST_CHECKED,
+          "dialog checkbox persists immediately and disables subordinate elevated dialog toggle without clearing it");
     SendDlgItemMessageW(hub.window, 15, BM_CLICK, 0, 0);
+    check(IsWindowEnabled(elevatedDialogCheck) && elevatedDialogQuickEnabled(),
+          "reenabling dialog checkbox restores elevated dialog toggle");
+    SendDlgItemMessageW(hub.window, elevatedDialogToggle, BM_CLICK, 0, 0);
+    check(!elevatedDialogQuickEnabled(), "elevated dialog checkbox can be turned back off");
 
     // Tabs page (Win10 only)
     if (tabsSupported()) {
@@ -516,7 +525,9 @@ void languages() {
           windowText(GetDlgItem(hub.window, 47)) == L"Context menu" &&
           windowText(GetDlgItem(hub.window, 48)) == L"General" &&
           windowText(navigation::desktopGroupsCheck) == L"Desktop boxes" &&
-          windowText(navigation::desktopGroupsManager) == L"Manage desktop boxes", "English settings labels load");
+          windowText(navigation::desktopGroupsManager) == L"Manage desktop boxes" &&
+          windowText(navigation::elevatedDialogCheck) == L"Support file dialogs in administrator apps (requires administrator permission)",
+          "English settings labels load");
     if (navigation::tabsSupported())
       check(windowText(GetDlgItem(hub.window, 76)) == L"Explorer tabs", "English tabs sidebar label loads");
   }

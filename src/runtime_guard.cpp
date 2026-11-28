@@ -2,6 +2,7 @@
 #include "app_version.h"
 #include <dbghelp.h>
 #include <psapi.h>
+#include <sddl.h>
 #include <shlobj.h>
 #include <algorithm>
 #include <cstdio>
@@ -56,8 +57,35 @@ std::wstring wide(const std::string &text) {
   if (size > 0) MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), result.data(), size);
   return result;
 }
+HANDLE createSharedLogMutex() noexcept {
+  PSECURITY_DESCRIPTOR sd = nullptr;
+  HANDLE token = nullptr;
+  if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+    DWORD size = 0;
+    GetTokenInformation(token, TokenUser, nullptr, 0, &size);
+    if (size) {
+      std::vector<BYTE> bytes(size);
+      LPWSTR sid = nullptr;
+      if (GetTokenInformation(token, TokenUser, bytes.data(), size, &size) &&
+          ConvertSidToStringSidW(reinterpret_cast<const TOKEN_USER *>(bytes.data())->User.Sid, &sid) && sid) {
+        try {
+          const auto sddl = std::wstring(L"D:(A;;GA;;;") + sid + L")S:(ML;;NW;;;ME)";
+          ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(), SDDL_REVISION_1, &sd, nullptr);
+        } catch (...) {
+          sd = nullptr;
+        }
+        LocalFree(sid);
+      }
+    }
+    CloseHandle(token);
+  }
+  SECURITY_ATTRIBUTES sa{sizeof(sa), sd, FALSE};
+  HANDLE mutex = CreateMutexW(sd ? &sa : nullptr, FALSE, logMutexName);
+  if (sd) LocalFree(sd);
+  return mutex;
+}
 struct LogLock {
-  HANDLE mutex = CreateMutexW(nullptr, FALSE, logMutexName);
+  HANDLE mutex = createSharedLogMutex();
   DWORD wait = mutex ? WaitForSingleObject(mutex, 1000) : WAIT_FAILED;
   bool owned = wait == WAIT_OBJECT_0 || wait == WAIT_ABANDONED;
   ~LogLock() { if (owned) ReleaseMutex(mutex); if (mutex) CloseHandle(mutex); }

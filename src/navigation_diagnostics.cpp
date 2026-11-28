@@ -85,8 +85,10 @@ std::wstring diagnostics() {
        << L"文件夹备注：" << (notesEnabled() ? L"开启" : L"关闭") << L"\r\n"
        << L"中键快速定位：" << (quickEnabled() ? L"开启" : L"关闭")
        << L"；文件对话框：" << (dialogQuickEnabled() ? L"开启" : L"关闭")
+       << L"；管理员对话框：" << (elevatedDialogQuickEnabled() ? L"开启" : L"关闭")
        << L"；中文首字母定位：" << (quick_find::external::enabled() ? L"开启" : L"关闭")
-       << L"；后台组件：" << (FindWindowExW(HWND_MESSAGE, nullptr, L"FolderNote.QuickFolders.Helper.v1", nullptr) ? L"运行中" : L"未运行") << L"\r\n"
+       << L"；后台组件：" << (FindWindowExW(HWND_MESSAGE, nullptr, L"FolderNote.QuickFolders.Helper.v1", nullptr) ? L"运行中" : L"未运行")
+       << L"；管理员对话框组件：" << (quick::elevatedHelperRunning() ? L"运行中" : L"未运行") << L"\r\n"
        << L"中键钩子状态：鼠标钩子=" << (hookDiag.mouseHookInstalled ? L"已挂载" : L"未挂载")
        << L"，键盘钩子=" << (hookDiag.keyboardHookInstalled ? L"已挂载" : L"未挂载")
        << L"；重挂次数：" << hookDiag.rehookCount

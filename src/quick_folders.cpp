@@ -36,8 +36,14 @@ struct Lock {
     if (!ok || !ConvertSidToStringSidW(reinterpret_cast<TOKEN_USER *>(bytes.data())->User.Sid, &sid))
       fn::fail(lang::text(L"无法读取用户信息"));
     auto name = std::wstring(L"Local\\FolderNote.QuickFolders.") + sid;
+    const auto sddl = std::wstring(L"D:(A;;GA;;;") + sid + L")S:(ML;;NW;;;ME)";
     LocalFree(sid);
-    handle = CreateMutexW(nullptr, FALSE, name.c_str());
+    PSECURITY_DESCRIPTOR sd = nullptr;
+    SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, FALSE};
+    if (ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(), SDDL_REVISION_1, &sd, nullptr))
+      sa.lpSecurityDescriptor = sd;
+    handle = CreateMutexW(sa.lpSecurityDescriptor ? &sa : nullptr, FALSE, name.c_str());
+    if (sd) LocalFree(sd);
     if (!handle) fn::fail(lang::text(L"无法读取快速文件夹"));
     DWORD result = WaitForSingleObject(handle, 1000);
     if (result != WAIT_OBJECT_0 && result != WAIT_ABANDONED) {

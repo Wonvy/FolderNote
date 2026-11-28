@@ -199,8 +199,13 @@ static void models() {
   require(model.restore() && model.items[model.active] == b, "restore latest closed folder");
   model.add(a); model.select(1); model.closeOthers(1);
   require(model.items.size() == 1 && model.items[0] == b && model.active == 0, "close others retains target");
+  require(!model.find({}).has_value() && !model.find(c).has_value(), "find ignores empty or absent locations");
+  model.add(a); model.add(b); model.add(a);
+  require(model.items.size() == 4 && model.active == 3 && model.find(a) == size_t(3), "find prefers active duplicate tab");
+  model.select(2);
+  require(model.find(a) == size_t(1), "find returns first matching tab when inactive");
   tabs::Model separate; separate.remember(c);
-  for (size_t i = 1; i < tabs::Model::limit; ++i) require(model.add(a), "add within bounded tab limit");
+  for (size_t i = model.items.size(); i < tabs::Model::limit; ++i) require(model.add(a), "add within bounded tab limit");
   require(!model.add(b) && !model.restore(), "limit preserves closed history");
   while (model.items.size() > 1) model.close(0);
   require(model.closed.size() == tabs::Model::closedLimit, "closed history bounded");
@@ -1467,10 +1472,50 @@ static void routingTests() {
   {
     RoutingHost source(first), destination(first);
     destination.browser.view.selected = {{4, 0, 1, 2, 0, 0}};
-    require(source.route(destination, helper) == 1, "accept same-folder new tab with empty source selection"); pump();
-    require(destination.count() == 2 && destination.browser.navigations == 0 &&
-            destination.browser.view.selected.empty() && source.closeRequests == 1,
-            "same-folder import clears destination selection without redundant navigation before closing source");
+    require(source.route(destination, helper) == 1, "accept same-folder route with empty source selection"); pump();
+    require(destination.count() == 1 && TabCtrl_GetCurSel(destination.control) == 0 &&
+            destination.browser.navigations == 0 && destination.browser.view.selected.empty() && source.closeRequests == 1,
+            "same-folder import activates existing tab and clears selection without redundant navigation or duplicate tab");
+  }
+  {
+    RoutingHost source(first), destination(first);
+    SendMessageW(destination.window, tabs::actionMessage, tabs::Duplicate, 0); pump();
+    destination.finish(second);
+    source.browser.view.selected = {{4, 0, 1, 2, 0, 0}};
+    const int beforeNavigations = destination.browser.navigations;
+    require(source.route(destination, helper) == 1, "accept route for inactive existing tab"); pump();
+    require(destination.count() == 2 && TabCtrl_GetCurSel(destination.control) == 0 &&
+            destination.browser.navigations == beforeNavigations + 1 &&
+            destination.browser.view.folder == first &&
+            destination.browser.view.selected == source.browser.view.selected && source.closeRequests == 1,
+            "routing existing inactive folder activates that tab and restores selection without creating a duplicate");
+  }
+  {
+    RoutingHost source(first), destination(first);
+    SendMessageW(destination.window, tabs::actionMessage, tabs::Duplicate, 0); pump();
+    require(destination.count() == 2 && TabCtrl_GetCurSel(destination.control) == 1,
+            "tab-bar duplicate still creates a second tab when new-tab routing is enabled");
+    const int beforeNavigations = destination.browser.navigations;
+    require(source.route(destination, helper) == 1, "accept route when duplicate tab is active"); pump();
+    require(destination.count() == 2 && TabCtrl_GetCurSel(destination.control) == 1 &&
+            destination.browser.navigations == beforeNavigations && source.closeRequests == 1,
+            "routing folder on already active duplicate retains that tab without opening a third tab");
+  }
+  {
+    RoutingHost existingSource(first), newSource(third), destination(first);
+    SendMessageW(destination.window, tabs::actionMessage, tabs::Duplicate, 0); pump();
+    destination.finish(second);
+    while (destination.count() < int(tabs::Model::limit)) {
+      SendMessageW(destination.window, tabs::actionMessage, tabs::Duplicate, 1); pump();
+    }
+    require(destination.count() == int(tabs::Model::limit) && TabCtrl_GetCurSel(destination.control) == int(tabs::Model::limit) - 1,
+            "destination reaches max tab limit with target folder at index zero");
+    require(existingSource.route(destination, helper) == 1, "allow route for already-open folder at tab limit"); pump();
+    require(destination.count() == int(tabs::Model::limit) && TabCtrl_GetCurSel(destination.control) == 0 &&
+            destination.browser.view.folder == first && existingSource.closeRequests == 1,
+            "already-open folder activates existing tab even when at tab limit");
+    require(newSource.route(destination, helper) == 2 && destination.count() == int(tabs::Model::limit) && !newSource.closeRequests,
+            "unopened folder still respects max tab limit");
   }
   {
     RoutingHost source(first), destination(second); destination.browser.complete = false;
