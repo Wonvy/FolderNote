@@ -110,8 +110,10 @@ bool navigate(HWND target, const std::wstring &input, const detail::MenuRequest 
     if (path.empty() || path.size() > maximumPath) return false;
     DWORD process = 0;
     if (!GetWindowThreadProcessId(target, &process) || !process) return false;
-    HWND helper = FindWindowExW(HWND_MESSAGE, nullptr,
-        currentProcessElevated() ? elevatedHelperClass : helperClass, nullptr);
+    HWND helper = currentProcessElevated()
+        ? FindWindowExW(HWND_MESSAGE, nullptr, elevatedHelperClass, nullptr)
+        : nullptr;
+    if (!helper) helper = FindWindowExW(HWND_MESSAGE, nullptr, helperClass, nullptr);
     if (!helper) return false;
     SetForegroundWindow(target);
     if (!request.current() || GetForegroundWindow() != target || !matches(target, process) || !isDialog(target)) return false;

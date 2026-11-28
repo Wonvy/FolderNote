@@ -1503,9 +1503,11 @@ static void routingTests() {
   }
   {
     RoutingHost existingSource(first), newSource(third), destination(first);
+    const UINT dpi = GetDpiForWindow(destination.window);
+    MoveWindow(destination.window, 0, 0, MulDiv(8000, dpi ? dpi : 96, 96), 40, FALSE);
     SendMessageW(destination.window, tabs::actionMessage, tabs::Duplicate, 0); pump();
     destination.finish(second);
-    while (destination.count() < int(tabs::Model::limit)) {
+    for (size_t i = 2; i < tabs::Model::limit; ++i) {
       SendMessageW(destination.window, tabs::actionMessage, tabs::Duplicate, 1); pump();
     }
     require(destination.count() == int(tabs::Model::limit) && TabCtrl_GetCurSel(destination.control) == int(tabs::Model::limit) - 1,

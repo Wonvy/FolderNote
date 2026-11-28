@@ -34,7 +34,7 @@ struct Simulation {
   bool classicMode = false, classicVistaHost = false, classicHasOtherEdit = false;
   bool classicClearOnReturn = true, classicClearOnOk = true, classicReadbackMismatch = false;
   std::wstring classicEditText = L"纸巾盒 D4 紧配.dwg";
-  int classicEnterPosts = 0, classicOkCommands = 0;
+  int classicEnterPosts = 0, classicOkCommands = 0, classicWrites = 0;
   DWORD slept = 0;
   std::vector<HWND> enumerated;
   std::vector<Message> messages;
@@ -183,12 +183,13 @@ LRESULT fakeMessage(HWND window, UINT kind, WPARAM key, LPARAM data, UINT flags,
     return 1;
   }
   if (simulation.classicMode && window == classicFilenameEdit()) {
+    const bool mismatchNow = simulation.classicReadbackMismatch && simulation.classicWrites == 1;
     if (kind == WM_GETTEXTLENGTH) {
-      if (result) *result = simulation.classicReadbackMismatch ? 5 : simulation.classicEditText.size();
+      if (result) *result = mismatchNow ? 5 : simulation.classicEditText.size();
       return 1;
     }
     if (kind == WM_GETTEXT) {
-      const auto value = simulation.classicReadbackMismatch ? std::wstring(L"wrong") : simulation.classicEditText;
+      const auto value = mismatchNow ? std::wstring(L"wrong") : simulation.classicEditText;
       const auto capacity = static_cast<size_t>(key);
       if (capacity && data) {
         wcsncpy_s(reinterpret_cast<wchar_t *>(data), capacity, value.c_str(), _TRUNCATE);
@@ -197,6 +198,7 @@ LRESULT fakeMessage(HWND window, UINT kind, WPARAM key, LPARAM data, UINT flags,
       return 1;
     }
     if (kind == WM_SETTEXT) {
+      ++simulation.classicWrites;
       simulation.actions.push_back("text");
       simulation.classicEditText = reinterpret_cast<const wchar_t *>(data);
       if (result) *result = simulation.writeAccepted;
@@ -450,11 +452,6 @@ void classicDialogs() {
   std::wstring existingDir(temp);
   while (existingDir.size() > 3 && existingDir.back() == L'\\') existingDir.pop_back();
   const std::wstring expectedWritten = existingDir.back() == L'\\' ? existingDir : existingDir + L"\\";
-  auto runPath = [&](const std::wstring &path) {
-    auto res = quick::dialog::navigate(targetWindow(), path, Request().current);
-    return res;
-  };
-  (void)runPath;
 
   {
     Request request;
@@ -462,7 +459,11 @@ void classicDialogs() {
     simulation.classicHasOtherEdit = true;
     simulation.enumerateAddress = false;
     const auto result = quick::dialog::navigate(targetWindow(), existingDir, request.current);
-    check(result == Result::Success && simulation.classicEnterPosts == 1 && !simulation.classicOkCommands &&
+    const auto firstSet = std::find_if(simulation.messages.begin(), simulation.messages.end(), [](const Message &message) {
+      return message.window == classicFilenameEdit() && message.kind == WM_SETTEXT;
+    });
+    check(result == Result::Success && firstSet != simulation.messages.end() && firstSet->text == expectedWritten &&
+          simulation.classicEnterPosts == 1 && !simulation.classicOkCommands &&
           simulation.classicEditText == L"纸巾盒 D4 紧配.dwg",
           "classic dialog writes directory with trailing backslash via bottom filename edit, submits Enter, and restores filename");
   }

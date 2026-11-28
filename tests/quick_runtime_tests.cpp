@@ -13,11 +13,14 @@ HWND simulatedShell = nullptr, foreignProcessWindow = nullptr;
 DWORD simulatedOwnIntegrity = 0;
 std::map<HWND, DWORD> simulatedWindowPids;
 std::map<DWORD, DWORD> simulatedIntegrityByPid;
-constexpr ULONG_PTR fakeIntegrityBase = 0x71000000;
+std::map<DWORD, HANDLE> fakePidHandles;
+std::map<HANDLE, DWORD> fakeHandleLevels;
+constexpr ULONG_PTR fakeOwnHandle = 0x71000001;
+ULONG_PTR nextFakePidHandle = 0x71000100;
 int modifier = 0, extraModifier = 0, checks = 0;
 desktop_groups::DesktopLaunchContext helperContext{desktop_groups::DesktopLaunchMode::Direct, 0, 8192};
 bool launchSucceeds = true;
-int directLaunches = 0, shellLaunches = 0;
+int directLaunches = 0, shellLaunches = 0, elevatedMenuLaunches = 0;
 std::wstring launchedExe, launchedArguments;
 std::vector<std::pair<HWND, POINT>> launches;
 HWND fakeForeground() { return simulatedForeground; }
@@ -32,29 +35,31 @@ DWORD fakeWindowProcess(HWND window, DWORD *pid) {
   return thread;
 }
 HANDLE fakeOpenProcess(DWORD access, BOOL inherit, DWORD pid) {
-  if (simulatedIntegrityByPid.contains(pid) || (simulatedOwnIntegrity && pid == GetCurrentProcessId()))
-    return reinterpret_cast<HANDLE>(fakeIntegrityBase | (pid & 0xffff));
+  if (simulatedOwnIntegrity && pid == GetCurrentProcessId()) return reinterpret_cast<HANDLE>(fakeOwnHandle);
+  if (const auto it = simulatedIntegrityByPid.find(pid); it != simulatedIntegrityByPid.end()) {
+    auto &handle = fakePidHandles[pid];
+    if (!handle) handle = reinterpret_cast<HANDLE>(nextFakePidHandle++);
+    fakeHandleLevels[handle] = it->second;
+    return handle;
+  }
   return OpenProcess(access, inherit, pid);
 }
 BOOL fakeOpenProcessToken(HANDLE process, DWORD access, PHANDLE token) {
-  const auto raw = reinterpret_cast<ULONG_PTR>(process);
   if (process == GetCurrentProcess() && simulatedOwnIntegrity) {
-    if (token) *token = reinterpret_cast<HANDLE>(fakeIntegrityBase | (GetCurrentProcessId() & 0xffff));
+    if (token) *token = reinterpret_cast<HANDLE>(fakeOwnHandle);
     return TRUE;
   }
-  if ((raw & ~ULONG_PTR(0xffff)) == fakeIntegrityBase) {
+  if (process == reinterpret_cast<HANDLE>(fakeOwnHandle) || fakeHandleLevels.contains(process)) {
     if (token) *token = process;
     return TRUE;
   }
   return OpenProcessToken(process, access, token);
 }
 BOOL fakeGetTokenInformation(HANDLE token, TOKEN_INFORMATION_CLASS cls, LPVOID info, DWORD len, PDWORD retLen) {
-  const auto raw = reinterpret_cast<ULONG_PTR>(token);
-  if (cls == TokenIntegrityLevel && (raw & ~ULONG_PTR(0xffff)) == fakeIntegrityBase) {
-    const DWORD pid = static_cast<DWORD>(raw & 0xffff);
-    DWORD level = SECURITY_MANDATORY_MEDIUM_RID;
-    if (pid == (GetCurrentProcessId() & 0xffff) && simulatedOwnIntegrity) level = simulatedOwnIntegrity;
-    else if (const auto it = simulatedIntegrityByPid.find(pid); it != simulatedIntegrityByPid.end()) level = it->second;
+  const bool isOwn = token == reinterpret_cast<HANDLE>(fakeOwnHandle) && simulatedOwnIntegrity;
+  const auto pidIt = fakeHandleLevels.find(token);
+  if (cls == TokenIntegrityLevel && (isOwn || pidIt != fakeHandleLevels.end())) {
+    const DWORD level = isOwn ? simulatedOwnIntegrity : pidIt->second;
     static SID sid{SID_REVISION, 1, SECURITY_MANDATORY_LABEL_AUTHORITY, {SECURITY_MANDATORY_MEDIUM_RID}};
     sid.SubAuthority[0] = level;
     const DWORD needed = sizeof(TOKEN_MANDATORY_LABEL);
@@ -68,8 +73,7 @@ BOOL fakeGetTokenInformation(HANDLE token, TOKEN_INFORMATION_CLASS cls, LPVOID i
   return GetTokenInformation(token, cls, info, len, retLen);
 }
 BOOL fakeCloseHandle(HANDLE handle) {
-  const auto raw = reinterpret_cast<ULONG_PTR>(handle);
-  if ((raw & ~ULONG_PTR(0xffff)) == fakeIntegrityBase) return TRUE;
+  if (handle == reinterpret_cast<HANDLE>(fakeOwnHandle) || fakeHandleLevels.contains(handle)) return TRUE;
   return CloseHandle(handle);
 }
 SHORT fakeKeys(int key) { return key == modifier || key == extraModifier ? SHORT(-32768) : 0; }
@@ -77,8 +81,16 @@ LRESULT fakeNextHook(HHOOK, int, WPARAM, LPARAM) { return 73; }
 void check(bool condition, const char *reason) { ++checks; if (!condition) throw std::runtime_error(reason); }
 BOOL fakeCreateProcess(LPCWSTR exe, LPWSTR arguments, LPSECURITY_ATTRIBUTES, LPSECURITY_ATTRIBUTES,
                        BOOL, DWORD flags, LPVOID, LPCWSTR, LPSTARTUPINFOW, LPPROCESS_INFORMATION process) {
-  ++directLaunches; launchedExe = exe; launchedArguments = arguments;
-  check(flags == CREATE_NO_WINDOW, "ordinary helper startup stays in the background");
+  const std::wstring_view argsView = arguments ? std::wstring_view(arguments) : std::wstring_view{};
+  launchedExe = exe ? exe : L"";
+  launchedArguments = std::wstring(argsView);
+  if (argsView.find(L" --quick-menu ") != std::wstring_view::npos) {
+    ++elevatedMenuLaunches;
+    check(flags == 0, "elevated quick menu launches visibly without CREATE_NO_WINDOW");
+  } else {
+    ++directLaunches;
+    check(flags == CREATE_NO_WINDOW, "ordinary helper startup stays in the background");
+  }
   if (!launchSucceeds) return FALSE;
   process->hProcess = CreateEventW(nullptr, TRUE, FALSE, nullptr);
   process->hThread = CreateEventW(nullptr, TRUE, FALSE, nullptr);
@@ -543,12 +555,15 @@ static void elevatedDialogTests(HWND mediumDialog, HWND highDialog, HWND highOrd
   navigation::setElevatedDialogQuickEnabled(true);
 
   const auto before = launches.size();
+  elevatedMenuLaunches = 0;
+  launchedArguments.clear();
   simulatedForeground = underPointer = mediumDialog;
   quick::updateTarget();
   check(quick::eligible.load() == nullptr && mouse(WM_MBUTTONDOWN) == 73 && mouse(WM_MBUTTONUP) == 73,
         "elevated companion never swallows or targets medium-integrity file dialogs");
   drain();
-  check(launches.size() == before, "elevated companion never launches a menu for medium-integrity dialogs");
+  check(elevatedMenuLaunches == 0 && launches.size() == before,
+        "elevated companion never launches a menu for medium-integrity dialogs");
 
   for (HWND nonDialog : {highDesktop, highExplorer, highOrdinary}) {
     simulatedForeground = underPointer = nonDialog;
@@ -557,15 +572,17 @@ static void elevatedDialogTests(HWND mediumDialog, HWND highDialog, HWND highOrd
           "elevated companion ignores high-integrity desktop, explorer, and non-file dialogs");
   }
   drain();
-  check(launches.size() == before, "elevated companion only serves file dialogs");
+  check(elevatedMenuLaunches == 0 && launches.size() == before, "elevated companion only serves file dialogs");
 
   simulatedForeground = underPointer = highDialog;
   quick::updateTarget();
   check(quick::eligible.load() == highDialog && mouse(WM_MBUTTONDOWN) == 1 && mouse(WM_MBUTTONUP) == 1,
         "elevated companion intercepts middle click on high-integrity file dialog");
   drain();
-  check(launches.size() == before + 1 && launches.back().first == highDialog,
-        "elevated companion opens quick folder menu for high-integrity file dialog");
+  const auto expectedArg = L" --quick-menu " + std::to_wstring(reinterpret_cast<UINT_PTR>(highDialog)) + L" 0 ";
+  check(elevatedMenuLaunches == 1 && launches.size() == before &&
+        launchedArguments.find(expectedArg) != std::wstring::npos,
+        "elevated companion opens quick folder menu via elevated process for high-integrity file dialog");
 
   enable(true, false);
   quick::updateTarget();
@@ -578,13 +595,16 @@ static void elevatedDialogTests(HWND mediumDialog, HWND highDialog, HWND highOrd
         "disabling elevated-dialog option immediately pauses elevated companion");
 
   drain();
-  check(launches.size() == before + 1, "disabled elevated companion never queues menus");
+  check(elevatedMenuLaunches == 1 && launches.size() == before, "disabled elevated companion never queues menus");
+  quick::watchDialog(nullptr);
   quick::elevatedCompanion = false;
   quick::eligible = nullptr;
   quick::middle = {};
   simulatedForeground = underPointer = simulatedShell = nullptr;
   simulatedWindowPids.clear();
   simulatedIntegrityByPid.clear();
+  fakePidHandles.clear();
+  fakeHandleLevels.clear();
   simulatedOwnIntegrity = 0;
   DestroyWindow(highDesktop);
   DestroyWindow(highExplorer);
