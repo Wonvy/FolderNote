@@ -14,7 +14,7 @@ struct Isolated {
   std::wstring name;
   Isolated() {
     GUID id{}; CoCreateGuid(&id); wchar_t text[40]{}; StringFromGUID2(id, text, 40);
-    name = std::wstring(L"Software\\FolderNoteQuickTests\\") + text;
+    name = std::wstring(L"Software\\ShibaKitQuickTests\\") + text;
     if (RegOpenCurrentUser(KEY_ALL_ACCESS, &real) ||
         RegCreateKeyExW(real, name.c_str(), 0, nullptr, 0, KEY_ALL_ACCESS, nullptr, &key, nullptr) ||
         RegOverridePredefKey(HKEY_CURRENT_USER, key)) throw std::runtime_error("isolated registry");
@@ -78,7 +78,7 @@ int main() {
     }
     legacy.push_back(0);
     quick::clearHistory();
-    check(RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote\\QuickFolders", L"History", REG_MULTI_SZ,
+    check(RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit\\QuickFolders", L"History", REG_MULTI_SZ,
         legacy.data(), static_cast<DWORD>(legacy.size() * sizeof(wchar_t))) == ERROR_SUCCESS);
     state = quick::load();
     check(state.history.size() == 20 && state.frequent.empty());
@@ -87,7 +87,7 @@ int main() {
     check(state.history.size() == 20 && state.history.front() == L"D:\\旧历史\\0" && state.history.back() == L"D:\\旧历史\\19");
     check(state.frequent.size() == 1 && state.frequent.front() == L"D:\\旧历史\\0");
     DWORD savedBytes = 0;
-    check(RegGetValueW(HKEY_CURRENT_USER, L"Software\\FolderNote\\QuickFolders", L"History", RRF_RT_REG_MULTI_SZ,
+    check(RegGetValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit\\QuickFolders", L"History", RRF_RT_REG_MULTI_SZ,
         nullptr, nullptr, &savedBytes) == ERROR_SUCCESS && savedBytes < legacy.size() * sizeof(wchar_t));
     quick::pin(L"D:\\另一项", false);
     for (unsigned i = 1; i < quick::pinLimit; ++i) quick::pin(L"D:\\Pin" + std::to_wstring(i), true);
@@ -95,24 +95,24 @@ int main() {
     try { quick::pin(L"D:\\too-many", true); } catch (const fn::Error &) { rejected = true; }
     check(rejected && quick::load().pins.size() == quick::pinLimit);
     const wchar_t bad[] = L"not a multi-string";
-    RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote\\QuickFolders", L"History", REG_SZ, bad, sizeof(bad));
+    RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit\\QuickFolders", L"History", REG_SZ, bad, sizeof(bad));
     rejected = false;
     try { quick::visit(L"C:\\dont-overwrite"); } catch (const fn::Error &) { rejected = true; }
     check(rejected);
     wchar_t unchanged[100]{}; DWORD bytes = sizeof(unchanged);
-    check(RegGetValueW(HKEY_CURRENT_USER, L"Software\\FolderNote\\QuickFolders", L"History", RRF_RT_REG_SZ, nullptr, unchanged, &bytes) == 0 && !wcscmp(bad, unchanged));
+    check(RegGetValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit\\QuickFolders", L"History", RRF_RT_REG_SZ, nullptr, unchanged, &bytes) == 0 && !wcscmp(bad, unchanged));
     quick::clearHistory(); check(quick::load().history.empty() && quick::load().frequent.empty());
     // An optional helper may only modify its own Run value, never other startup apps.
     constexpr auto run = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
     const wchar_t other[] = L"existing application";
     RegSetKeyValueW(HKEY_CURRENT_USER, run, L"OtherProgram", REG_SZ, other, sizeof(other));
-    quick::configureStartup(L"C:\\Program Files\\FolderNote\\FolderNote.exe", true);
+    quick::configureStartup(L"C:\\Program Files\\ShibaKit\\ShibaKit.exe", true);
     wchar_t command[256]{}; bytes = sizeof(command);
-    check(RegGetValueW(HKEY_CURRENT_USER, run, L"FolderNote.QuickFolders", RRF_RT_REG_SZ, nullptr, command, &bytes) == 0 &&
-          !wcscmp(command, L"\"C:\\Program Files\\FolderNote\\FolderNote.exe\" --quick-helper"));
+    check(RegGetValueW(HKEY_CURRENT_USER, run, L"ShibaKit.QuickFolders", RRF_RT_REG_SZ, nullptr, command, &bytes) == 0 &&
+          !wcscmp(command, L"\"C:\\Program Files\\ShibaKit\\ShibaKit.exe\" --quick-helper"));
     quick::configureStartup({}, false); quick::configureStartup({}, false);
     bytes = sizeof(command);
-    check(RegGetValueW(HKEY_CURRENT_USER, run, L"FolderNote.QuickFolders", RRF_RT_ANY, nullptr, command, &bytes) == ERROR_FILE_NOT_FOUND);
+    check(RegGetValueW(HKEY_CURRENT_USER, run, L"ShibaKit.QuickFolders", RRF_RT_ANY, nullptr, command, &bytes) == ERROR_FILE_NOT_FOUND);
     bytes = sizeof(command);
     check(RegGetValueW(HKEY_CURRENT_USER, run, L"OtherProgram", RRF_RT_REG_SZ, nullptr, command, &bytes) == 0 && !wcscmp(command, other));
     // Navigation guard must reject filename fields and unrelated dialogs.

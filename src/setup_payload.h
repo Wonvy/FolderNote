@@ -5,8 +5,8 @@
 namespace setup {
 inline constexpr int payloadResource = 301;
 inline constexpr const wchar_t *commonFiles[] = {
-    L"Install.exe", L"Uninstall.exe", L"FolderNote.exe", L"FolderNoteShell.dll", L"FolderNoteNavigation.dll"};
-inline constexpr const wchar_t *modernFiles[] = {L"Install-Win11.exe", L"FolderNote.msix"};
+    L"Install.exe", L"Uninstall.exe", L"ShibaKit.exe", L"ShibaKitShell.dll", L"ShibaKitNavigation.dll"};
+inline constexpr const wchar_t *modernFiles[] = {L"Install-Win11.exe", L"ShibaKit.msix"};
 inline constexpr auto bootstrapFile = L"Microsoft.WindowsAppRuntime.Bootstrap.dll";
 
 struct Staging {

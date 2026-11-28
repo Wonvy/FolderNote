@@ -17,7 +17,7 @@ public:
     if (FAILED(CoCreateGuid(&id))) throw 20;
     wchar_t token[40]{};
     StringFromGUID2(id, token, ARRAYSIZE(token));
-    path = std::wstring(L"Software\\FolderNote.Tests\\Shell\\") + token;
+    path = std::wstring(L"Software\\ShibaKit.Tests\\Shell\\") + token;
     if (RegCreateKeyExW(HKEY_CURRENT_USER, path.c_str(), 0, nullptr, 0, KEY_ALL_ACCESS,
                         nullptr, &key, nullptr) != ERROR_SUCCESS) throw 21;
     if (RegOverridePredefKey(HKEY_CURRENT_USER, key) != ERROR_SUCCESS) {
@@ -33,7 +33,7 @@ public:
   }
   void notes(bool enabled) {
     HKEY config{};
-    if (RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\FolderNote", 0, nullptr, 0,
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\ShibaKit", 0, nullptr, 0,
                         KEY_SET_VALUE, nullptr, &config, nullptr) != ERROR_SUCCESS) throw 23;
     const DWORD value = enabled ? 1 : 0;
     const auto result = RegSetValueExW(config, L"NotesEnabled", 0, REG_DWORD,
@@ -45,7 +45,7 @@ public:
 
 int wmain(int argc, wchar_t **argv) {
   CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-  auto dll = LoadLibraryW((fn::modulePath().parent_path() / L"FolderNoteShell.dll").c_str());
+  auto dll = LoadLibraryW((fn::modulePath().parent_path() / L"ShibaKitShell.dll").c_str());
   if (!dll) {
     CoUninitialize();
     return 1;
@@ -80,14 +80,14 @@ int wmain(int argc, wchar_t **argv) {
         if (FAILED(modern->GetTitle(nullptr, &title)) || !title) throw 11;
         const std::wstring titleText(title);
         CoTaskMemFree(title);
-        if (titleText != (op == 3 ? L"FolderNote 设置" : fn::titles[op])) throw 11;
+        if (titleText != (op == 3 ? L"ShibaKit 设置" : fn::titles[op])) throw 11;
         GUID canonical{};
         if (FAILED(modern->GetCanonicalName(&canonical)) || canonical != cls) throw 26;
         PWSTR icon = nullptr;
         if (FAILED(modern->GetIcon(nullptr, &icon)) || !icon) throw 27;
         const std::wstring iconText(icon);
         CoTaskMemFree(icon);
-        if (iconText.find(L"FolderNote.exe\",-101") == std::wstring::npos) throw 28;
+        if (iconText.find(L"ShibaKit.exe\",-101") == std::wstring::npos) throw 28;
         EXPCMDSTATE state{};
         const EXPCMDSTATE noNotesState = ECS_HIDDEN;
         if (modern->GetState(nullptr, FALSE, nullptr) != E_POINTER) throw 29;
@@ -106,7 +106,7 @@ int wmain(int argc, wchar_t **argv) {
           if (FAILED(arrayResult)) throw 5;
           selection->SetSelection(items.Get());
           if (count == 1) {
-            // Fresh install: no FolderNote context commands, even with a selection.
+            // Fresh install: no ShibaKit context commands, even with a selection.
             modern->GetState(items.Get(), FALSE, &state);
             if (state != noNotesState) throw 36;
             if (op != 3 && cmd->Execute() != E_ACCESSDENIED) throw 37;

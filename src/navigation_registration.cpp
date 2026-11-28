@@ -201,7 +201,7 @@ void registerUser(const fn::fs::path &directory) {
                                KEY_WRITE | KEY_WOW64_64KEY, nullptr, &key, nullptr);
   if (error)
     fn::fail(L"无法注册当前用户导航扩展", error);
-  const auto dll = (directory / L"FolderNoteNavigation.dll").native();
+  const auto dll = (directory / L"ShibaKitNavigation.dll").native();
   error = RegSetValueExW(key, nullptr, 0, REG_SZ, reinterpret_cast<const BYTE *>(dll.c_str()),
                          static_cast<DWORD>((dll.size() + 1) * sizeof(wchar_t)));
   if (!error) {
@@ -213,7 +213,7 @@ void registerUser(const fn::fs::path &directory) {
   if (error)
     fn::fail(L"无法注册当前用户导航扩展", error);
   }
-  const auto *title = lang::text(L"FolderNote 文件夹标签");
+  const auto *title = lang::text(L"ShibaKit 文件夹标签");
   auto error = RegSetKeyValueW(HKEY_CURRENT_USER, tabs::userKey, nullptr, REG_SZ, title,
                                static_cast<DWORD>((wcslen(title) + 1) * sizeof(wchar_t)));
   if (error) fn::fail(L"无法注册标签工具栏名称", error);

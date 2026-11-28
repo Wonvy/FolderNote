@@ -37,13 +37,13 @@ BOOL CALLBACK syncWindow(HWND window, LPARAM context) {
 }
 }
 TabsActivation syncTabs() {
-  Request request{{}, RegisterWindowMessageW(L"FolderNote.Navigation.SyncTabs.v1")};
+  Request request{{}, RegisterWindowMessageW(L"ShibaKit.Navigation.SyncTabs.v1")};
   if (!tabsSupported() || !request.message) return request.status;
   EnumWindows(syncWindow, reinterpret_cast<LPARAM>(&request));
   auto &status = request.status;
   if (status.windows && status.requested == status.windows && SUCCEEDED(status.result) &&
       (tabsEnabled() ? status.visible == status.windows : status.visible == 0)) status.result = S_OK;
-  constexpr auto key = L"Software\\FolderNote";
+  constexpr auto key = L"Software\\ShibaKit";
   RegSetKeyValueW(HKEY_CURRENT_USER, key, L"TabsLastActivationResult", REG_DWORD, &status.result, sizeof(status.result));
   RegSetKeyValueW(HKEY_CURRENT_USER, key, L"TabsActivationWindows", REG_DWORD, &status.windows, sizeof(DWORD));
   RegSetKeyValueW(HKEY_CURRENT_USER, key, L"TabsActivationRequested", REG_DWORD, &status.requested, sizeof(DWORD));

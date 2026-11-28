@@ -63,7 +63,7 @@ int wmain(int argc, wchar_t **argv) {
     return equal ? 0 : 1;
   }
   auto root = fn::fs::temp_directory_path() /
-              (L"FolderNote-Test-" + std::to_wstring(GetCurrentProcessId()));
+              (L"ShibaKit-Test-" + std::to_wstring(GetCurrentProcessId()));
   fn::fs::create_directories(root);
   try {
     auto p = root / L"中文 文件夹";
@@ -170,7 +170,7 @@ int wmain(int argc, wchar_t **argv) {
     const auto crossProcess = root / L"cross-process-cache";
     fn::fs::create_directory(crossProcess);
     fn::save(crossProcess, L"before");
-    const auto event = L"Local\\FolderNote.CacheTest." + std::to_wstring(GetCurrentProcessId());
+    const auto event = L"Local\\ShibaKit.CacheTest." + std::to_wstring(GetCurrentProcessId());
     HANDLE ready = CreateEventW(nullptr, TRUE, FALSE, (event + L".ready").c_str());
     HANDLE saved = CreateEventW(nullptr, TRUE, FALSE, (event + L".saved").c_str());
     command = L"\"" + fn::modulePath().native() + L"\" --warm-comment \"" + crossProcess.native() +

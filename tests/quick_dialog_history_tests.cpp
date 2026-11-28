@@ -30,7 +30,7 @@ struct Isolated {
   std::wstring name;
   Isolated() {
     GUID id{}; CoCreateGuid(&id); wchar_t text[40]{}; StringFromGUID2(id, text, 40);
-    name = std::wstring(L"Software\\FolderNoteDialogHistoryTests\\") + text;
+    name = std::wstring(L"Software\\ShibaKitDialogHistoryTests\\") + text;
     check(!RegOpenCurrentUser(KEY_ALL_ACCESS, &real) &&
         !RegCreateKeyExW(real, name.c_str(), 0, nullptr, 0, KEY_ALL_ACCESS, nullptr, &key, nullptr) &&
         !RegOverridePredefKey(HKEY_CURRENT_USER, key), "isolate registry writes");
@@ -39,8 +39,8 @@ struct Isolated {
 };
 void enable(bool value) {
   DWORD on = 1, dialogs = value ? 1 : 0;
-  RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"QuickFoldersEnabled", REG_DWORD, &on, sizeof(on));
-  RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"QuickFoldersInDialogs", REG_DWORD, &dialogs, sizeof(dialogs));
+  RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"QuickFoldersEnabled", REG_DWORD, &on, sizeof(on));
+  RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"QuickFoldersInDialogs", REG_DWORD, &dialogs, sizeof(dialogs));
 }
 }
 namespace quick::dialog {

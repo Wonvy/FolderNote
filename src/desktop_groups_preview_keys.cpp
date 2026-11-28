@@ -25,7 +25,7 @@ PreviewKeys::~PreviewKeys() {
 }
 bool PreviewKeys::refresh() {
   // Refresh on box focus and Seer's ready broadcast, also covering a Seer
-  // restart that installed its desktop hook after FolderNote started.
+  // restart that installed its desktop hook after ShibaKit started.
   if (active && active != this) return false;
   const auto next = SetWindowsHookExW(WH_KEYBOARD_LL, keyboard, GetModuleHandleW(nullptr), 0);
   if (!next) return false;

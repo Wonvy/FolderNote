@@ -20,7 +20,7 @@
 #include "desktop_groups_glass.h"
 #include "desktop_groups_render.h"
 #include "desktop_groups_storage.h"
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
 #include "desktop_groups_winui.h"
 #endif
 #include "desktop_groups_visibility.h"
@@ -63,12 +63,12 @@
 #include <utility>
 
 namespace desktop_groups::detail {
-constexpr auto receiverClass = L"FolderNote.DesktopGroups.Receiver";
-constexpr auto panelClass = L"FolderNote.DesktopGroups.Panel";
-constexpr auto tabPreviewClass = L"FolderNote.DesktopGroups.TabPreview";
-constexpr auto mutexName = L"Local\\FolderNote.DesktopGroups";
+constexpr auto receiverClass = L"ShibaKit.DesktopGroups.Receiver";
+constexpr auto panelClass = L"ShibaKit.DesktopGroups.Panel";
+constexpr auto tabPreviewClass = L"ShibaKit.DesktopGroups.TabPreview";
+constexpr auto mutexName = L"Local\\ShibaKit.DesktopGroups";
 constexpr auto runKey = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
-constexpr auto runName = L"FolderNote.DesktopGroups";
+constexpr auto runName = L"ShibaKit.DesktopGroups";
 constexpr UINT manageMessage = WM_APP + 1, rejectedMessage = WM_APP + 3;
 constexpr UINT dragMessage = WM_APP + 4, refreshMessage = WM_APP + 5;
 constexpr UINT createMessage = WM_APP + 6;
@@ -95,7 +95,7 @@ inline bool isTransferToken(const std::wstring &path) {
   return path.starts_with(transferTokenPrefix);
 }
 inline UINT appearanceMessage() {
-  static const UINT message = RegisterWindowMessageW(L"FolderNote.DesktopGroups.Appearance.v2");
+  static const UINT message = RegisterWindowMessageW(L"ShibaKit.DesktopGroups.Appearance.v2");
   return message;
 }
 constexpr WPARAM previewRadiusMask = 0x1f;
@@ -115,7 +115,7 @@ constexpr LRESULT resizeTitle = 0x100;
 using quick::popup::Branch;
 using quick::popup::Symbol;
 
-constexpr auto desktopSettings = L"Software\\FolderNote";
+constexpr auto desktopSettings = L"Software\\ShibaKit";
 inline DWORD appearanceValue(const wchar_t *name, DWORD fallback) {
   DWORD value = fallback, bytes = sizeof(value);
   return RegGetValueW(HKEY_CURRENT_USER, desktopSettings, name, RRF_RT_REG_DWORD,
@@ -161,8 +161,8 @@ inline std::vector<std::wstring> &manualItems(Group &group, size_t index) {
 }
 
 inline HWND receiver() { return FindWindowW(receiverClass, nullptr); }
-constexpr auto readyProperty = L"FolderNote.DesktopGroups.Ready";
-constexpr auto legacyManagedIconsProperty = L"FolderNote.DesktopGroups.ManagedIcons";
+constexpr auto readyProperty = L"ShibaKit.DesktopGroups.Ready";
+constexpr auto legacyManagedIconsProperty = L"ShibaKit.DesktopGroups.ManagedIcons";
 
 inline bool startup(const std::wstring &exe) {
   HKEY key = nullptr;
@@ -315,14 +315,14 @@ struct Insertion {
 };
 
 struct Panel {
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
   std::unique_ptr<winui::Surface> surface;
   RECT surfaceBounds{};
   bool headerActions = false;
   void syncSurfaceHeader();
 #endif
   bool hasSurface() const {
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
     return surface && surface->available();
 #else
     return false;
@@ -512,7 +512,7 @@ struct Panel {
     if (mappedWatch != INVALID_HANDLE_VALUE) { FindCloseChangeNotification(mappedWatch); mappedWatch = INVALID_HANDLE_VALUE; }
     if (window) KillTimer(window, collapseHoldTimer);
     if (tabDrag && tabDrag->preview) DestroyWindow(tabDrag->preview);
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
     surface.reset();
 #endif
     stopGesture();
@@ -570,7 +570,7 @@ struct Panel {
   bool middleDown = false;
   POINT middleDownPoint{};
   void handleMiddleClick(POINT screen);
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
   void openSurface();
 #endif
   static LRESULT CALLBACK proc(HWND window, UINT message, WPARAM w, LPARAM l);
@@ -580,7 +580,7 @@ class Desktop {
 public:
   HINSTANCE instance;
   HWND window = nullptr;
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
   bool useWinui = false;
 #endif
   fn::fs::path layoutFile = layoutPath();

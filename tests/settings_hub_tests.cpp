@@ -20,7 +20,7 @@ struct Registry {
   std::wstring path;
   Registry() {
     GUID token{}; CoCreateGuid(&token); wchar_t text[40]{}; StringFromGUID2(token, text, ARRAYSIZE(text));
-    path = std::wstring(L"Software\\FolderNoteSettingsHubTests\\") + text;
+    path = std::wstring(L"Software\\ShibaKitSettingsHubTests\\") + text;
     check(RegOpenCurrentUser(KEY_ALL_ACCESS, &real) == ERROR_SUCCESS &&
           RegCreateKeyExW(real, path.c_str(), 0, nullptr, 0, KEY_ALL_ACCESS, nullptr, &isolated, nullptr) == ERROR_SUCCESS &&
           RegOverridePredefKey(HKEY_CURRENT_USER, isolated) == ERROR_SUCCESS, "isolate settings registry");
@@ -45,8 +45,8 @@ struct Hub {
   HINSTANCE instance = GetModuleHandleW(nullptr);
   Hub() {
     WNDCLASSW cls{}; cls.hInstance = instance; cls.lpfnWndProc = navigation::contentProc;
-    cls.lpszClassName = L"FolderNote.Settings.Content"; RegisterClassW(&cls);
-    cls.lpfnWndProc = navigation::settingsProc; cls.lpszClassName = L"FolderNote.Settings.HiddenTest"; RegisterClassW(&cls);
+    cls.lpszClassName = L"ShibaKit.Settings.Content"; RegisterClassW(&cls);
+    cls.lpfnWndProc = navigation::settingsProc; cls.lpszClassName = L"ShibaKit.Settings.HiddenTest"; RegisterClassW(&cls);
     navigation::appearance = std::make_unique<ui::Theme>();
     navigation::dpi = 96;
     window = CreateWindowExW(0, cls.lpszClassName, L"Hidden settings layout test",
@@ -58,8 +58,8 @@ struct Hub {
     if (IsWindow(window)) DestroyWindow(window);
     navigation::appearance.reset();
     MSG message{}; while (PeekMessageW(&message, nullptr, WM_QUIT, WM_QUIT, PM_REMOVE)) {}
-    UnregisterClassW(L"FolderNote.Settings.HiddenTest", instance);
-    UnregisterClassW(L"FolderNote.Settings.Content", instance);
+    UnregisterClassW(L"ShibaKit.Settings.HiddenTest", instance);
+    UnregisterClassW(L"ShibaKit.Settings.Content", instance);
   }
 };
 void inspectVersion(HWND window) {
@@ -557,9 +557,9 @@ void languages() {
   check(std::wstring_view(lang::text(L"导出语言模板")) == L"导出语言模板", "built-in Chinese can be restored");
 }
 void desktopFenceMenu() {
-  constexpr auto verb = L"Software\\Classes\\DesktopBackground\\shell\\FolderNote.DesktopGroups.Create";
+  constexpr auto verb = L"Software\\Classes\\DesktopBackground\\shell\\ShibaKit.DesktopGroups.Create";
   constexpr auto sibling = L"Software\\Classes\\DesktopBackground\\shell\\Test.Fixture";
-  const std::wstring exe = L"C:\\Program Files\\FolderNote\\FolderNote.exe";
+  const std::wstring exe = L"C:\\Program Files\\ShibaKit\\ShibaKit.exe";
   const wchar_t fixture[] = L"Fixture";
   auto read = [](const wchar_t *subkey, const wchar_t *name) {
     wchar_t value[MAX_PATH]{};
@@ -572,7 +572,7 @@ void desktopFenceMenu() {
         "register a separate desktop verb");
   check(desktop_groups::configureDesktopMenu(exe) && read(verb, L"MUIVerb") == L"新建盒子" &&
         read((std::wstring(verb) + L"\\command").c_str(), nullptr) == L"\"" + exe + L"\" --desktop-groups-create",
-        "desktop fence verb invokes only FolderNote with the create command");
+        "desktop fence verb invokes only ShibaKit with the create command");
   lang::select(lang::Choice::English);
   check(desktop_groups::configureDesktopMenu(exe) && read(verb, L"MUIVerb") == L"New box", "desktop verb follows the language");
   lang::select(lang::Choice::Chinese);
@@ -685,7 +685,7 @@ void contextCommands() {
   auto loaded = context::loadCommands();
   check(context::commandsEnabled() && loaded.size() == 2 &&
         loaded[0].name == L"Second" && loaded[1].name == L"First", "custom command ordering persists");
-  constexpr auto registration = L"Software\\Classes\\Directory\\shell\\FolderNote.ContextCommands\\ExtendedSubCommandsKey\\shell\\1000";
+  constexpr auto registration = L"Software\\Classes\\Directory\\shell\\ShibaKit.ContextCommands\\ExtendedSubCommandsKey\\shell\\1000";
   wchar_t name[64]{};
   DWORD bytes = sizeof(name);
   check(RegGetValueW(HKEY_CURRENT_USER, registration, L"MUIVerb", RRF_RT_REG_SZ, nullptr, name, &bytes) == ERROR_SUCCESS &&
@@ -715,7 +715,7 @@ void updateConfirmationDialog() {
   Hub hub;
   updater::Release release{
       L"9.9.9",
-      L"https://github.com/Wonvy/FolderNote/releases/download/v9.9.9/FolderNote-Setup-x64.exe",
+      L"https://github.com/Wonvy/ShibaKit/releases/download/v9.9.9/ShibaKit-Setup-x64.exe",
       std::wstring(64, L'a'),
       false,
       true,
@@ -756,7 +756,7 @@ int main(int argc, char **argv) {
     if (argc == 2 && std::string_view(argv[1]) == "--preview-search") {
       Hub preview;
       navigation::showPage(navigation::SettingsPage::QuickFind);
-      SetWindowTextW(preview.window, L"FolderNote — 快捷搜索预览（隔离设置）");
+      SetWindowTextW(preview.window, L"ShibaKit — 快捷搜索预览（隔离设置）");
       ShowWindow(preview.window, SW_SHOWNORMAL);
       MSG message{};
       while (GetMessageW(&message, nullptr, 0, 0) > 0) {

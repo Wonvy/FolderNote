@@ -14,7 +14,7 @@
 #include <sddl.h>
 namespace quick {
 namespace {
-constexpr wchar_t dataKey[] = L"Software\\FolderNote\\QuickFolders";
+constexpr wchar_t dataKey[] = L"Software\\ShibaKit\\QuickFolders";
 constexpr size_t frequencyLimit = 256;
 constexpr size_t registryValueLimit = 1024 * 1024;
 struct Key {
@@ -35,7 +35,7 @@ struct Lock {
     LPWSTR sid = nullptr;
     if (!ok || !ConvertSidToStringSidW(reinterpret_cast<TOKEN_USER *>(bytes.data())->User.Sid, &sid))
       fn::fail(lang::text(L"无法读取用户信息"));
-    auto name = std::wstring(L"Local\\FolderNote.QuickFolders.") + sid;
+    auto name = std::wstring(L"Local\\ShibaKit.QuickFolders.") + sid;
     const auto sddl = std::wstring(L"D:(A;;GA;;;") + sid + L")S:(ML;;NW;;;ME)";
     LocalFree(sid);
     PSECURITY_DESCRIPTOR sd = nullptr;
@@ -299,12 +299,12 @@ std::wstring executable() {
   auto key = std::wstring(navreg::userKey) + L"\\InprocServer32";
   if (RegGetValueW(HKEY_CURRENT_USER, key.c_str(), nullptr, RRF_RT_REG_SZ, nullptr, dll.data(), &bytes) == ERROR_SUCCESS) {
     dll.resize(wcslen(dll.c_str()));
-    auto exe = std::filesystem::path(dll).parent_path() / L"FolderNote.exe";
+    auto exe = std::filesystem::path(dll).parent_path() / L"ShibaKit.exe";
     if (GetFileAttributesW(exe.c_str()) != INVALID_FILE_ATTRIBUTES) return exe.native();
   }
   auto process = fn::modulePath();
-  if (_wcsicmp(process.filename().c_str(), L"FolderNote.exe") == 0) return process.native();
-  throw fn::Error{lang::text(L"未找到已安装的 FolderNote，请重新安装后再试。")};
+  if (_wcsicmp(process.filename().c_str(), L"ShibaKit.exe") == 0) return process.native();
+  throw fn::Error{lang::text(L"未找到已安装的 ShibaKit，请重新安装后再试。")};
 }
 void launchMenu(HWND target, HWND view, POINT point) {
   auto exe = executable();

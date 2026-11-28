@@ -22,8 +22,8 @@ constexpr size_t metadataLimit = 2 * 1024 * 1024, packageLimit = 100 * 1024 * 10
 
 const wchar_t *packageName(bool win11Package, bool standaloneInstaller) {
   if (standaloneInstaller)
-    return win11Package ? L"FolderNote-Setup-Win11-x64.exe" : L"FolderNote-Setup-x64.exe";
-  return win11Package ? L"FolderNote-win11-test.zip" : L"FolderNote-win-x64.zip";
+    return win11Package ? L"ShibaKit-Setup-Win11-x64.exe" : L"ShibaKit-Setup-x64.exe";
+  return win11Package ? L"ShibaKit-win11-test.zip" : L"ShibaKit-win-x64.zip";
 }
 
 bool repositoryName(std::wstring_view name) {
@@ -72,7 +72,7 @@ void get(const std::wstring &url, size_t limit, DWORD deadlineMs, Read read) {
   if (parts.dwExtraInfoLength) path.append(parts.lpszExtraInfo, parts.dwExtraInfoLength);
   const wchar_t *headers = host == L"api.github.com"
       ? L"Accept: application/vnd.github+json\r\nX-GitHub-Api-Version: 2022-11-28\r\n" : WINHTTP_NO_ADDITIONAL_HEADERS;
-  HttpHandle session{WinHttpOpen(L"FolderNote Update", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+  HttpHandle session{WinHttpOpen(L"ShibaKit Update", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
                                 WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0)};
   if (!session.value || !WinHttpSetTimeouts(session.value, 5000, 5000, 10000, 10000))
     fn::fail(lang::text(L"无法准备 GitHub 连接"));
@@ -211,7 +211,7 @@ struct Staging {
     wchar_t token[40]{};
     if (FAILED(CoCreateGuid(&guid)) || !StringFromGUID2(guid, token, ARRAYSIZE(token)))
       throw fn::Error{lang::text(L"无法准备更新目录。")};
-    path = fn::fs::temp_directory_path() / (std::wstring(L"FolderNote-Update-") + token);
+    path = fn::fs::temp_directory_path() / (std::wstring(L"ShibaKit-Update-") + token);
     if (!CreateDirectoryW(path.c_str(), nullptr)) fn::fail(lang::text(L"无法创建更新目录"));
   }
   ~Staging() {
@@ -222,7 +222,7 @@ struct Staging {
 };
 
 struct InstallLock {
-  HANDLE mutex = CreateMutexW(nullptr, FALSE, L"Local\\FolderNote.Update.Install");
+  HANDLE mutex = CreateMutexW(nullptr, FALSE, L"Local\\ShibaKit.Update.Install");
 
   InstallLock() {
     if (mutex) {
@@ -275,9 +275,9 @@ void extract(const fn::fs::path &directory, bool win11Package) {
       L"$ErrorActionPreference='Stop'; Add-Type -AssemblyName System.IO.Compression.FileSystem; "
       L"$directory=(Get-Location).ProviderPath; "
       L"$zip=[IO.Compression.ZipFile]::OpenRead([IO.Path]::Combine($directory,'update.zip')); "
-      L"try { $total=0; foreach ($name in 'Install.exe','Uninstall.exe','FolderNote.exe',"
-      L"'FolderNoteShell.dll','FolderNoteNavigation.dll'";
-  if (win11Package) script += L",'Install-Win11.exe','FolderNote.msix'";
+      L"try { $total=0; foreach ($name in 'Install.exe','Uninstall.exe','ShibaKit.exe',"
+      L"'ShibaKitShell.dll','ShibaKitNavigation.dll'";
+  if (win11Package) script += L",'Install-Win11.exe','ShibaKit.msix'";
   script += L",'Microsoft.WindowsAppRuntime.Bootstrap.dll') { $entry=$zip.GetEntry($name); "
             L"if (!$entry -and $name -eq 'Microsoft.WindowsAppRuntime.Bootstrap.dll') { continue }; "
             L"if (!$entry -or $entry.Length -le 0) { throw 'Missing installer file' }; "
@@ -343,7 +343,7 @@ std::wstring formatReleaseNotes(std::wstring_view markdown) {
       ++i;
     }
 
-    if (cleaned.starts_with(L"下载 FolderNote-Setup") ||
+    if (cleaned.starts_with(L"下载 ShibaKit-Setup") ||
         cleaned == L"ZIP 用于兼容旧版在线更新。") {
       continue;
     }

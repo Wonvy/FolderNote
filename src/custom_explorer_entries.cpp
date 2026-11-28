@@ -10,12 +10,12 @@
 namespace explorer_entries {
 namespace {
 using Microsoft::WRL::ComPtr;
-constexpr wchar_t entriesKey[] = L"Software\\FolderNote\\ExplorerEntries\\Custom";
+constexpr wchar_t entriesKey[] = L"Software\\ShibaKit\\ExplorerEntries\\Custom";
 constexpr wchar_t classesKey[] = L"Software\\Classes\\CLSID";
 constexpr wchar_t thisPcKey[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MyComputer\\NameSpace";
 constexpr wchar_t desktopKey[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Desktop\\NameSpace";
 constexpr wchar_t hideDesktopKey[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\HideDesktopIcons\\NewStartPanel";
-constexpr wchar_t ownerValue[] = L"FolderNote.CustomEntry";
+constexpr wchar_t ownerValue[] = L"ShibaKit.CustomEntry";
 constexpr wchar_t registryError[] = L"无法更新文件夹入口";
 constexpr wchar_t createLinkError[] = L"无法创建桌面快捷方式";
 constexpr wchar_t deleteLinkError[] = L"无法移除桌面快捷方式";
@@ -25,7 +25,7 @@ struct Handle {
   ~Handle() { if (value && value != INVALID_HANDLE_VALUE) CloseHandle(value); }
 };
 struct Lock {
-  Handle mutex{CreateMutexW(nullptr, FALSE, L"Local\\FolderNote.CustomExplorerEntries")};
+  Handle mutex{CreateMutexW(nullptr, FALSE, L"Local\\ShibaKit.CustomExplorerEntries")};
   Lock() {
     if (!mutex.value) fn::fail(registryError);
     auto result = WaitForSingleObject(mutex.value, 5000);
@@ -231,7 +231,7 @@ fn::fs::path knownPath(REFKNOWNFOLDERID folder) {
   return value;
 }
 std::wstring linkDescription(const CustomEntry &entry) {
-  return L"FolderNote " + entry.id;
+  return L"ShibaKit " + entry.id;
 }
 ComPtr<IShellLinkW> shellLink(const wchar_t *message) {
   ComPtr<IShellLinkW> link;

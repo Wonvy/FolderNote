@@ -1,6 +1,6 @@
 #include "@CMAKE_CURRENT_SOURCE_DIR@/src/resource.h"
 #include <winver.h>
-IDI_FOLDERNOTE ICON "@CMAKE_CURRENT_SOURCE_DIR@/assets/FolderNote.ico"
+IDI_SHIBAKIT ICON "@CMAKE_CURRENT_SOURCE_DIR@/assets/ShibaKit.ico"
 302 RCDATA "@CMAKE_CURRENT_SOURCE_DIR@/third_party/pinyin-data/LICENSE"
 1 VERSIONINFO
  FILEVERSION @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,0
@@ -19,9 +19,9 @@ BEGIN
  BEGIN
   BLOCK "040904B0"
   BEGIN
-   VALUE "FileDescription", "FolderNote System Tools\0"
+   VALUE "FileDescription", "ShibaKit System Tools\0"
    VALUE "FileVersion", "@PROJECT_VERSION@\0"
-   VALUE "ProductName", "FolderNote\0"
+   VALUE "ProductName", "ShibaKit\0"
    VALUE "ProductVersion", "@PROJECT_VERSION@\0"
   END
  END

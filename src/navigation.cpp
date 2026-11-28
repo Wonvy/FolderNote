@@ -30,14 +30,14 @@
 #include <windowsx.h>
 #define MessageBoxW ui::message
 namespace navigation {
-static constexpr wchar_t configKey[] = L"Software\\FolderNote";
-static constexpr wchar_t listenerClass[] = L"FolderNote.Navigation.Listener.v1";
+static constexpr wchar_t configKey[] = L"Software\\ShibaKit";
+static constexpr wchar_t listenerClass[] = L"ShibaKit.Navigation.Listener.v1";
 struct Notification { DWORD process; UINT message; };
 static BOOL CALLBACK notifyTab(HWND window, LPARAM message) {
   const auto &notification = *reinterpret_cast<const Notification *>(message);
   DWORD process = 0;
   GetWindowThreadProcessId(window, &process);
-  if (process == notification.process && GetPropW(window, L"FolderNote.Navigation.Controller.v3"))
+  if (process == notification.process && GetPropW(window, L"ShibaKit.Navigation.Controller.v3"))
     PostMessageW(window, notification.message, 0, 0);
   return TRUE;
 }
@@ -86,11 +86,11 @@ static void notifyExplorer(const wchar_t *name) {
 }
 void stop() {
   stopLegacy();
-  notifyExplorer(L"FolderNote.Navigation.Shutdown.v2");
+  notifyExplorer(L"ShibaKit.Navigation.Shutdown.v2");
 }
 void reload() {
   stopLegacy();
-  notifyExplorer(L"FolderNote.Navigation.SettingsChanged.v2");
+  notifyExplorer(L"ShibaKit.Navigation.SettingsChanged.v2");
   SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
 }
 namespace {
@@ -178,7 +178,7 @@ static void applySettings(bool notes, Action action, Action preferred, bool quic
       saved[15].read(keys.values[0], L"DesktopGroupsShadowOffset");
     }
   }
-  // Only alter menus already installed by FolderNote. A modern-only or portable
+  // Only alter menus already installed by ShibaKit. A modern-only or portable
   // installation must not gain incomplete legacy menu entries when saving.
   for (size_t index = 0; index < 3; ++index) {
     const auto path = std::wstring(L"Software\\Classes\\Directory\\shell\\") + fn::verbs[index];
@@ -339,7 +339,7 @@ static const wchar_t *pageTitle(SettingsPage page) {
   }
   return lang::text(L"功能总览");
 }
-static UINT selectPageMessage() { return RegisterWindowMessageW(L"FolderNote.Settings.SelectPage.v1"); }
+static UINT selectPageMessage() { return RegisterWindowMessageW(L"ShibaKit.Settings.SelectPage.v1"); }
 static std::unique_ptr<ui::Theme> appearance;
 static constexpr int featuresSubtitle = 37;
 static constexpr int languageChoice = 43, languageExport = 44, languageImport = 45;
@@ -409,7 +409,7 @@ static void refreshLanguageMenus() {
 
 static std::wstring languagePath(HWND owner, bool importing) {
   std::wstring path(32768, L'\0');
-  if (!importing) wcscpy_s(path.data(), path.size(), L"FolderNote-language.xml");
+  if (!importing) wcscpy_s(path.data(), path.size(), L"ShibaKit-language.xml");
   OPENFILENAMEW dialog{sizeof(dialog)};
   dialog.hwndOwner = owner;
   dialog.lpstrFilter = L"XML (*.xml)\0*.xml\0\0";
@@ -476,7 +476,7 @@ static void saveFindSettings(HWND window) {
 static constexpr UINT_PTR updateTimer = 42;
 static constexpr auto automaticUpdateValue = L"AutomaticUpdate";
 static constexpr auto lastAutomaticCheckValue = L"LastAutomaticUpdateCheck";
-static constexpr auto uninstallKey = L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\FolderNote";
+static constexpr auto uninstallKey = L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\ShibaKit";
 
 enum class UpdateOperation { Check, Install, Automatic };
 struct UpdateResult {
@@ -517,7 +517,7 @@ static bool modernInstallation() {
     return false;
   // The Win11 installer removes the classic verbs because its MSIX owns them.
   HKEY key = nullptr;
-  auto result = RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Classes\\Directory\\shell\\FolderNote.Edit", 0, KEY_QUERY_VALUE, &key);
+  auto result = RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Classes\\Directory\\shell\\ShibaKit.Edit", 0, KEY_QUERY_VALUE, &key);
   if (key) RegCloseKey(key);
   return result == ERROR_FILE_NOT_FOUND || result == ERROR_PATH_NOT_FOUND;
 }
@@ -590,7 +590,7 @@ static void startUpdateWork(HWND owner, UpdateOperation operation, std::optional
   } catch (...) {
     KillTimer(owner, updateTimer);
     if (operation != UpdateOperation::Automatic)
-      MessageBoxW(owner, lang::text(L"无法启动更新，请重试。"), lang::text(L"FolderNote 更新"), MB_OK | MB_ICONERROR);
+      MessageBoxW(owner, lang::text(L"无法启动更新，请重试。"), lang::text(L"ShibaKit 更新"), MB_OK | MB_ICONERROR);
   }
 }
 
@@ -610,7 +610,7 @@ static std::wstring formatUpdateNotesText(const updater::Release &release) {
 }
 
 static std::wstring formatUpdatePrompt(const updater::Release &release) {
-  auto header = lang::format(L"发现新版本 FolderNote {0}（当前版本 {1}）。", {release.version, app::version});
+  auto header = lang::format(L"发现新版本 ShibaKit {0}（当前版本 {1}）。", {release.version, app::version});
   auto notesTitle = std::wstring(lang::text(L"更新内容："));
   auto notes = formatUpdateNotesText(release);
   auto question = std::wstring(lang::text(L"现在从 GitHub 下载并启动安装吗？"));
@@ -710,13 +710,13 @@ static LRESULT CALLBACK updateConfirmDialogProc(HWND window, UINT message, WPARA
 
 static HWND createUpdateConfirmDialog(HWND owner, const updater::Release &release, UpdateConfirmDialogState &state) {
   const HINSTANCE instance = GetModuleHandleW(nullptr);
-  constexpr wchar_t dialogClass[] = L"FolderNote.UpdateConfirmDialog";
+  constexpr wchar_t dialogClass[] = L"ShibaKit.UpdateConfirmDialog";
   WNDCLASSW cls{};
   if (!GetClassInfoW(instance, dialogClass, &cls)) {
     cls.lpfnWndProc = updateConfirmDialogProc;
     cls.hInstance = instance;
     cls.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    cls.hIcon = LoadIconW(instance, MAKEINTRESOURCEW(IDI_FOLDERNOTE));
+    cls.hIcon = LoadIconW(instance, MAKEINTRESOURCEW(IDI_SHIBAKIT));
     cls.lpszClassName = dialogClass;
     RegisterClassW(&cls);
   }
@@ -738,7 +738,7 @@ static HWND createUpdateConfirmDialog(HWND owner, const updater::Release &releas
   }
 
   HWND dialog = CreateWindowExW(WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT, dialogClass,
-                                lang::text(L"FolderNote 更新"),
+                                lang::text(L"ShibaKit 更新"),
                                 WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN,
                                 x, y, dialogW, dialogH, owner, nullptr, instance, &state);
   if (!dialog) return nullptr;
@@ -748,7 +748,7 @@ static HWND createUpdateConfirmDialog(HWND owner, const updater::Release &releas
   const int margin = px(20);
   const int contentW = std::max(px(200), static_cast<int>(client.right) - margin * 2);
 
-  const auto headingText = lang::format(L"发现新版本 FolderNote {0}（当前版本 {1}）", {release.version, app::version});
+  const auto headingText = lang::format(L"发现新版本 ShibaKit {0}（当前版本 {1}）", {release.version, app::version});
   HWND heading = CreateWindowExW(0, L"STATIC", headingText.c_str(),
                                  WS_CHILD | WS_VISIBLE | SS_NOPREFIX,
                                  margin, px(18), contentW, px(24),
@@ -811,7 +811,7 @@ static bool confirmUpdateDialog(HWND owner, const updater::Release &release) {
   HWND dialog = createUpdateConfirmDialog(owner, release, state);
   if (!dialog) {
     const auto prompt = formatUpdatePrompt(release);
-    return MessageBoxW(owner, prompt.c_str(), lang::text(L"FolderNote 更新"), MB_YESNO | MB_ICONQUESTION) == IDYES;
+    return MessageBoxW(owner, prompt.c_str(), lang::text(L"ShibaKit 更新"), MB_YESNO | MB_ICONQUESTION) == IDYES;
   }
   const bool hadOwner = owner && IsWindow(owner);
   const bool wasEnabled = hadOwner && IsWindowEnabled(owner) != FALSE;
@@ -848,7 +848,7 @@ static void finishUpdateWork(HWND owner) {
     availableUpdate.reset();
     if (result.installed) {
       updatedVersion = result.release->version;
-      updateStatus = lang::format(L"已安装 FolderNote {0}。重新打开设置即可使用新版。", {updatedVersion});
+      updateStatus = lang::format(L"已安装 ShibaKit {0}。重新打开设置即可使用新版。", {updatedVersion});
     } else if (result.release) {
       availableUpdate = std::move(result.release);
       updateStatus = lang::format(L"发现可用更新 {0}。", {availableUpdate->version});
@@ -867,11 +867,11 @@ static void finishUpdateWork(HWND owner) {
   updateControls(owner);
   if (operation == UpdateOperation::Install && result.error.empty()) { DestroyWindow(owner); return; }
   if (!result.error.empty()) {
-    MessageBoxW(owner, result.error.c_str(), lang::text(L"FolderNote 更新"), MB_OK | MB_ICONERROR);
+    MessageBoxW(owner, result.error.c_str(), lang::text(L"ShibaKit 更新"), MB_OK | MB_ICONERROR);
   } else if (result.release) {
     offerUpdate(owner, *result.release);
   } else {
-    MessageBoxW(owner, lang::text(L"当前已是最新版本。"), lang::text(L"FolderNote 更新"), MB_OK | MB_ICONINFORMATION);
+    MessageBoxW(owner, lang::text(L"当前已是最新版本。"), lang::text(L"ShibaKit 更新"), MB_OK | MB_ICONINFORMATION);
   }
 }
 static int scrollPosition = 0;
@@ -1044,7 +1044,7 @@ static void copyDiagnostics(HWND owner) {
     GlobalFree(memory);
     fn::fail(L"无法复制诊断信息");
   }
-  MessageBoxW(owner, lang::text(L"诊断信息已复制，可粘贴给开发者排查。"), L"FolderNote", MB_OK | MB_ICONINFORMATION);
+  MessageBoxW(owner, lang::text(L"诊断信息已复制，可粘贴给开发者排查。"), L"ShibaKit", MB_OK | MB_ICONINFORMATION);
 }
 static bool featureEnabledForPage(SettingsPage page) {
   switch (page) {
@@ -1188,7 +1188,7 @@ static void commitSettings(HWND owner, CommitScope scope) {
         if (tabsSupported() && tabsEnabled() && tabsStatus.windows && tabsStatus.visible == 0) {
           MessageBoxW(owner,
               lang::text(L"设置已保存，已打开的文件夹窗口尚未显示标签栏。\n请关闭后重新打开文件夹窗口。标签栏由这里的开关控制，无需在资源管理器菜单中勾选。\n仍未显示时，可复制诊断信息查看加载状态。"),
-              lang::text(L"FolderNote 多标签"), MB_OK | MB_ICONINFORMATION);
+              lang::text(L"ShibaKit 多标签"), MB_OK | MB_ICONINFORMATION);
         }
         break;
       }
@@ -1200,11 +1200,11 @@ static void commitSettings(HWND owner, CommitScope scope) {
   } catch (const fn::Error &e) {
     loadSettingsToControls(owner);
     if (IsWindowVisible(owner))
-      MessageBoxW(owner, e.message.c_str(), L"FolderNote", MB_OK | MB_ICONERROR);
+      MessageBoxW(owner, e.message.c_str(), L"ShibaKit", MB_OK | MB_ICONERROR);
   } catch (...) {
     loadSettingsToControls(owner);
     if (IsWindowVisible(owner))
-      MessageBoxW(owner, lang::text(L"无法保存设置，已恢复原有状态。"), L"FolderNote", MB_OK | MB_ICONERROR);
+      MessageBoxW(owner, lang::text(L"无法保存设置，已恢复原有状态。"), L"ShibaKit", MB_OK | MB_ICONERROR);
   }
 }
 
@@ -1230,7 +1230,7 @@ static void handleQuickFindMasterToggle(HWND owner, bool wantEnabled) {
   if (error != ERROR_SUCCESS) {
     refreshFindSettings(owner);
     if (IsWindowVisible(owner))
-      MessageBoxW(owner, lang::text(L"无法保存快捷搜索设置。"), L"FolderNote", MB_OK | MB_ICONERROR);
+      MessageBoxW(owner, lang::text(L"无法保存快捷搜索设置。"), L"ShibaKit", MB_OK | MB_ICONERROR);
     return;
   }
   refreshFindSettings(owner);
@@ -1238,7 +1238,7 @@ static void handleQuickFindMasterToggle(HWND owner, bool wantEnabled) {
     try {
       quick::syncHelper(quick::executable());
     } catch (const fn::Error &e) {
-      MessageBoxW(owner, e.message.c_str(), L"FolderNote", MB_OK | MB_ICONERROR);
+      MessageBoxW(owner, e.message.c_str(), L"ShibaKit", MB_OK | MB_ICONERROR);
     }
   }
 }
@@ -2012,7 +2012,7 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     ui::muted(add(h, L"STATIC", lang::text(L"由 Windows 管理桌面图标。拖入盒子的桌面文件和文件夹会移到隐藏的 .desktop 目录。"), SS_NOPREFIX, boxDesc));
     desktopGroupsManager = add(h, L"BUTTON", lang::text(L"管理桌面盒子"), WS_TABSTOP | BS_NOTIFY, desktopGroupsManage);
 
-    HWND logo = add(h, L"STATIC", L"FolderNote", SS_CENTER | SS_CENTERIMAGE | SS_NOPREFIX, 35);
+    HWND logo = add(h, L"STATIC", L"ShibaKit", SS_CENTER | SS_CENTERIMAGE | SS_NOPREFIX, 35);
     SendMessageW(logo, WM_SETFONT, reinterpret_cast<WPARAM>(brandFont), TRUE);
     for (const auto &item : sidebarItems) {
       auto button = add(h, L"BUTTON", sidebarLabel(item.page), BS_OWNERDRAW | WS_TABSTOP, item.id);
@@ -2122,7 +2122,7 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     for (auto titleText : {lang::text(L"跟随系统"), lang::text(L"浅色"), lang::text(L"深色")}) SendMessageW(themeChoice, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(titleText));
     SendMessageW(themeChoice, CB_SETITEMHEIGHT, WPARAM(-1), scale(26));
 
-    body = CreateWindowExW(WS_EX_CONTROLPARENT, L"FolderNote.Settings.Content", lang::text(L"功能总览"),
+    body = CreateWindowExW(WS_EX_CONTROLPARENT, L"ShibaKit.Settings.Content", lang::text(L"功能总览"),
         WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN, 0, 0, 0, 0, h, nullptr, GetModuleHandleW(nullptr), nullptr);
     settingsScroll.create(h, 34, *appearance, [](int position) { scrollPosition = position; layoutBody(); });
     managerPage = quick::createManagerPage(GetModuleHandleW(nullptr), h, appearance->mode);
@@ -2205,8 +2205,8 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         DestroyWindow(h);
       } catch (...) {
         SendDlgItemMessageW(h, languageChoice, CB_SETCURSEL, static_cast<unsigned>(lang::settings().choice), 0);
-        MessageBoxW(h, id == languageImport ? lang::text(L"无法导入语言文件。请使用有效的 FolderNote XML 语言模板。") :
-            lang::text(L"无法保存语言设置或模板。"), L"FolderNote", MB_OK | MB_ICONERROR);
+        MessageBoxW(h, id == languageImport ? lang::text(L"无法导入语言文件。请使用有效的 ShibaKit XML 语言模板。") :
+            lang::text(L"无法保存语言设置或模板。"), L"ShibaKit", MB_OK | MB_ICONERROR);
       }
       return 0;
     }
@@ -2222,10 +2222,10 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         syncNoteMenus();
       } catch (const fn::Error &e) {
         refreshNotesControls(h);
-        if (IsWindowVisible(h)) MessageBoxW(h, e.message.c_str(), L"FolderNote", MB_OK | MB_ICONERROR);
+        if (IsWindowVisible(h)) MessageBoxW(h, e.message.c_str(), L"ShibaKit", MB_OK | MB_ICONERROR);
       } catch (...) {
         refreshNotesControls(h);
-        if (IsWindowVisible(h)) MessageBoxW(h, lang::text(L"无法更新备注菜单开关"), L"FolderNote", MB_OK | MB_ICONERROR);
+        if (IsWindowVisible(h)) MessageBoxW(h, lang::text(L"无法更新备注菜单开关"), L"ShibaKit", MB_OK | MB_ICONERROR);
       }
     } else if (LOWORD(w) == notesOpenContextMenu && HIWORD(w) == BN_CLICKED) {
       showPage(SettingsPage::ContextMenus);
@@ -2245,10 +2245,10 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
           }
         } catch (const fn::Error &e) {
           loadSettingsToControls(h);
-          MessageBoxW(h, e.message.c_str(), L"FolderNote", MB_OK | MB_ICONERROR);
+          MessageBoxW(h, e.message.c_str(), L"ShibaKit", MB_OK | MB_ICONERROR);
         } catch (...) {
           loadSettingsToControls(h);
-          MessageBoxW(h, lang::text(L"操作未完成，请稍后重试。"), L"FolderNote", MB_OK | MB_ICONERROR);
+          MessageBoxW(h, lang::text(L"操作未完成，请稍后重试。"), L"ShibaKit", MB_OK | MB_ICONERROR);
         }
       }
     } else if (LOWORD(w) == 21 && HIWORD(w) == BN_CLICKED && preferNewTabCheck) {
@@ -2266,7 +2266,7 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
       }
     } else if (LOWORD(w) == desktopGroupsManage && HIWORD(w) == BN_CLICKED) {
       if (IsWindowEnabled(desktopGroupsManager) && !desktop_groups::showManager())
-        MessageBoxW(h, lang::text(L"无法打开桌面盒子管理。"), L"FolderNote", MB_OK | MB_ICONERROR);
+        MessageBoxW(h, lang::text(L"无法打开桌面盒子管理。"), L"ShibaKit", MB_OK | MB_ICONERROR);
     } else if ((LOWORD(w) == boxGlass || LOWORD(w) == boxShadow) && HIWORD(w) == BN_CLICKED) {
       boxStyle.glass = SendDlgItemMessageW(h, boxGlass, BM_GETCHECK, 0, 0) == BST_CHECKED;
       boxStyle.shadow = SendDlgItemMessageW(h, boxShadow, BM_GETCHECK, 0, 0) == BST_CHECKED;
@@ -2286,7 +2286,7 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                button != sidebarItems.end() && HIWORD(w) == BN_CLICKED) {
       showPage(button->page);
     } else if (LOWORD(w) == 13 && HIWORD(w) == BN_CLICKED) {
-      try { copyDiagnostics(h); } catch (const fn::Error &e) { MessageBoxW(h, e.message.c_str(), L"FolderNote", MB_OK | MB_ICONERROR); }
+      try { copyDiagnostics(h); } catch (const fn::Error &e) { MessageBoxW(h, e.message.c_str(), L"ShibaKit", MB_OK | MB_ICONERROR); }
     } else if ((HIWORD(w) == BN_CLICKED && std::any_of(std::begin(findToggles), std::end(findToggles),
                    [&](const auto &toggle) { return toggle.id == LOWORD(w); })) ||
                (HIWORD(w) == CBN_SELCHANGE && (LOWORD(w) == findFolderAction || LOWORD(w) == findFileAction ||
@@ -2295,20 +2295,20 @@ static LRESULT CALLBACK settingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         saveFindSettings(h);
       } catch (const fn::Error &error) {
         refreshFindSettings(h);
-        MessageBoxW(h, error.message.c_str(), L"FolderNote", MB_OK | MB_ICONERROR);
+        MessageBoxW(h, error.message.c_str(), L"ShibaKit", MB_OK | MB_ICONERROR);
       }
     } else if (LOWORD(w) == automaticUpdateCheck && HIWORD(w) == BN_CLICKED && *app::updateRepository &&
                (!updateWork.valid() || workingAutomatically())) {
       const DWORD enabled = SendDlgItemMessageW(h, automaticUpdateCheck, BM_GETCHECK, 0, 0) == BST_CHECKED;
       if (RegSetKeyValueW(HKEY_CURRENT_USER, configKey, automaticUpdateValue, REG_DWORD, &enabled, sizeof(enabled)) != ERROR_SUCCESS) {
         SendDlgItemMessageW(h, automaticUpdateCheck, BM_SETCHECK, automaticUpdatesEnabled() ? BST_CHECKED : BST_UNCHECKED, 0);
-        MessageBoxW(h, lang::text(L"无法保存自动更新设置。"), lang::text(L"FolderNote 更新"), MB_OK | MB_ICONERROR);
+        MessageBoxW(h, lang::text(L"无法保存自动更新设置。"), lang::text(L"ShibaKit 更新"), MB_OK | MB_ICONERROR);
       } else if (enabled && IsWindowVisible(h)) {
         checkAutomatically(h);
       }
     } else if (LOWORD(w) == updateButton && HIWORD(w) == BN_CLICKED && !updateWork.valid()) {
       if (*app::updateRepository) startUpdateWork(h, UpdateOperation::Check);
-      else MessageBoxW(h, lang::text(L"此构建尚未配置 GitHub 更新源。请使用 GitHub Releases 发布的安装包。"), lang::text(L"FolderNote 更新"), MB_OK | MB_ICONINFORMATION);
+      else MessageBoxW(h, lang::text(L"此构建尚未配置 GitHub 更新源。请使用 GitHub Releases 发布的安装包。"), lang::text(L"ShibaKit 更新"), MB_OK | MB_ICONINFORMATION);
     }
     return 0;
   case WM_TIMER: if (w == updateTimer) { finishUpdateWork(h); return 0; } break;
@@ -2421,14 +2421,14 @@ int settings(HINSTANCE instance, SettingsPage page) {
   }
   activePage = page;
   WNDCLASSW cls{}; cls.lpfnWndProc = contentProc; cls.hInstance = instance;
-  cls.hCursor = LoadCursorW(nullptr, IDC_ARROW); cls.lpszClassName = L"FolderNote.Settings.Content"; RegisterClassW(&cls);
-  cls.lpfnWndProc = settingsProc; cls.hIcon = LoadIconW(instance, MAKEINTRESOURCEW(IDI_FOLDERNOTE));
-  cls.lpszClassName = L"FolderNote.Settings"; RegisterClassW(&cls);
+  cls.hCursor = LoadCursorW(nullptr, IDC_ARROW); cls.lpszClassName = L"ShibaKit.Settings.Content"; RegisterClassW(&cls);
+  cls.lpfnWndProc = settingsProc; cls.hIcon = LoadIconW(instance, MAKEINTRESOURCEW(IDI_SHIBAKIT));
+  cls.lpszClassName = L"ShibaKit.Settings"; RegisterClassW(&cls);
   do {
     reopenForLanguage = false;
     appearance = std::make_unique<ui::Theme>(); dpi = GetDpiForSystem();
     const RECT work = ui::mouseWorkArea();
-    HWND window = CreateWindowExW(0, cls.lpszClassName, lang::text(L"FolderNote 系统工具设置"),
+    HWND window = CreateWindowExW(0, cls.lpszClassName, lang::text(L"ShibaKit 系统工具设置"),
         WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
         work.left, work.top, scale(980), scale(660), nullptr, nullptr, instance, nullptr);
     if (!window) {

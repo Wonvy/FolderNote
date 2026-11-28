@@ -42,10 +42,10 @@ foreach($size in $sizes){
     $stream = [IO.MemoryStream]::new()
     $image.Save($stream,[Drawing.Imaging.ImageFormat]::Png)
     $entries += ,$stream.ToArray()
-    if($size -eq 256){$image.Save((Join-Path $PSScriptRoot 'FolderNote.png'),[Drawing.Imaging.ImageFormat]::Png)}
+    if($size -eq 256){$image.Save((Join-Path $PSScriptRoot 'ShibaKit.png'),[Drawing.Imaging.ImageFormat]::Png)}
     $image.Dispose(); $stream.Dispose()
 }
-$file = [IO.File]::Create((Join-Path $PSScriptRoot 'FolderNote.ico'))
+$file = [IO.File]::Create((Join-Path $PSScriptRoot 'ShibaKit.ico'))
 $writer = [IO.BinaryWriter]::new($file)
 $writer.Write([uint16]0); $writer.Write([uint16]1); $writer.Write([uint16]$sizes.Count)
 $offset = 6 + 16 * $sizes.Count

@@ -1,4 +1,4 @@
-// Manual local probe. Read-only by default; --activate requests only FolderNote's bar.
+// Manual local probe. Read-only by default; --activate requests only ShibaKit's bar.
 #include "../src/explorer_tabs.h"
 #include "../src/navigation.h"
 #include <wrl/client.h>

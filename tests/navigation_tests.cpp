@@ -20,7 +20,7 @@ public:
   IsolatedSettings() {
     if (RegOpenCurrentUser(KEY_ALL_ACCESS, &realUser) != ERROR_SUCCESS)
       throw std::runtime_error("open test registry");
-    path = L"Software\\FolderNote-NavigationTests-" + std::to_wstring(GetCurrentProcessId()) +
+    path = L"Software\\ShibaKit-NavigationTests-" + std::to_wstring(GetCurrentProcessId()) +
            L"-" + std::to_wstring(GetTickCount64());
     DWORD disposition = 0;
     const auto result = RegCreateKeyExW(realUser, path.c_str(), 0, nullptr, 0, KEY_ALL_ACCESS,
@@ -47,7 +47,7 @@ public:
     RegCloseKey(realUser);
   }
   void set(DWORD type, const void *data, DWORD bytes) {
-    check(RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"BlankDoubleClick", type,
+    check(RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"BlankDoubleClick", type,
                           data, bytes) == ERROR_SUCCESS);
   }
 };
@@ -152,7 +152,7 @@ int main() {
       check(tabsEnabled() && !preferNewTabEnabled());
       saveSettings(false, Action::Parent, Action::Parent, false, true, ui::ThemeMode::System, false, false);
       DWORD invalidTheme = 99;
-      check(RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"Theme", REG_DWORD, &invalidTheme, sizeof(invalidTheme)) == ERROR_SUCCESS);
+      check(RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"Theme", REG_DWORD, &invalidTheme, sizeof(invalidTheme)) == ERROR_SUCCESS);
       check(ui::configuredTheme() == ui::ThemeMode::System);
       saveSettings(false, Action::Off, Action::Back, true, false);
       check(quickEnabled() && !dialogQuickEnabled() && configuredAction() == Action::Off && !notesEnabled());
@@ -160,7 +160,7 @@ int main() {
       check(quickEnabled() && !dialogQuickEnabled()); // Legacy save / upgrade preserves the new switch.
       saveSettings(false, Action::Parent, Action::Parent, false, true);
       check(!quickEnabled() && dialogQuickEnabled());
-      check(RegDeleteTreeW(HKEY_CURRENT_USER, L"Software\\FolderNote") == ERROR_SUCCESS);
+      check(RegDeleteTreeW(HKEY_CURRENT_USER, L"Software\\ShibaKit") == ERROR_SUCCESS);
       for (DWORD value : {0UL, 1UL, 2UL}) {
         settings.set(REG_DWORD, &value, sizeof(value));
         check(configuredAction() == Action(value));
@@ -182,10 +182,10 @@ int main() {
       for (auto verb : fn::verbs)
         check(!registryValueExists(std::wstring(L"Software\\Classes\\Directory\\shell\\") + verb, nullptr));
 
-      const std::wstring edit = L"Software\\Classes\\Directory\\shell\\FolderNote.Edit";
-      const std::wstring clear = L"Software\\Classes\\Directory\\shell\\FolderNote.Clear";
-      const std::wstring repair = L"Software\\Classes\\Directory\\shell\\FolderNote.Repair";
-      const std::wstring settingsMenu = L"Software\\Classes\\Directory\\Background\\shell\\FolderNote.Settings";
+      const std::wstring edit = L"Software\\Classes\\Directory\\shell\\ShibaKit.Edit";
+      const std::wstring clear = L"Software\\Classes\\Directory\\shell\\ShibaKit.Clear";
+      const std::wstring repair = L"Software\\Classes\\Directory\\shell\\ShibaKit.Repair";
+      const std::wstring settingsMenu = L"Software\\Classes\\Directory\\Background\\shell\\ShibaKit.Settings";
       const std::wstring unrelated = L"Software\\Classes\\Directory\\shell\\AnotherTool";
       for (auto path : {edit, clear, settingsMenu, unrelated}) {
         setText(path, nullptr, L"existing title");
@@ -228,18 +228,18 @@ int main() {
       check(!notesEnabled() && configuredAction() == Action::Off && preferredAction() == Action::Back);
 
       // Corrupt values must not accidentally opt into note menus.
-      check(RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"NotesEnabled",
+      check(RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"NotesEnabled",
                             REG_SZ, invalid, sizeof(invalid)) == ERROR_SUCCESS);
       check(!notesEnabled());
-      check(RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"ExplorerOpenInNewTab",
+      check(RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"ExplorerOpenInNewTab",
                             REG_SZ, invalid, sizeof(invalid)) == ERROR_SUCCESS);
       check(!preferNewTabEnabled());
       DWORD invalidNewTab = 2;
-      check(RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"ExplorerOpenInNewTab",
+      check(RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"ExplorerOpenInNewTab",
                             REG_DWORD, &invalidNewTab, sizeof(invalidNewTab)) == ERROR_SUCCESS);
       check(!preferNewTabEnabled());
       DWORD invalidPreference = 17;
-      check(RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"NavigationPreference",
+      check(RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"NavigationPreference",
                             REG_DWORD, &invalidPreference, sizeof(invalidPreference)) == ERROR_SUCCESS);
       check(preferredAction() == Action::Parent);
     }

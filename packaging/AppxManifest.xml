@@ -1,25 +1,25 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10" xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10" xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities" xmlns:com="http://schemas.microsoft.com/appx/manifest/com/windows10" xmlns:desktop4="http://schemas.microsoft.com/appx/manifest/desktop/windows10/4" xmlns:desktop5="http://schemas.microsoft.com/appx/manifest/desktop/windows10/5" xmlns:virtualization="http://schemas.microsoft.com/appx/manifest/virtualization/windows10" IgnorableNamespaces="uap rescap com desktop4 desktop5 virtualization">
- <Identity Name="FolderNote.Desktop" Publisher="CN=FolderNote, OID.2.25.311729368913984317654407730594956997722=1" Version="@PROJECT_VERSION@.0" ProcessorArchitecture="x64"/>
+ <Identity Name="ShibaKit.Desktop" Publisher="CN=ShibaKit, OID.2.25.311729368913984317654407730594956997722=1" Version="@PROJECT_VERSION@.0" ProcessorArchitecture="x64"/>
  <Properties>
-  <DisplayName>FolderNote 系统工具</DisplayName><PublisherDisplayName>FolderNote</PublisherDisplayName><Logo>Assets\Logo.png</Logo>
+  <DisplayName>ShibaKit 系统工具</DisplayName><PublisherDisplayName>ShibaKit</PublisherDisplayName><Logo>Assets\Logo.png</Logo>
   <!-- The packaged settings UI and the unpackaged Explorer navigation extension
        must share these settings. Keep all unrelated registry writes virtualized. -->
   <virtualization:RegistryWriteVirtualization>
    <virtualization:ExcludedKeys>
-    <virtualization:ExcludedKey>HKEY_CURRENT_USER\Software\FolderNote</virtualization:ExcludedKey>
-    <virtualization:ExcludedKey>HKEY_CURRENT_USER\Software\FolderNote\ExplorerEntries\Custom</virtualization:ExcludedKey>
-    <virtualization:ExcludedKey>HKEY_CURRENT_USER\Software\FolderNote\ExplorerEntryChanges</virtualization:ExcludedKey>
-    <virtualization:ExcludedKey>HKEY_CURRENT_USER\Software\FolderNote\ExplorerEntryChanges\ThisPC</virtualization:ExcludedKey>
-    <virtualization:ExcludedKey>HKEY_CURRENT_USER\Software\FolderNote\ExplorerEntryChanges\Navigation</virtualization:ExcludedKey>
-    <virtualization:ExcludedKey>HKEY_CURRENT_USER\Software\FolderNote\ExplorerEntryChanges\Desktop</virtualization:ExcludedKey>
-    <virtualization:ExcludedKey>HKEY_CURRENT_USER\Software\FolderNote\DesktopFolderLinkChanges</virtualization:ExcludedKey>
-    <virtualization:ExcludedKey>HKEY_CURRENT_USER\Software\Classes\DesktopBackground\shell\FolderNote.DesktopGroups.Create</virtualization:ExcludedKey>
-    <virtualization:ExcludedKey>HKEY_CURRENT_USER\Software\Classes\DesktopBackground\shell\FolderNote.DesktopGroups.Create\command</virtualization:ExcludedKey>
+    <virtualization:ExcludedKey>HKEY_CURRENT_USER\Software\ShibaKit</virtualization:ExcludedKey>
+    <virtualization:ExcludedKey>HKEY_CURRENT_USER\Software\ShibaKit\ExplorerEntries\Custom</virtualization:ExcludedKey>
+    <virtualization:ExcludedKey>HKEY_CURRENT_USER\Software\ShibaKit\ExplorerEntryChanges</virtualization:ExcludedKey>
+    <virtualization:ExcludedKey>HKEY_CURRENT_USER\Software\ShibaKit\ExplorerEntryChanges\ThisPC</virtualization:ExcludedKey>
+    <virtualization:ExcludedKey>HKEY_CURRENT_USER\Software\ShibaKit\ExplorerEntryChanges\Navigation</virtualization:ExcludedKey>
+    <virtualization:ExcludedKey>HKEY_CURRENT_USER\Software\ShibaKit\ExplorerEntryChanges\Desktop</virtualization:ExcludedKey>
+    <virtualization:ExcludedKey>HKEY_CURRENT_USER\Software\ShibaKit\DesktopFolderLinkChanges</virtualization:ExcludedKey>
+    <virtualization:ExcludedKey>HKEY_CURRENT_USER\Software\Classes\DesktopBackground\shell\ShibaKit.DesktopGroups.Create</virtualization:ExcludedKey>
+    <virtualization:ExcludedKey>HKEY_CURRENT_USER\Software\Classes\DesktopBackground\shell\ShibaKit.DesktopGroups.Create\command</virtualization:ExcludedKey>
     <virtualization:ExcludedKey>HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run</virtualization:ExcludedKey>
-    <virtualization:ExcludedKey>HKEY_CURRENT_USER\Software\Classes\Directory\shell\FolderNote.Edit</virtualization:ExcludedKey>
-    <virtualization:ExcludedKey>HKEY_CURRENT_USER\Software\Classes\Directory\shell\FolderNote.Clear</virtualization:ExcludedKey>
-    <virtualization:ExcludedKey>HKEY_CURRENT_USER\Software\Classes\Directory\shell\FolderNote.Repair</virtualization:ExcludedKey>
+    <virtualization:ExcludedKey>HKEY_CURRENT_USER\Software\Classes\Directory\shell\ShibaKit.Edit</virtualization:ExcludedKey>
+    <virtualization:ExcludedKey>HKEY_CURRENT_USER\Software\Classes\Directory\shell\ShibaKit.Clear</virtualization:ExcludedKey>
+    <virtualization:ExcludedKey>HKEY_CURRENT_USER\Software\Classes\Directory\shell\ShibaKit.Repair</virtualization:ExcludedKey>
     <!-- Folder entry registrations and visibility settings must be visible to Explorer. -->
     <virtualization:ExcludedKey>HKEY_CURRENT_USER\Software\Classes\CLSID</virtualization:ExcludedKey>
     <virtualization:ExcludedKey>HKEY_CURRENT_USER\Software\Classes\Wow6432Node\CLSID</virtualization:ExcludedKey>
@@ -34,18 +34,18 @@
  </Properties>
  <Dependencies><TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.22000.0" MaxVersionTested="10.0.26100.0"/></Dependencies>
  <Resources><Resource Language="zh-cn"/></Resources>
- <Applications><Application Id="FolderNote" Executable="FolderNote.exe" EntryPoint="Windows.FullTrustApplication">
-  <uap:VisualElements DisplayName="FolderNote 设置" Description="独立设置文件夹备注和双击空白处导航" BackgroundColor="transparent" Square150x150Logo="Assets\Logo.png" Square44x44Logo="Assets\SmallLogo.png"/>
+ <Applications><Application Id="ShibaKit" Executable="ShibaKit.exe" EntryPoint="Windows.FullTrustApplication">
+  <uap:VisualElements DisplayName="ShibaKit 设置" Description="独立设置文件夹备注和双击空白处导航" BackgroundColor="transparent" Square150x150Logo="Assets\Logo.png" Square44x44Logo="Assets\SmallLogo.png"/>
   <Extensions>
-   <com:Extension Category="windows.comServer"><com:ComServer><com:SurrogateServer DisplayName="FolderNote">
-    <com:Class Id="7BA54C64-5E92-4C99-AD47-06DD67193401" Path="FolderNoteShell.dll" ThreadingModel="STA"/>
-    <com:Class Id="7BA54C64-5E92-4C99-AD47-06DD67193402" Path="FolderNoteShell.dll" ThreadingModel="STA"/>
-    <com:Class Id="7BA54C64-5E92-4C99-AD47-06DD67193403" Path="FolderNoteShell.dll" ThreadingModel="STA"/>
+   <com:Extension Category="windows.comServer"><com:ComServer><com:SurrogateServer DisplayName="ShibaKit">
+    <com:Class Id="7BA54C64-5E92-4C99-AD47-06DD67193401" Path="ShibaKitShell.dll" ThreadingModel="STA"/>
+    <com:Class Id="7BA54C64-5E92-4C99-AD47-06DD67193402" Path="ShibaKitShell.dll" ThreadingModel="STA"/>
+    <com:Class Id="7BA54C64-5E92-4C99-AD47-06DD67193403" Path="ShibaKitShell.dll" ThreadingModel="STA"/>
    </com:SurrogateServer></com:ComServer></com:Extension>
    <desktop4:Extension Category="windows.fileExplorerContextMenus"><desktop4:FileExplorerContextMenus><desktop5:ItemType Type="Directory">
-    <desktop5:Verb Id="FolderNoteEdit" Clsid="7BA54C64-5E92-4C99-AD47-06DD67193401"/>
-    <desktop5:Verb Id="FolderNoteClear" Clsid="7BA54C64-5E92-4C99-AD47-06DD67193402"/>
-    <desktop5:Verb Id="FolderNoteRepair" Clsid="7BA54C64-5E92-4C99-AD47-06DD67193403"/>
+    <desktop5:Verb Id="ShibaKitEdit" Clsid="7BA54C64-5E92-4C99-AD47-06DD67193401"/>
+    <desktop5:Verb Id="ShibaKitClear" Clsid="7BA54C64-5E92-4C99-AD47-06DD67193402"/>
+    <desktop5:Verb Id="ShibaKitRepair" Clsid="7BA54C64-5E92-4C99-AD47-06DD67193403"/>
    </desktop5:ItemType></desktop4:FileExplorerContextMenus></desktop4:Extension>
   </Extensions>
  </Application></Applications>

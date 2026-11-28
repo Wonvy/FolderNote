@@ -22,7 +22,7 @@ int main() {
   using quick::detail::MenuGate;
   using quick::detail::MenuRequest;
   try {
-    const auto base = std::wstring(L"Local\\FolderNote.MenuGateTests.") + std::to_wstring(GetCurrentProcessId()) + L"." + std::to_wstring(GetTickCount64());
+    const auto base = std::wstring(L"Local\\ShibaKit.MenuGateTests.") + std::to_wstring(GetCurrentProcessId()) + L"." + std::to_wstring(GetTickCount64());
     const auto mutexName = base + L".Popup", windowA = base + L".WindowA", windowB = base + L".WindowB";
     MenuGate retainedHandle(mutexName.c_str());
     check(retainedHandle.acquire(0), "initial popup acquires gate");

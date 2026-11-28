@@ -12,10 +12,10 @@
 namespace context {
 namespace {
 using namespace std::literals;
-constexpr auto configKey = L"Software\\FolderNote";
+constexpr auto configKey = L"Software\\ShibaKit";
 constexpr auto configValue = L"ContextCommandsV1";
 constexpr size_t maxCommands = 128, maxUnits = 256 * 1024;
-constexpr auto menuName = L"FolderNote.ContextCommands";
+constexpr auto menuName = L"ShibaKit.ContextCommands";
 struct MenuLocation {
   const wchar_t *key;
   const wchar_t *argument;
@@ -39,7 +39,7 @@ struct Handle {
   ~Handle() { if (handle) CloseHandle(handle); }
 };
 struct RegistryLock {
-  Handle mutex{CreateMutexW(nullptr, FALSE, L"Local\\FolderNote.ContextCommands.v1")};
+  Handle mutex{CreateMutexW(nullptr, FALSE, L"Local\\ShibaKit.ContextCommands.v1")};
   RegistryLock() {
     if (!mutex.handle) fn::fail(L"无法保存右键菜单配置");
     const auto result = WaitForSingleObject(mutex.handle, 5000);
@@ -233,13 +233,13 @@ std::wstring quote(std::wstring_view argument) {
 void registryString(const std::wstring &key, const wchar_t *name, const std::wstring &value) {
   auto error = RegSetKeyValueW(HKEY_CURRENT_USER, key.c_str(), name, REG_SZ, value.c_str(),
                               static_cast<DWORD>((value.size() + 1) * sizeof(wchar_t)));
-  if (error) fn::fail(L"无法注册 FolderNote 右键菜单", error);
+  if (error) fn::fail(L"无法注册 ShibaKit 右键菜单", error);
 }
 void removeRegistration() {
   for (const auto &location : menuLocations) {
     auto error = RegDeleteTreeW(HKEY_CURRENT_USER, menuKey(location).c_str());
     if (error != ERROR_SUCCESS && error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND)
-      fn::fail(L"无法移除 FolderNote 右键菜单", error);
+      fn::fail(L"无法移除 ShibaKit 右键菜单", error);
   }
 }
 size_t locationIndex(Scene scene) {
@@ -288,7 +288,7 @@ void updateRegistration(const Configuration &configuration, const fn::fs::path &
       const auto root = menuKey(menuLocations[location]);
       if (!counts[location]) {
         registryString(root, nullptr, L"");
-        registryString(root, L"MUIVerb", L"FolderNote");
+        registryString(root, L"MUIVerb", L"ShibaKit");
         registryString(root, L"MultiSelectModel", L"Single");
         registryString(root, L"Icon", quote(exe.native()) + L",0");
       }
@@ -332,7 +332,7 @@ std::wstring systemDirectory() {
   return path;
 }
 std::wstring programArguments(const Command &command, const std::wstring &path, const std::wstring &parent) {
-  const auto commandLine = L"FolderNote " + command.arguments;
+  const auto commandLine = L"ShibaKit " + command.arguments;
   int count = 0;
   std::unique_ptr<LPWSTR, FreeLocal> arguments(CommandLineToArgvW(commandLine.c_str(), &count));
   if (!arguments) fn::fail(L"无法启动右键菜单命令");
@@ -347,9 +347,9 @@ std::wstring shellArguments(const Command &command) {
   if (command.mode == Mode::Cmd) {
     // Delayed expansion inserts the path after cmd parses metacharacters and
     // percent expansions. The selected path stays outside the command text.
-    return L"/D /V:ON /S /C \"" + replacePaths(command.arguments, L"\"!FOLDERNOTE_CONTEXT_PATH!\"", L"\"!FOLDERNOTE_CONTEXT_PARENT!\"") + L"\"";
+    return L"/D /V:ON /S /C \"" + replacePaths(command.arguments, L"\"!SHIBAKIT_CONTEXT_PATH!\"", L"\"!SHIBAKIT_CONTEXT_PARENT!\"") + L"\"";
   }
-  return replacePaths(command.arguments, L"($env:FOLDERNOTE_CONTEXT_PATH)", L"($env:FOLDERNOTE_CONTEXT_PARENT)");
+  return replacePaths(command.arguments, L"($env:SHIBAKIT_CONTEXT_PATH)", L"($env:SHIBAKIT_CONTEXT_PARENT)");
 }
 std::wstring base64(std::wstring_view value) {
   constexpr wchar_t alphabet[] = L"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -380,11 +380,11 @@ std::vector<wchar_t> commandEnvironment(const std::wstring &path, const std::wst
   struct Environment { LPWCH value; ~Environment() { FreeEnvironmentStringsW(value); } } saved{environment};
   std::vector<std::wstring> variables;
   for (auto entry = environment; *entry; entry += wcslen(entry) + 1) {
-    if (!prefix(entry, L"FOLDERNOTE_CONTEXT_PATH=") && !prefix(entry, L"FOLDERNOTE_CONTEXT_PARENT="))
+    if (!prefix(entry, L"SHIBAKIT_CONTEXT_PATH=") && !prefix(entry, L"SHIBAKIT_CONTEXT_PARENT="))
       variables.emplace_back(entry);
   }
-  variables.push_back(L"FOLDERNOTE_CONTEXT_PATH=" + path);
-  variables.push_back(L"FOLDERNOTE_CONTEXT_PARENT=" + parent);
+  variables.push_back(L"SHIBAKIT_CONTEXT_PATH=" + path);
+  variables.push_back(L"SHIBAKIT_CONTEXT_PARENT=" + parent);
   std::sort(variables.begin(), variables.end(), [](const auto &a, const auto &b) {
     return CompareStringOrdinal(a.c_str(), -1, b.c_str(), -1, TRUE) == CSTR_LESS_THAN;
   });

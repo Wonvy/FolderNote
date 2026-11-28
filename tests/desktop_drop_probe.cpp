@@ -109,20 +109,20 @@ int main(int argc, char **argv) {
   int result = 0;
   SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
   if (FAILED(OleInitialize(nullptr))) return 1;
-  root = std::filesystem::temp_directory_path() / (L"FolderNoteDropProbe-" + std::to_wstring(GetCurrentProcessId()));
+  root = std::filesystem::temp_directory_path() / (L"ShibaKitDropProbe-" + std::to_wstring(GetCurrentProcessId()));
   std::filesystem::create_directories(root / L"sample folder");
   std::ofstream(root / L"sample.txt") << "temporary drag fixture";
   {
     desktop_groups::winui::Runtime runtime;
     if (!runtime.available()) { log("WinUI unavailable"); return 77; }
     WNDCLASSW cls{}; cls.lpfnWndProc = proc; cls.hInstance = GetModuleHandleW(nullptr);
-    cls.lpszClassName = L"FolderNote.DropProbe"; cls.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    cls.lpszClassName = L"ShibaKit.DropProbe"; cls.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     cls.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
     RegisterClassW(&cls);
     const auto desktop = desktopHost ? desktop_groups::desktopWindowHost() : nullptr;
     if (desktopHost && !desktop) { log("Shell desktop unavailable"); return 77; }
     desktop_groups::DesktopDpiScope hostDpi(desktop);
-    HWND window = CreateWindowExW(preview || desktopHost ? WS_EX_NOACTIVATE : 0, cls.lpszClassName, L"FolderNote Drop Probe",
+    HWND window = CreateWindowExW(preview || desktopHost ? WS_EX_NOACTIVATE : 0, cls.lpszClassName, L"ShibaKit Drop Probe",
         (desktopHost ? WS_POPUP : WS_OVERLAPPEDWINDOW) | WS_CLIPCHILDREN,
         100, 100, 900, 600, nullptr, nullptr, cls.hInstance, nullptr);
     HWND host = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN,

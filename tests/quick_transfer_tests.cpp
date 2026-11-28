@@ -100,7 +100,7 @@ struct Files {
   std::filesystem::path root;
   Files() {
     GUID id{}; CoCreateGuid(&id); wchar_t token[40]{}; StringFromGUID2(id, token, ARRAYSIZE(token));
-    root = std::filesystem::temp_directory_path() / (std::wstring(L"FolderNote-TransferTests-") + token);
+    root = std::filesystem::temp_directory_path() / (std::wstring(L"ShibaKit-TransferTests-") + token);
     std::filesystem::create_directories(root / L"source" / L"子目录 😀");
     std::filesystem::create_directories(root / L"copied"); std::filesystem::create_directories(root / L"moved");
     std::ofstream(root / L"source" / L"资料 with spaces.txt") << "test payload";

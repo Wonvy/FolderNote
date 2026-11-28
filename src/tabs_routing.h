@@ -6,7 +6,7 @@
 #include <vector>
 
 namespace tabs::routing {
-inline constexpr wchar_t helperClass[] = L"FolderNote.QuickFolders.Helper.v1";
+inline constexpr wchar_t helperClass[] = L"ShibaKit.QuickFolders.Helper.v1";
 // Only the helper requests a transfer. A source returns 0 while busy, 1 when
 // accepted, or 2 for deliberate retention. Completion is asynchronous.
 inline constexpr UINT routeMessage = WM_APP + 127;
@@ -14,12 +14,12 @@ inline constexpr UINT importMessage = WM_APP + 128;
 inline constexpr UINT completedMessage = WM_APP + 129;
 inline constexpr UINT holdMessage = WM_APP + 130;
 inline UINT releaseGateMessage() {
-  static const UINT message = RegisterWindowMessageW(L"FolderNote.ExplorerTabs.ReleaseGate.v1");
+  static const UINT message = RegisterWindowMessageW(L"ShibaKit.ExplorerTabs.ReleaseGate.v1");
   return message;
 }
 inline constexpr UINT capabilityMessage = WM_APP + 132;
-inline constexpr wchar_t gateProperty[] = L"FolderNote.ExplorerTabs.Held.v1";
-inline constexpr wchar_t gateOriginProperty[] = L"FolderNote.ExplorerTabs.HeldForeground.v1";
+inline constexpr wchar_t gateProperty[] = L"ShibaKit.ExplorerTabs.Held.v1";
+inline constexpr wchar_t gateOriginProperty[] = L"ShibaKit.ExplorerTabs.HeldForeground.v1";
 inline constexpr ULONG_PTR importData = 0x464e5401;
 inline constexpr ULONG_PTR bypassAdd = 0x464e5402;
 inline constexpr ULONG_PTR bypassCheck = 0x464e5403;
@@ -44,7 +44,7 @@ inline bool bandWindow(HWND band) {
   if (!IsWindow(band)) return false;
   auto frame = GetAncestor(band, GA_ROOT);
   wchar_t name[64]{}; GetClassNameW(band, name, ARRAYSIZE(name));
-  return !wcscmp(name, L"FolderNote.ExplorerTabs.Band.v1") &&
+  return !wcscmp(name, L"ShibaKit.ExplorerTabs.Band.v1") &&
       GetPropW(frame, windowProperty) == band;
 }
 inline std::vector<BYTE> encode(const Packet &packet) {

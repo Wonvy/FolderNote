@@ -207,7 +207,7 @@ bool Desktop::openPanel(size_t index) {
                            window, nullptr, instance, panel.get());
   };
   HWND handle = nullptr;
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
   if (useWinui) {
     // No redirection bitmap must be set before the HWND and its island are created.
     handle = create(WS_EX_NOREDIRECTIONBITMAP);
@@ -236,7 +236,7 @@ bool Desktop::openPanel(size_t index) {
   panel->setCollapsed();
   panel->windowPositionReady = true;
   if (boxesHidden) {
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
     if (panel->hasSurface()) panel->surface->show(false);
 #endif
     ShowWindow(handle, SW_HIDE);
@@ -307,7 +307,7 @@ void Desktop::highlight(HWND target) {
   const auto previous = std::exchange(dropHighlight, target);
   for (const auto &panel : panels) {
     if (panel->window != previous && panel->window != target) continue;
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
     if (panel->hasSurface()) {
       panel->surface->highlight(panel->window == target);
       continue;
@@ -457,7 +457,7 @@ std::optional<PreviewTarget> Desktop::previewTarget() const {
   if (!panel || panel->dockHidden || panel->collapsed() || panel->findPopup.active() || panel->titleEdit ||
       GetForegroundWindow() != GetAncestor(panel->window, GA_ROOT)) return std::nullopt;
   std::optional<int> row;
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
   if (panel->hasSurface()) row = panel->surface->previewRow();
   else
 #endif
@@ -525,7 +525,7 @@ void Desktop::updateGlass(HWND raisedPanel) {
   if (rebuilding || quitting || !IsWindow(host)) return;
   std::vector<GlassArea> areas;
   std::map<int, std::shared_ptr<const WallpaperFrame>> frames;
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
   if (!boxesHidden) {
     // Follow the sibling order that lower() will apply, including the newly
     // raised box, so overlapping boxes retain their own blur on the first frame.
@@ -653,7 +653,7 @@ void Desktop::renameBox(Panel &panel, std::wstring name) {
   changed[index].name = std::move(name);
   if (!commit(std::move(changed), panel.window)) return;
   SetWindowTextW(panel.window, groups[index].name.c_str());
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
   panel.syncSurfaceHeader();
 #endif
   InvalidateRect(panel.window, nullptr, FALSE);
@@ -716,7 +716,7 @@ void Desktop::renameItem(Panel &panel, std::wstring oldPath, std::wstring origin
     ListView_SetItemState(panel.list, -1, 0, LVIS_SELECTED | LVIS_FOCUSED);
     ListView_SetItemState(panel.list, row, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
     ListView_EnsureVisible(panel.list, row, FALSE);
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
     if (panel.hasSurface()) { panel.surface->select({row}); panel.surface->reveal(row); }
 #endif
   };
@@ -876,7 +876,7 @@ void Desktop::action(Panel *panel, Command command, size_t tabIndex) {
     auto changed = groups;
     changed[index].tabs[tabIndex - 1].name = std::move(name);
     if (commit(std::move(changed), owner, false)) {
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
       panel->syncSurfaceHeader();
 #endif
       InvalidateRect(panel->tabs, nullptr, FALSE);
@@ -1071,7 +1071,7 @@ void Desktop::action(Panel *panel, Command command, size_t tabIndex) {
       auto changed = groups;
       changed[index].tabs[tabIndex - 1].name = std::move(name);
       if (commit(std::move(changed), owner, false)) {
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
         panel->syncSurfaceHeader();
 #endif
         InvalidateRect(panel->tabs, nullptr, FALSE);

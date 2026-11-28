@@ -1,4 +1,4 @@
-LIBRARY FolderNoteShell
+LIBRARY ShibaKitShell
 EXPORTS
  DllGetClassObject PRIVATE
  DllCanUnloadNow PRIVATE

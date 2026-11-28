@@ -20,12 +20,12 @@ namespace {
 std::atomic<long> controllers{0};
 std::atomic<long> queryWorkers{0};
 std::atomic<UINT_PTR> nextToken{1};
-UINT resultMessage() { static const UINT m = RegisterWindowMessageW(L"FolderNote.Navigation.QueryReady.v2"); return m; }
-UINT refreshMessage() { static const UINT m = RegisterWindowMessageW(L"FolderNote.Navigation.RefreshView.v2"); return m; }
-UINT settingsMessage() { static const UINT m = RegisterWindowMessageW(L"FolderNote.Navigation.SettingsChanged.v2"); return m; }
-UINT shutdownMessage() { static const UINT m = RegisterWindowMessageW(L"FolderNote.Navigation.Shutdown.v2"); return m; }
-constexpr wchar_t ownerProperty[] = L"FolderNote.Navigation.ViewOwner.v2";
-constexpr wchar_t controllerProperty[] = L"FolderNote.Navigation.Controller.v3";
+UINT resultMessage() { static const UINT m = RegisterWindowMessageW(L"ShibaKit.Navigation.QueryReady.v2"); return m; }
+UINT refreshMessage() { static const UINT m = RegisterWindowMessageW(L"ShibaKit.Navigation.RefreshView.v2"); return m; }
+UINT settingsMessage() { static const UINT m = RegisterWindowMessageW(L"ShibaKit.Navigation.SettingsChanged.v2"); return m; }
+UINT shutdownMessage() { static const UINT m = RegisterWindowMessageW(L"ShibaKit.Navigation.Shutdown.v2"); return m; }
+constexpr wchar_t ownerProperty[] = L"ShibaKit.Navigation.ViewOwner.v2";
+constexpr wchar_t controllerProperty[] = L"ShibaKit.Navigation.Controller.v3";
 bool modifiers() {
   return ((GetAsyncKeyState(VK_CONTROL) | GetAsyncKeyState(VK_SHIFT) |
            GetAsyncKeyState(VK_MENU) | GetAsyncKeyState(VK_LWIN) |
@@ -389,7 +389,7 @@ static bool forwardTabWheel(Controller *c, WPARAM keys, LPARAM point) {
   if (!IsWindow(band) || GetWindowThreadProcessId(band, nullptr) != c->thread ||
       !IsChild(c->frame, band) || GetAncestor(band, GA_ROOT) != c->frame ||
       !IsWindowVisible(band) || !IsWindowEnabled(band) || !IsWindowEnabled(c->frame) ||
-      !GetClassNameW(band, name, ARRAYSIZE(name)) || wcscmp(name, L"FolderNote.ExplorerTabs.Band.v1"))
+      !GetClassNameW(band, name, ARRAYSIZE(name)) || wcscmp(name, L"ShibaKit.ExplorerTabs.Band.v1"))
     return false;
   // WM_MOUSEWHEEL already supplies a screen point. Only the band's actual
   // hit-test may consume it; otherwise native file-view scrolling continues.

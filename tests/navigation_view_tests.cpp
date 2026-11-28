@@ -50,7 +50,7 @@ class IsolatedSettings {
 public:
   IsolatedSettings() {
     check(RegOpenCurrentUser(KEY_ALL_ACCESS, &realUser) == ERROR_SUCCESS, "open test registry");
-    path = L"Software\\FolderNote-ViewTests-" + std::to_wstring(GetCurrentProcessId()) + L"-" +
+    path = L"Software\\ShibaKit-ViewTests-" + std::to_wstring(GetCurrentProcessId()) + L"-" +
            std::to_wstring(GetTickCount64());
     DWORD disposition = 0;
     auto result = RegCreateKeyExW(realUser, path.c_str(), 0, nullptr, 0, KEY_ALL_ACCESS, nullptr,
@@ -75,7 +75,7 @@ public:
   }
   void set(navigation::Action action) {
     DWORD value = DWORD(action);
-    check(RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"BlankDoubleClick",
+    check(RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"BlankDoubleClick",
                           REG_DWORD, &value, sizeof(value)) == ERROR_SUCCESS, "store test action");
   }
 };
@@ -209,7 +209,7 @@ bool waitForWorkers(long count) {
 struct Window {
   HWND handle = nullptr;
   explicit Window(HWND parent = nullptr, const wchar_t *windowClass = L"STATIC") {
-    handle = CreateWindowExW(0, windowClass, L"FolderNote isolated view test", parent ? WS_CHILD : WS_OVERLAPPED,
+    handle = CreateWindowExW(0, windowClass, L"ShibaKit isolated view test", parent ? WS_CHILD : WS_OVERLAPPED,
                               0, 0, 100, 100, parent, nullptr, GetModuleHandleW(nullptr), nullptr);
     check(handle != nullptr, "create hidden fixture window");
   }
@@ -249,9 +249,9 @@ struct ThreadFrame {
 };
 void lifecycle(IsolatedSettings &settings) {
   using navigation::Action;
-  constexpr wchar_t property[] = L"FolderNote.Navigation.ViewOwner.v2";
-  const UINT settingsMessage = RegisterWindowMessageW(L"FolderNote.Navigation.SettingsChanged.v2");
-  const UINT shutdownMessage = RegisterWindowMessageW(L"FolderNote.Navigation.Shutdown.v2");
+  constexpr wchar_t property[] = L"ShibaKit.Navigation.ViewOwner.v2";
+  const UINT settingsMessage = RegisterWindowMessageW(L"ShibaKit.Navigation.SettingsChanged.v2");
+  const UINT shutdownMessage = RegisterWindowMessageW(L"ShibaKit.Navigation.Shutdown.v2");
   Window frame;
   Window surface(frame.handle);
   FakeView view;
@@ -270,12 +270,12 @@ void lifecycle(IsolatedSettings &settings) {
   controller.reset();
   check(viewnav::activeControllers() == 0 && browser.refs == 1, "detach releases browser and controller");
   DWORD enabled = 1;
-  RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"QuickFoldersEnabled", REG_DWORD, &enabled, sizeof(enabled));
+  RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"QuickFoldersEnabled", REG_DWORD, &enabled, sizeof(enabled));
   controller.value = viewnav::attach(frame.handle, &browser);
   check(controller.value && viewnav::hasView(controller.value), "quick folders attaches when double click is off");
   check(viewnav::activeQueryWorkers() == 0, "quick folders does not start blank-hit worker");
   enabled = 0;
-  RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"QuickFoldersEnabled", REG_DWORD, &enabled, sizeof(enabled));
+  RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"QuickFoldersEnabled", REG_DWORD, &enabled, sizeof(enabled));
   SendMessageW(frame.handle, settingsMessage, 0, 0);
   check(!viewnav::hasView(controller.value), "all features off removes view subclass");
   controller.reset();
@@ -329,7 +329,7 @@ void reentrantDetach(IsolatedSettings &settings) {
   browser.onQuery = [&] { controller.reset(); };
   viewnav::refresh(controller.value, &browser);
   browser.onQuery = {};
-  check(!GetPropW(surface.handle, L"FolderNote.Navigation.ViewOwner.v2"), "reentrant detach leaves no surface callback");
+  check(!GetPropW(surface.handle, L"ShibaKit.Navigation.ViewOwner.v2"), "reentrant detach leaves no surface callback");
   check(viewnav::activeControllers() == 0 && browser.refs == 1, "reentrant detach deletes once");
   check(waitForWorkers(0), "reentrant detach releases worker");
   SendMessageW(frame.handle, WM_ACTIVATE, WA_ACTIVE, 0);
@@ -370,8 +370,8 @@ void tabIsolation(IsolatedSettings &settings) {
     check(viewnav::hasView(first.value) && viewnav::hasView(second.value),
           "both browser views are attached");
     check(!viewnav::attach(firstTab.handle, &firstBrowser), "same tab duplicate rejected");
-    check(GetPropW(firstTab.handle, L"FolderNote.Navigation.Controller.v3") &&
-          GetPropW(secondTab.handle, L"FolderNote.Navigation.Controller.v3"),
+    check(GetPropW(firstTab.handle, L"ShibaKit.Navigation.Controller.v3") &&
+          GetPropW(secondTab.handle, L"ShibaKit.Navigation.Controller.v3"),
           "settings can discover both tab receivers");
     check(waitForWorkers(1), "two tabs share one query worker");
     // A top-level browser service must never retarget a tab controller to the
@@ -383,7 +383,7 @@ void tabIsolation(IsolatedSettings &settings) {
     firstBrowser.active = &firstView;
     viewnav::refresh(first.value, &firstBrowser);
     check(viewnav::hasView(first.value), "original tab can reattach");
-    const UINT settingsMessage = RegisterWindowMessageW(L"FolderNote.Navigation.SettingsChanged.v2");
+    const UINT settingsMessage = RegisterWindowMessageW(L"ShibaKit.Navigation.SettingsChanged.v2");
     settings.set(navigation::Action::Off);
     SendMessageW(firstTab.handle, settingsMessage, 0, 0);
     SendMessageW(secondTab.handle, settingsMessage, 0, 0);
@@ -396,7 +396,7 @@ void tabIsolation(IsolatedSettings &settings) {
     check(viewnav::hasView(first.value) && viewnav::hasView(second.value),
           "existing tabs resume independently");
     first.reset();
-    check(!GetPropW(firstTab.handle, L"FolderNote.Navigation.Controller.v3") &&
+    check(!GetPropW(firstTab.handle, L"ShibaKit.Navigation.Controller.v3") &&
           viewnav::hasView(second.value), "closing first tab preserves second tab");
     second.reset();
     check(waitForWorkers(0) && viewnav::activeControllers() == 0,
@@ -427,8 +427,8 @@ void tabIsolation(IsolatedSettings &settings) {
 void middleInput(IsolatedSettings &settings) {
   settings.set(navigation::Action::Off);
   DWORD enabled = 1, dialogs = 0;
-  check(RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"QuickFoldersEnabled", REG_DWORD, &enabled, sizeof(enabled)) == ERROR_SUCCESS &&
-        RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"QuickFoldersInDialogs", REG_DWORD, &dialogs, sizeof(dialogs)) == ERROR_SUCCESS,
+  check(RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"QuickFoldersEnabled", REG_DWORD, &enabled, sizeof(enabled)) == ERROR_SUCCESS &&
+        RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"QuickFoldersInDialogs", REG_DWORD, &dialogs, sizeof(dialogs)) == ERROR_SUCCESS,
         "enable isolated Explorer-only middle menu");
   Window frame, other, surface(frame.handle);
   FakeView view; view.window = surface.handle;
@@ -465,15 +465,15 @@ void middleInput(IsolatedSettings &settings) {
   send(WM_MBUTTONDOWN); SendMessageW(surface.handle, WM_CANCELMODE, 0, 0); send(WM_MBUTTONUP);
   check(menuLaunches == 3, "cancel mode discards pending middle click");
   send(WM_MBUTTONDOWN); enabled = 0;
-  RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"QuickFoldersEnabled", REG_DWORD, &enabled, sizeof(enabled));
+  RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"QuickFoldersEnabled", REG_DWORD, &enabled, sizeof(enabled));
   send(WM_MBUTTONUP); check(menuLaunches == 3, "feature disabled between press and release does not launch");
   enabled = 1; dialogs = 1;
-  RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"QuickFoldersEnabled", REG_DWORD, &enabled, sizeof(enabled));
-  RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"QuickFoldersInDialogs", REG_DWORD, &dialogs, sizeof(dialogs));
+  RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"QuickFoldersEnabled", REG_DWORD, &enabled, sizeof(enabled));
+  RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"QuickFoldersInDialogs", REG_DWORD, &dialogs, sizeof(dialogs));
   send(WM_MBUTTONDOWN); send(WM_MBUTTONUP);
   check(menuLaunches == 3, "dialog helper mode prevents duplicate launch from Explorer extension");
   controller.reset(); enabled = 0;
-  RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"QuickFoldersEnabled", REG_DWORD, &enabled, sizeof(enabled));
+  RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"QuickFoldersEnabled", REG_DWORD, &enabled, sizeof(enabled));
 }
 struct WheelFixture {
   static inline unsigned requests = 0, actions = 0, fileScrolls = 0, parentScrolls = 0;
@@ -501,12 +501,12 @@ void tabWheelInput(IsolatedSettings &settings) {
   if (!navigation::tabsSupported()) return;
   settings.set(navigation::Action::Off);
   DWORD disabled = 0, enabled = 1;
-  RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"QuickFoldersEnabled", REG_DWORD, &disabled, sizeof(disabled));
-  RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"ExplorerTabsEnabled", REG_DWORD, &disabled, sizeof(disabled));
-  WNDCLASSW cls{}; cls.hInstance = GetModuleHandleW(nullptr); cls.lpszClassName = L"FolderNote.Test.WheelFrame"; cls.lpfnWndProc = WheelFixture::frameProc;
+  RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"QuickFoldersEnabled", REG_DWORD, &disabled, sizeof(disabled));
+  RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"ExplorerTabsEnabled", REG_DWORD, &disabled, sizeof(disabled));
+  WNDCLASSW cls{}; cls.hInstance = GetModuleHandleW(nullptr); cls.lpszClassName = L"ShibaKit.Test.WheelFrame"; cls.lpfnWndProc = WheelFixture::frameProc;
   WNDCLASSW viewClass = cls, bandClass = cls;
-  viewClass.lpszClassName = L"FolderNote.Test.WheelView"; viewClass.lpfnWndProc = WheelFixture::viewProc;
-  bandClass.lpszClassName = L"FolderNote.ExplorerTabs.Band.v1"; bandClass.lpfnWndProc = WheelFixture::bandProc;
+  viewClass.lpszClassName = L"ShibaKit.Test.WheelView"; viewClass.lpfnWndProc = WheelFixture::viewProc;
+  bandClass.lpszClassName = L"ShibaKit.ExplorerTabs.Band.v1"; bandClass.lpfnWndProc = WheelFixture::bandProc;
   check(RegisterClassW(&cls) && RegisterClassW(&viewClass) && RegisterClassW(&bandClass), "register hidden wheel-routing fixtures");
   {
     Window frame(nullptr, cls.lpszClassName), other(nullptr, cls.lpszClassName), surface(frame.handle, viewClass.lpszClassName),
@@ -517,8 +517,8 @@ void tabWheelInput(IsolatedSettings &settings) {
     FakeView view; view.window = surface.handle; FakeBrowser browser; browser.active = &view;
     Attached controller; controller.value = viewnav::attach(frame.handle, &browser);
     check(controller.value && !viewnav::hasView(controller.value), "all optional features off omit wheel view subclasses");
-    RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"ExplorerTabsEnabled", REG_DWORD, &enabled, sizeof(enabled));
-    const UINT settingsChanged = RegisterWindowMessageW(L"FolderNote.Navigation.SettingsChanged.v2");
+    RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"ExplorerTabsEnabled", REG_DWORD, &enabled, sizeof(enabled));
+    const UINT settingsChanged = RegisterWindowMessageW(L"ShibaKit.Navigation.SettingsChanged.v2");
     SendMessageW(frame.handle, settingsChanged, 0, 0);
     check(viewnav::hasView(controller.value) && viewnav::activeQueryWorkers() == 0 && view.folderQueries == 0,
           "tabs-only mode attaches wheel surfaces without UIA worker or folder history lookup");
@@ -544,7 +544,7 @@ void tabWheelInput(IsolatedSettings &settings) {
     wheelVisibleBand = ordinary.handle; SetPropW(frame.handle, tabs::windowProperty, ordinary.handle); refused();
     SetPropW(frame.handle, tabs::windowProperty, reinterpret_cast<HANDLE>(UINT_PTR(1))); refused();
     wheelVisibleBand = band.handle; SetPropW(frame.handle, tabs::windowProperty, band.handle);
-    RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"ExplorerTabsEnabled", REG_DWORD, &disabled, sizeof(disabled));
+    RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"ExplorerTabsEnabled", REG_DWORD, &disabled, sizeof(disabled));
     refused(); SendMessageW(frame.handle, settingsChanged, 0, 0);
     check(!viewnav::hasView(controller.value) && viewnav::activeQueryWorkers() == 0 && view.folderQueries == 0,
           "turning last feature off releases wheel subclasses without starting background work");

@@ -42,8 +42,8 @@ using context::Scene;
 
 constexpr auto title = L"右键菜单管理";
 constexpr LPARAM directEyeClick = 1;
-constexpr wchar_t managerClass[] = L"FolderNote.ContextMenu.Manager";
-constexpr wchar_t editorClass[] = L"FolderNote.ContextMenu.Editor";
+constexpr wchar_t managerClass[] = L"ShibaKit.ContextMenu.Manager";
+constexpr wchar_t editorClass[] = L"ShibaKit.ContextMenu.Editor";
 constexpr std::array scenes{Scene::File, Scene::Extension, Scene::Folder, Scene::FolderBackground,
     Scene::Drive, Scene::Desktop, Scene::New, Scene::SendTo, Scene::OpenWith};
 constexpr std::array sceneLabels{L"所有文件", L"指定文件扩展名", L"文件夹", L"文件夹空白处",
@@ -1193,7 +1193,7 @@ struct Manager : Window {
     enableControl(details, entry != nullptr);
     const bool selectedEntry = entry && !customView;
     auto summary = selectedEntry ? entry->source : std::wstring(lang::text(
-        customScene() ? L"自定义命令按列表顺序显示在 FolderNote 子菜单。" : L"此类别可查看已有菜单项。"));
+        customScene() ? L"自定义命令按列表顺序显示在 ShibaKit 子菜单。" : L"此类别可查看已有菜单项。"));
     const bool blockedExtension = selectedEntry && entry->shellBlock && !entry->handlerRegistration &&
         entry->hidden && entry->managed;
     if (blockedExtension)
@@ -1425,7 +1425,7 @@ struct Manager : Window {
     if (FAILED(CoCreateGuid(&id))) return {};
     wchar_t name[40]{};
     if (!StringFromGUID2(id, name, ARRAYSIZE(name))) return {};
-    const auto path = temp / (std::wstring(L"FolderNote-") + name + sampleExtension);
+    const auto path = temp / (std::wstring(L"ShibaKit-") + name + sampleExtension);
     const auto file = CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         nullptr, CREATE_NEW, FILE_ATTRIBUTE_TEMPORARY, nullptr);
     if (file == INVALID_HANDLE_VALUE) return {};
@@ -1464,7 +1464,7 @@ struct Manager : Window {
           std::any_of(std::begin(fn::titles), std::end(fn::titles), [&](const auto *caption) {
             return entry.label == lang::text(caption);
           })) {
-        icon = static_cast<HICON>(LoadImageW(instance, MAKEINTRESOURCEW(IDI_FOLDERNOTE), IMAGE_ICON,
+        icon = static_cast<HICON>(LoadImageW(instance, MAKEINTRESOURCEW(IDI_SHIBAKIT), IMAGE_ICON,
                                             px(16), px(16), 0));
       }
       existingIcons.push_back(icon);
@@ -1532,7 +1532,7 @@ struct Manager : Window {
       });
       WNDCLASSW cls{};
       cls.hInstance = instance; cls.lpfnWndProc = ExtensionPicker::proc;
-      cls.lpszClassName = L"FolderNote.ContextMenu.Extensions"; cls.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+      cls.lpszClassName = L"ShibaKit.ContextMenu.Extensions"; cls.hCursor = LoadCursorW(nullptr, IDC_ARROW);
       RegisterClassW(&cls);
       RECT anchor{};
       GetWindowRect(control(extension), &anchor);
@@ -1631,7 +1631,7 @@ struct Manager : Window {
       active = enabled;
       if (!enabled) restoreMany();
     } else if (id == restoreAll) {
-      if (ui::message(window, lang::text(L"还原 FolderNote 对已有菜单所做的修改？"), lang::text(title), MB_YESNO | MB_ICONQUESTION) == IDYES)
+      if (ui::message(window, lang::text(L"还原 ShibaKit 对已有菜单所做的修改？"), lang::text(title), MB_YESNO | MB_ICONQUESTION) == IDYES)
         restoreMany();
     } else if (id == visibility && entry && entry->canHide) {
       const bool grouped = entry->shellBlock && !entry->handlerRegistration;

@@ -114,7 +114,7 @@ struct Frame {
     if (attach) attachBand();
   }
   void attachBand() {
-    band = CreateWindowW(L"FolderNote.ExplorerTabs.Band.v1", L"", WS_CHILD, 0, 0, 200, 30, window, nullptr, GetModuleHandleW(nullptr), nullptr);
+    band = CreateWindowW(L"ShibaKit.ExplorerTabs.Band.v1", L"", WS_CHILD, 0, 0, 200, 30, window, nullptr, GetModuleHandleW(nullptr), nullptr);
     check(band && SetPropW(window, tabs::windowProperty, band), "publish test band"); visible.push_back(band);
   }
   void hide() { std::erase(visible, window); std::erase(visible, band); }
@@ -407,7 +407,7 @@ void bypasses() {
 int main() {
   try {
     const auto instance = GetModuleHandleW(nullptr);
-    for (auto name : {L"CabinetWClass", L"ExploreWClass", L"FolderNote.ExplorerTabs.Band.v1"}) {
+    for (auto name : {L"CabinetWClass", L"ExploreWClass", L"ShibaKit.ExplorerTabs.Band.v1"}) {
       WNDCLASSW cls{}; cls.hInstance = instance; cls.lpfnWndProc = DefWindowProcW; cls.lpszClassName = name;
       check(RegisterClassW(&cls) != 0 || GetLastError() == ERROR_CLASS_ALREADY_EXISTS, "register isolated router window class");
     }

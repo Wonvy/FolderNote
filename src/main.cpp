@@ -29,7 +29,7 @@ static std::wstring failures;
 static UINT dpi = 96;
 static int px(int v) { return MulDiv(v, dpi, 96); }
 static void error(const std::wstring &s) {
-  MessageBoxW(window, s.c_str(), L"FolderNote", MB_OK | MB_ICONERROR);
+  MessageBoxW(window, s.c_str(), L"ShibaKit", MB_OK | MB_ICONERROR);
 }
 static void clipboard(const std::wstring &s) {
   if (!OpenClipboard(window))
@@ -106,7 +106,7 @@ static void finishSave(bool clear) {
     std::wstring s(len + 1, L'\0');
     GetWindowTextW(edit, s.data(), len + 1);
     s.resize(len);
-    if (clear && MessageBoxW(window, lang::text(L"清除这个文件夹的备注？"), L"FolderNote",
+    if (clear && MessageBoxW(window, lang::text(L"清除这个文件夹的备注？"), L"ShibaKit",
                              MB_YESNO | MB_ICONQUESTION) != IDYES)
       return;
     busy = true;
@@ -354,9 +354,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
     int result = 1;
     try { result = context::runCommand(argv[2], argv[3]); }
     catch (const fn::Error &error) {
-      MessageBoxW(nullptr, error.message.c_str(), L"FolderNote", MB_OK | MB_ICONERROR);
+      MessageBoxW(nullptr, error.message.c_str(), L"ShibaKit", MB_OK | MB_ICONERROR);
     } catch (...) {
-      MessageBoxW(nullptr, lang::text(L"无法执行右键菜单命令。"), L"FolderNote", MB_OK | MB_ICONERROR);
+      MessageBoxW(nullptr, lang::text(L"无法执行右键菜单命令。"), L"ShibaKit", MB_OK | MB_ICONERROR);
     }
     LocalFree(argv); CoUninitialize(); return result;
   }
@@ -425,19 +425,19 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
           L"编辑备注”或“修复文件夹备注”。\n\n首次使用请运行 Install.exe "
           L"安装右键菜单。\n资源管理器切换到详细信息视图，右键列标题并勾选“备注"
           L"”。"),
-          L"FolderNote", MB_OK);
+          L"ShibaKit", MB_OK);
       LocalFree(argv);
       CoUninitialize();
       return 0;
     }
     if (!navigation::notesEnabled())
-      throw fn::Error{lang::text(L"文件夹备注功能已关闭。请在 FolderNote 设置中开启后重试。")};
+      throw fn::Error{lang::text(L"文件夹备注功能已关闭。请在 ShibaKit 设置中开启后重试。")};
     if (paths.empty() || (operation == 0 && paths.size() != 1))
       throw fn::Error{lang::text(L"编辑备注时请选择一个文件夹。")};
     if (operation == 1 &&
         MessageBoxW(nullptr,
                     lang::format(L"清除所选 {0} 个文件夹的备注？", {std::to_wstring(paths.size())}).c_str(),
-                    L"FolderNote", MB_YESNO | MB_ICONQUESTION) != IDYES) {
+                    L"ShibaKit", MB_YESNO | MB_ICONQUESTION) != IDYES) {
       LocalFree(argv);
       CoUninitialize();
       return 0;
@@ -447,15 +447,15 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
     WNDCLASSW wc{};
     wc.lpfnWndProc = proc;
     wc.hInstance = inst;
-    wc.hIcon = LoadIconW(inst, MAKEINTRESOURCEW(IDI_FOLDERNOTE));
-    wc.lpszClassName = L"FolderNoteWindow";
+    wc.hIcon = LoadIconW(inst, MAKEINTRESOURCEW(IDI_SHIBAKIT));
+    wc.lpszClassName = L"ShibaKitWindow";
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     RegisterClassW(&wc);
     dpi = GetDpiForSystem();
     const RECT targetWork=ui::mouseWorkArea();
     window = CreateWindowExW(
         WS_EX_CONTROLPARENT, wc.lpszClassName,
-        lang::text(operation == 0 ? L"文件夹备注 — FolderNote" : L"批量处理 — FolderNote"),
+        lang::text(operation == 0 ? L"文件夹备注 — ShibaKit" : L"批量处理 — ShibaKit"),
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, targetWork.left,
         targetWork.top, px(580), px(operation == 0 ? 278 : 354), nullptr,
         nullptr, inst, nullptr);

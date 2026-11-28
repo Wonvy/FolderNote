@@ -6,7 +6,7 @@
 
 namespace quick_find {
 namespace {
-constexpr auto popupClass = L"FolderNote.QuickFind.Candidates";
+constexpr auto popupClass = L"ShibaKit.QuickFind.Candidates";
 constexpr UINT confirmMessage = WM_APP + 1;
 constexpr UINT iconsReady = WM_APP + 2;
 constexpr int rowHeight = 30;

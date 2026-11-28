@@ -18,7 +18,7 @@ int main() {
   CoCreateGuid(&guid);
   wchar_t token[40];
   StringFromGUID2(guid, token, 40);
-  auto rootPath = std::wstring(L"Software\\FolderNoteRegistrationTests\\") + token;
+  auto rootPath = std::wstring(L"Software\\ShibaKitRegistrationTests\\") + token;
   HKEY root = nullptr, user = nullptr, machine = nullptr;
   if (RegCreateKeyExW(HKEY_CURRENT_USER, rootPath.c_str(), 0, nullptr, 0, KEY_ALL_ACCESS,
                       nullptr, &root, nullptr) ||
@@ -81,7 +81,7 @@ int main() {
     DWORD flag = 0, size = sizeof(flag);
     check(RegGetValueW(HKEY_LOCAL_MACHINE, navreg::machineKey, L"NoInternetExplorer",
                        RRF_RT_REG_DWORD | RRF_SUBKEY_WOW6464KEY, nullptr, &flag, &size) == 0 && flag == 1);
-    const fn::fs::path directory = L"C:\\FolderNote Test\\Versions\\fixture";
+    const fn::fs::path directory = L"C:\\ShibaKit Test\\Versions\\fixture";
     navreg::registerUser(directory);
     check(RegGetValueW(HKEY_CURRENT_USER, tabs::userKey, nullptr, RRF_RT_REG_SZ, nullptr, nullptr, nullptr) == ERROR_SUCCESS);
     wchar_t dll[1024];
@@ -89,7 +89,7 @@ int main() {
     auto inproc = std::wstring(navreg::userKey) + L"\\InprocServer32";
     check(RegGetValueW(HKEY_CURRENT_USER, inproc.c_str(), nullptr, RRF_RT_REG_SZ,
                        nullptr, dll, &size) == 0 &&
-          std::wstring(dll) == (directory / L"FolderNoteNavigation.dll").native());
+          std::wstring(dll) == (directory / L"ShibaKitNavigation.dll").native());
     // Never put a user-writable DLL path in machine-wide COM registration.
     auto machineClass = inproc.substr(std::wstring(L"Software\\Classes\\").size());
     machineClass = L"Software\\Classes\\" + machineClass;

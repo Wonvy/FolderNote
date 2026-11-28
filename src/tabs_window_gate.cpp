@@ -74,8 +74,8 @@ LRESULT CALLBACK proc(HWND window, UINT message, WPARAM w, LPARAM l, UINT_PTR, D
     if (gate->releaseRequested || GetTickCount64() >= gate->deadline || !routing::enabled()) reveal(gate);
     return 0;
   }
-  static const UINT shutdownMsg = RegisterWindowMessageW(L"FolderNote.Navigation.Shutdown.v2");
-  static const UINT settingsChanged = RegisterWindowMessageW(L"FolderNote.Navigation.SettingsChanged.v2");
+  static const UINT shutdownMsg = RegisterWindowMessageW(L"ShibaKit.Navigation.Shutdown.v2");
+  static const UINT settingsChanged = RegisterWindowMessageW(L"ShibaKit.Navigation.SettingsChanged.v2");
   if (message == shutdownMsg || (message == settingsChanged && !routing::enabled())) reveal(gate);
   return DefSubclassProc(window, message, w, l);
 }

@@ -35,13 +35,13 @@ static void policyTests() {
     return setup::cabinetCallback(&state, SPFILENOTIFY_FILEINCABINET,
                                   reinterpret_cast<UINT_PTR>(&file), 0);
   };
-  check(accept(L"../FolderNote.exe") == FILEOP_ABORT, "reject parent traversal");
-  check(accept(L"C:\\FolderNote.exe") == FILEOP_ABORT, "reject absolute path");
-  check(accept(L"FolderNote.exe:stream") == FILEOP_ABORT, "reject alternate stream");
+  check(accept(L"../ShibaKit.exe") == FILEOP_ABORT, "reject parent traversal");
+  check(accept(L"C:\\ShibaKit.exe") == FILEOP_ABORT, "reject absolute path");
+  check(accept(L"ShibaKit.exe:stream") == FILEOP_ABORT, "reject alternate stream");
   check(accept(L"Install-Win11.exe") == FILEOP_ABORT, "reject unexpected edition");
-  check(accept(L"FolderNote.exe") == FILEOP_DOIT, "accept application");
-  check(std::filesystem::path(file.FullTargetName) == staging.path / L"FolderNote.exe", "fixed output path");
-  check(accept(L"foldernote.EXE") == FILEOP_ABORT, "reject duplicate ignoring case");
+  check(accept(L"ShibaKit.exe") == FILEOP_DOIT, "accept application");
+  check(std::filesystem::path(file.FullTargetName) == staging.path / L"ShibaKit.exe", "fixed output path");
+  check(accept(L"shibakit.EXE") == FILEOP_ABORT, "reject duplicate ignoring case");
   file.FileSize = 0;
   check(accept(L"Install.exe") == FILEOP_ABORT, "reject empty component");
   file.FileSize = 201 * 1024 * 1024;
@@ -79,11 +79,11 @@ int wmain(int count, wchar_t **arguments) {
         for (auto name : setup::modernFiles) check(bytes(extracted / name) == bytes(source / name), "MSIX payload bytes match");
       if (std::filesystem::exists(source / setup::bootstrapFile))
         check(bytes(extracted / setup::bootstrapFile) == bytes(source / setup::bootstrapFile), "WinUI bootstrap bytes match");
-      const auto app = LoadLibraryExW((source / L"FolderNote.exe").c_str(), nullptr, LOAD_LIBRARY_AS_DATAFILE);
+      const auto app = LoadLibraryExW((source / L"ShibaKit.exe").c_str(), nullptr, LOAD_LIBRARY_AS_DATAFILE);
       check(app != nullptr, "load application icon");
       Module appCleanup{app};
-      check(resource(module, RT_GROUP_ICON, MAKEINTRESOURCEW(IDI_FOLDERNOTE)) ==
-            resource(app, RT_GROUP_ICON, MAKEINTRESOURCEW(IDI_FOLDERNOTE)), "setup uses application icon group");
+      check(resource(module, RT_GROUP_ICON, MAKEINTRESOURCEW(IDI_SHIBAKIT)) ==
+            resource(app, RT_GROUP_ICON, MAKEINTRESOURCEW(IDI_SHIBAKIT)), "setup uses application icon group");
       check(EnumResourceNamesW(module, RT_ICON, sameIcon, reinterpret_cast<LONG_PTR>(app)) != FALSE,
             "all icon sizes match the application");
     } else check(count == 1, "usage: SetupPackageTests [setup.exe source-directory standard|win11]");

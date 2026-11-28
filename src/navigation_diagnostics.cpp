@@ -31,7 +31,7 @@ bool keyExists(HKEY hive, const wchar_t *key) {
 }
 DWORD tabValue(const wchar_t *name) {
   DWORD value = 0, size = sizeof(value);
-  RegGetValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", name, RRF_RT_REG_DWORD, nullptr, &value, &size);
+  RegGetValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", name, RRF_RT_REG_DWORD, nullptr, &value, &size);
   return value;
 }
 struct Windows {
@@ -44,7 +44,7 @@ BOOL CALLBACK childWindow(HWND window, LPARAM data) {
   GetClassNameW(window, cls, ARRAYSIZE(cls));
   if (!wcscmp(cls, L"ShellTabWindowClass")) ++state.tabs;
   if (!wcscmp(cls, L"SHELLDLL_DefView")) ++state.views;
-  if (GetPropW(window, L"FolderNote.Navigation.Controller.v3")) ++state.controllers;
+  if (GetPropW(window, L"ShibaKit.Navigation.Controller.v3")) ++state.controllers;
   return TRUE;
 }
 BOOL CALLBACK explorerWindow(HWND window, LPARAM data) {
@@ -64,7 +64,7 @@ BOOL CALLBACK explorerWindow(HWND window, LPARAM data) {
   auto &state = *reinterpret_cast<Windows *>(data);
   ++state.frames;
   state.processes.insert(pid);
-  if (GetPropW(window, L"FolderNote.Navigation.Controller.v3")) ++state.controllers;
+  if (GetPropW(window, L"ShibaKit.Navigation.Controller.v3")) ++state.controllers;
   EnumChildWindows(window, childWindow, data);
   return TRUE;
 }
@@ -79,7 +79,7 @@ std::wstring diagnostics() {
   const auto formatAge = [](DWORD ms) -> std::wstring {
     return ms == MAXDWORD ? L"尚无回调" : (std::to_wstring(ms) + L" ms 前");
   };
-  text << L"FolderNote " << app::version << L" 诊断\r\n"
+  text << L"ShibaKit " << app::version << L" 诊断\r\n"
        << L"Windows 版本：" << stringValue(HKEY_LOCAL_MACHINE, windowsKey, L"DisplayVersion")
        << L"；内部版本：" << stringValue(HKEY_LOCAL_MACHINE, windowsKey, L"CurrentBuildNumber") << L"\r\n"
        << L"文件夹备注：" << (notesEnabled() ? L"开启" : L"关闭") << L"\r\n"
@@ -87,7 +87,7 @@ std::wstring diagnostics() {
        << L"；文件对话框：" << (dialogQuickEnabled() ? L"开启" : L"关闭")
        << L"；管理员对话框：" << (elevatedDialogQuickEnabled() ? L"开启" : L"关闭")
        << L"；中文首字母定位：" << (quick_find::external::enabled() ? L"开启" : L"关闭")
-       << L"；后台组件：" << (FindWindowExW(HWND_MESSAGE, nullptr, L"FolderNote.QuickFolders.Helper.v1", nullptr) ? L"运行中" : L"未运行")
+       << L"；后台组件：" << (FindWindowExW(HWND_MESSAGE, nullptr, L"ShibaKit.QuickFolders.Helper.v1", nullptr) ? L"运行中" : L"未运行")
        << L"；管理员对话框组件：" << (quick::elevatedHelperRunning() ? L"运行中" : L"未运行") << L"\r\n"
        << L"中键钩子状态：鼠标钩子=" << (hookDiag.mouseHookInstalled ? L"已挂载" : L"未挂载")
        << L"，键盘钩子=" << (hookDiag.keyboardHookInstalled ? L"已挂载" : L"未挂载")
@@ -109,9 +109,9 @@ std::wstring diagnostics() {
        << L"；始终在新标签打开：" << (preferNewTabEnabled() ? L"开启" : L"关闭")
        << L"；上次激活窗口/请求/显示：" << tabValue(L"TabsActivationWindows") << L"/" << tabValue(L"TabsActivationRequested") << L"/" << tabValue(L"TabsActivationVisible")
        << L"；结果：0x" << std::hex << tabValue(L"TabsLastActivationResult") << std::dec << L"\r\n"
-       << L"标签栏加载阶段：" << stringValue(HKEY_CURRENT_USER, L"Software\\FolderNote", L"TabsLastBandStage")
+       << L"标签栏加载阶段：" << stringValue(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"TabsLastBandStage")
        << L"；结果：0x" << std::hex << tabValue(L"TabsLastBandResult") << std::dec << L"\r\n"
-       << L"标签栏模块：" << stringValue(HKEY_CURRENT_USER, L"Software\\FolderNote", L"TabsLastBandModule") << L"\r\n";
+       << L"标签栏模块：" << stringValue(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"TabsLastBandModule") << L"\r\n";
   const auto inproc = std::wstring(navreg::userKey) + L"\\InprocServer32";
   const auto registered = stringValue(HKEY_CURRENT_USER, inproc.c_str(), nullptr);
   text << L"当前注册模块：" << registered << L"\r\n";
@@ -131,7 +131,7 @@ std::wstring diagnostics() {
     entry.dwSize = sizeof(entry);
     bool found = false;
     if (Module32FirstW(snapshot, &entry)) do {
-      if (_wcsicmp(entry.szModule, L"FolderNoteNavigation.dll")) continue;
+      if (_wcsicmp(entry.szModule, L"ShibaKitNavigation.dll")) continue;
       found = true;
       text << L"Explorer " << pid << L" 已加载：" << entry.szExePath
            << (_wcsicmp(entry.szExePath, registered.c_str()) ? L"（与当前注册路径不同）" : L"（当前版本路径）") << L"\r\n";

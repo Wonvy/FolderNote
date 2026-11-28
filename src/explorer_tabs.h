@@ -9,7 +9,7 @@ inline constexpr CLSID clsid = {0x8f95be22,0xd37a,0x4a22,{0x8c,0xf8,0x46,0xa6,0x
 inline constexpr wchar_t clsidText[] = L"{8F95BE22-D37A-4A22-8CF8-46A603C10523}";
 inline constexpr wchar_t userKey[] = L"Software\\Classes\\CLSID\\{8F95BE22-D37A-4A22-8CF8-46A603C10523}";
 inline constexpr wchar_t toolbarKey[] = L"Software\\Microsoft\\Internet Explorer\\Toolbar";
-inline constexpr wchar_t windowProperty[] = L"FolderNote.ExplorerTabs.Window.v1";
+inline constexpr wchar_t windowProperty[] = L"ShibaKit.ExplorerTabs.Window.v1";
 // Forward wheel input from a focused file-view child. The band returns TRUE
 // only when the supplied screen point is over one of its tabs.
 inline constexpr UINT wheelInputMessage = WM_APP + 126;

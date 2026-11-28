@@ -23,7 +23,7 @@ int main() {
   using namespace desktop_groups;
   namespace fs = std::filesystem;
   const auto parent = fs::temp_directory_path();
-  const auto root = parent / (L"FolderNoteSearchTests-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
+  const auto root = parent / (L"ShibaKitSearchTests-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
   int result = 0;
   CoInitializeEx(nullptr, COINIT_MULTITHREADED);
   try {
@@ -74,7 +74,7 @@ int main() {
     check(readLayout(layoutFile).groups.size() == 2 && fn::readText(layoutFile) == before, "reading candidates never rewrites the layout");
     const auto absent = root / L"absent.json";
     check(readLayout(absent).groups.empty() && !fs::exists(absent), "missing layout is not created or migrated by search");
-    WNDCLASSW cls{}; cls.hInstance = GetModuleHandleW(nullptr); cls.lpfnWndProc = receiver; cls.lpszClassName = L"FolderNote.SearchTests";
+    WNDCLASSW cls{}; cls.hInstance = GetModuleHandleW(nullptr); cls.lpfnWndProc = receiver; cls.lpszClassName = L"ShibaKit.SearchTests";
     RegisterClassW(&cls);
     const auto window = CreateWindowExW(0, cls.lpszClassName, L"", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, cls.hInstance, nullptr);
     check(window && search::locate(entries[1], window) && received && received->path == second.native() && received->tab == 1,
@@ -84,7 +84,7 @@ int main() {
   } catch (const fn::Error &) { std::cerr << "Model error\n"; result = 1; }
     catch (const std::exception &error) { std::cerr << error.what() << '\n'; result = 1; }
   std::error_code error;
-  if (root.parent_path() == parent && root.filename().wstring().starts_with(L"FolderNoteSearchTests-")) fs::remove_all(root, error);
+  if (root.parent_path() == parent && root.filename().wstring().starts_with(L"ShibaKitSearchTests-")) fs::remove_all(root, error);
   CoUninitialize();
   return result;
 }

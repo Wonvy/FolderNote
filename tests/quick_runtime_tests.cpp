@@ -97,7 +97,7 @@ BOOL fakeCreateProcess(LPCWSTR exe, LPWSTR arguments, LPSECURITY_ATTRIBUTES, LPS
   return process->hProcess && process->hThread;
 }
 HWND fakeFindWindowEx(HWND parent, HWND after, LPCWSTR name, LPCWSTR title) {
-  if (parent == HWND_MESSAGE && name && !wcscmp(name, L"FolderNote.QuickFolders.Helper.v1")) return nullptr;
+  if (parent == HWND_MESSAGE && name && !wcscmp(name, L"ShibaKit.QuickFolders.Helper.v1")) return nullptr;
   return FindWindowExW(parent, after, name, title);
 }
 }
@@ -149,7 +149,7 @@ struct Isolated {
   std::wstring name;
   Isolated() {
     GUID id{}; CoCreateGuid(&id); wchar_t token[40]{}; StringFromGUID2(id, token, ARRAYSIZE(token));
-    name = std::wstring(L"Software\\FolderNoteRuntimeTests\\") + token;
+    name = std::wstring(L"Software\\ShibaKitRuntimeTests\\") + token;
     check(RegOpenCurrentUser(KEY_ALL_ACCESS, &real) == ERROR_SUCCESS &&
           RegCreateKeyExW(real, name.c_str(), 0, nullptr, 0, KEY_ALL_ACCESS, nullptr, &temporary, nullptr) == ERROR_SUCCESS &&
           RegOverridePredefKey(HKEY_CURRENT_USER, temporary) == ERROR_SUCCESS, "isolate quick runtime settings");
@@ -158,14 +158,14 @@ struct Isolated {
 };
 static void enable(bool value, bool withDialogs = true) {
   DWORD enabled = value ? 1 : 0, dialogs = withDialogs ? 1 : 0;
-  check(RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"QuickFoldersEnabled", REG_DWORD, &enabled, sizeof(enabled)) == ERROR_SUCCESS &&
-        RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"QuickFoldersInDialogs", REG_DWORD, &dialogs, sizeof(dialogs)) == ERROR_SUCCESS,
+  check(RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"QuickFoldersEnabled", REG_DWORD, &enabled, sizeof(enabled)) == ERROR_SUCCESS &&
+        RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"QuickFoldersInDialogs", REG_DWORD, &dialogs, sizeof(dialogs)) == ERROR_SUCCESS,
         "write isolated runtime switches");
 }
 static void helperLifetimeTests() {
   auto routing = [](DWORD tabs, DWORD prefer) {
-    check(RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"ExplorerTabsEnabled", REG_DWORD, &tabs, sizeof(tabs)) == ERROR_SUCCESS &&
-          RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"ExplorerOpenInNewTab", REG_DWORD, &prefer, sizeof(prefer)) == ERROR_SUCCESS,
+    check(RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"ExplorerTabsEnabled", REG_DWORD, &tabs, sizeof(tabs)) == ERROR_SUCCESS &&
+          RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"ExplorerOpenInNewTab", REG_DWORD, &prefer, sizeof(prefer)) == ERROR_SUCCESS,
           "write isolated routing switches");
   };
   enable(false); routing(0, 0);
@@ -187,7 +187,7 @@ static void helperLifetimeTests() {
 }
 static void helperLaunchTests() {
   using desktop_groups::DesktopLaunchMode;
-  const std::wstring exe = L"C:\\Program Files\\FolderNote\\FolderNote.exe";
+  const std::wstring exe = L"C:\\Program Files\\ShibaKit\\ShibaKit.exe";
   directLaunches = shellLaunches = 0;
   check(quick::launchHelper(exe, {DesktopLaunchMode::Direct, 1, 8192}) &&
         directLaunches == 1 && shellLaunches == 0 && launchedExe == exe &&
@@ -296,7 +296,7 @@ static void remoteKvmCaptureTests(HWND target) {
   check(mouse(WM_MBUTTONDOWN) == 73 && mouse(WM_MBUTTONUP) == 73,
         "middle-click passes straight through while Deskflow controls remote PC");
   drain();
-  check(launches.size() == before, "remote middle-click never queues a local FolderNote popup");
+  check(launches.size() == before, "remote middle-click never queues a local ShibaKit popup");
 
   ShowWindow(desk, SW_HIDE);
   check(!quick::remoteInputCaptured(), "returning cursor to local PC clears remote capture guard");
@@ -304,7 +304,7 @@ static void remoteKvmCaptureTests(HWND target) {
         "local middle-click interception resumes immediately after returning from remote PC");
   drain();
   check(launches.size() == before + 1 && launches.back().first == target,
-        "local middle-click opens FolderNote popup normally once back on local PC");
+        "local middle-click opens ShibaKit popup normally once back on local PC");
 
   simulatedForeground = underPointer = nullptr;
   quick::eligible = nullptr;
@@ -320,7 +320,7 @@ static void retiredTransferGestures(HWND shell, HWND surface) {
   enable(true, false); simulatedForeground = shell; underPointer = surface;
   DWORD oldEnabled = 1;
   for (auto name : {L"QuickFoldersCopy", L"QuickFoldersMove"})
-    check(RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", name, REG_DWORD, &oldEnabled, sizeof(oldEnabled)) == ERROR_SUCCESS,
+    check(RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", name, REG_DWORD, &oldEnabled, sizeof(oldEnabled)) == ERROR_SUCCESS,
           "seed obsolete transfer switches from an upgrade");
   quick::updateTarget();
   const auto before = launches.size();
@@ -335,7 +335,7 @@ static void retiredTransferGestures(HWND shell, HWND surface) {
 }
 static void desktopTests(HWND dialog) {
   const auto instance = GetModuleHandleW(nullptr);
-  for (auto name : {L"Progman", L"WorkerW", L"FolderNote.DesktopGroups.Panel"}) {
+  for (auto name : {L"Progman", L"WorkerW", L"ShibaKit.DesktopGroups.Panel"}) {
     WNDCLASSW cls{}; cls.hInstance = instance; cls.lpfnWndProc = DefWindowProcW; cls.lpszClassName = name;
     check(RegisterClassW(&cls) != 0, "register isolated desktop host class");
   }
@@ -351,7 +351,7 @@ static void desktopTests(HWND dialog) {
   HWND shellView = view(shell), workerView = view(worker), ordinary = host(L"STATIC");
   simulatedShell = shell;
   retiredTransferGestures(shell, shellView);
-  const auto box = CreateWindowW(L"FolderNote.DesktopGroups.Panel", L"", WS_CHILD,
+  const auto box = CreateWindowW(L"ShibaKit.DesktopGroups.Panel", L"", WS_CHILD,
       0, 0, 100, 100, shellView, nullptr, instance, nullptr);
   const auto content = CreateWindowW(L"STATIC", L"", WS_CHILD,
       0, 0, 100, 100, box, nullptr, instance, nullptr);
@@ -440,7 +440,7 @@ static void desktopTests(HWND dialog) {
   check(launches.size() == before, "destroyed desktop cannot launch a queued request");
   simulatedForeground = underPointer = simulatedShell = nullptr; quick::eligible = nullptr; quick::middle = {};
   for (HWND window : {worker, wallpaper, ordinary}) DestroyWindow(window);
-  for (auto name : {L"Progman", L"WorkerW", L"FolderNote.DesktopGroups.Panel"}) UnregisterClassW(name, instance);
+  for (auto name : {L"Progman", L"WorkerW", L"ShibaKit.DesktopGroups.Panel"}) UnregisterClassW(name, instance);
   enable(true);
 }
 static void legacyDialogTests() {
@@ -664,8 +664,8 @@ int main() {
     auto stale = new quick::MenuRequest{first, GetCurrentProcessId() + 1, {20, 20}};
     quick::helperProc(quick::receiver, quick::showMessage, 0, reinterpret_cast<LPARAM>(stale));
     check(launches.size() == beforeRejects + 1, "reused target handle with mismatched process is rejected");
-    WNDCLASSW bandClass = shell; bandClass.lpszClassName = L"FolderNote.ExplorerTabs.Band.v1";
-    check(RegisterClassW(&bandClass) != 0, "register disposable FolderNote tab band");
+    WNDCLASSW bandClass = shell; bandClass.lpszClassName = L"ShibaKit.ExplorerTabs.Band.v1";
+    check(RegisterClassW(&bandClass) != 0, "register disposable ShibaKit tab band");
     HWND band = CreateWindowW(bandClass.lpszClassName, L"Tab band background", WS_CHILD, 0, 0, 100, 30,
                               first, nullptr, shell.hInstance, nullptr);
     HWND tabs = CreateWindowW(L"STATIC", L"Tab control", WS_CHILD, 0, 0, 70, 30, band, nullptr, shell.hInstance, nullptr);

@@ -5,7 +5,7 @@
 
 namespace desktop_groups {
 namespace {
-constexpr wchar_t verbKey[] = L"Software\\Classes\\DesktopBackground\\shell\\FolderNote.DesktopGroups.Create";
+constexpr wchar_t verbKey[] = L"Software\\Classes\\DesktopBackground\\shell\\ShibaKit.DesktopGroups.Create";
 
 LSTATUS setString(HKEY key, const wchar_t *subkey, const wchar_t *name, const std::wstring &value) {
   return RegSetKeyValueW(key, subkey, name, REG_SZ, value.c_str(),

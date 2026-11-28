@@ -382,7 +382,7 @@ fs::path localRoot() {
     fail(L"无法获取用户目录", (DWORD)hr);
   fs::path r = p;
   CoTaskMemFree(p);
-  return r / L"Programs" / L"FolderNote";
+  return r / L"Programs" / L"ShibaKit";
 }
 static fs::path requestPath(const std::wstring &t) {
   if (t.size() != 38 || t.front() != L'{' || t.back() != L'}' ||

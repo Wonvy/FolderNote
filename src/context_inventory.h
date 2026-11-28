@@ -30,7 +30,7 @@ struct ExistingItem {
 
 std::vector<ExistingItem> inventory(Scene scene, std::wstring_view extension = {});
 void setHidden(const ExistingItem &item, bool hidden);
-// An empty field restores the original registry value if FolderNote changed it.
+// An empty field restores the original registry value if ShibaKit changed it.
 void setAppearance(const ExistingItem &item, std::wstring_view label, std::wstring_view icon);
 void restore(const ExistingItem &item);
 // Best-effort restoration. The result counts records still requiring attention.

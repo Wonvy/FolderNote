@@ -10,7 +10,7 @@ struct Registry {
   HKEY real = nullptr, key = nullptr; std::wstring name;
   Registry() {
     GUID guid{}; CoCreateGuid(&guid); wchar_t id[40]{}; StringFromGUID2(guid, id, 40);
-    name = std::wstring(L"Software\\FolderNoteThemeTests\\") + id;
+    name = std::wstring(L"Software\\ShibaKitThemeTests\\") + id;
     check(!RegOpenCurrentUser(KEY_ALL_ACCESS, &real) &&
         !RegCreateKeyExW(real, name.c_str(), 0, nullptr, 0, KEY_ALL_ACCESS, nullptr, &key, nullptr) &&
         !RegOverridePredefKey(HKEY_CURRENT_USER, key), "isolate test settings");

@@ -5,8 +5,8 @@
 namespace quick::detail { class MenuRequest; }
 
 namespace quick::legacy {
-inline constexpr wchar_t helperClass[] = L"FolderNote.QuickFolders.Helper.v1";
-inline constexpr wchar_t elevatedHelperClass[] = L"FolderNote.QuickFolders.ElevatedHelper.v1";
+inline constexpr wchar_t helperClass[] = L"ShibaKit.QuickFolders.Helper.v1";
+inline constexpr wchar_t elevatedHelperClass[] = L"ShibaKit.QuickFolders.ElevatedHelper.v1";
 inline constexpr ULONG_PTR copyDataTag = 0x464e4c31; // FNL1, fixed across bitness.
 
 bool isDialog(HWND);

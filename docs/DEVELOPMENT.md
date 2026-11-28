@@ -1,6 +1,6 @@
 # 开发指南
 
-本项目使用 C++20、Win32、COM 和 CMake。支持目标是 Windows 10/11 x64；FolderNote 自带的多标签栏仅用于 Windows 10，Windows 11 使用系统标签。当前构建和主要实机验证环境为 Windows 10 22H2。自动测试通过不代表已经完成 Windows 11 各版本的实机验收。
+本项目使用 C++20、Win32、COM 和 CMake。支持目标是 Windows 10/11 x64；ShibaKit 自带的多标签栏仅用于 Windows 10，Windows 11 使用系统标签。当前构建和主要实机验证环境为 Windows 10 22H2。自动测试通过不代表已经完成 Windows 11 各版本的实机验收。
 
 ## 开发环境
 
@@ -40,7 +40,7 @@ ctest --test-dir build -C Release --output-on-failure -R "^(ExplorerTabsTests|Na
 
 中文首字母定位由 `quick_find` 共用匹配器、`quick_find_controls` 内部列表适配和 `quick_find_external` 系统文件列表适配组成。离线字库及许可证随程序编译；更新字库时运行 `py -3 tools/generate_pinyin_initials.py`，脚本使用固定的上游提交，并记录输入数据的 SHA-256。
 
-`quick_find_settings` 将快捷搜索的启用范围、文件夹／文件确认动作及弹窗选项原子保存到 HKCU `Software\FolderNote\QuickFindOptions` DWORD，首次读取兼容旧的 `PinyinQuickFind`。设置页立即保存，弹窗开始时读取外观选项，确认候选时读取动作；仅改变跨软件范围时重启后台。原生桌面沿用 Explorer 范围位，运行时验证 Progman／WorkerW 的 Shell 进程身份，输入仍限于文件列表；桌面元数据由 Shell 桌面命名空间提供，覆盖个人／公共目录和虚拟项目，显示名重复时只选中，不推断打开动作。系统文件窗口中的文件不触发默认动作，避免提交打开／保存。`SettingsHubTests` 检查独立页、持久化与最小窗口下的 100%／150%／200% DPI 布局；`QuickFind*Tests` 的设置写入均使用进程内隔离注册表。
+`quick_find_settings` 将快捷搜索的启用范围、文件夹／文件确认动作及弹窗选项原子保存到 HKCU `Software\ShibaKit\QuickFindOptions` DWORD，首次读取兼容旧的 `PinyinQuickFind`。设置页立即保存，弹窗开始时读取外观选项，确认候选时读取动作；仅改变跨软件范围时重启后台。原生桌面沿用 Explorer 范围位，运行时验证 Progman／WorkerW 的 Shell 进程身份，输入仍限于文件列表；桌面元数据由 Shell 桌面命名空间提供，覆盖个人／公共目录和虚拟项目，显示名重复时只选中，不推断打开动作。系统文件窗口中的文件不触发默认动作，避免提交打开／保存。`SettingsHubTests` 检查独立页、持久化与最小窗口下的 100%／150%／200% DPI 布局；`QuickFind*Tests` 的设置写入均使用进程内隔离注册表。
 
 `QuickFindTests` 检查匹配、输入会话和原生列表；`QuickFindShellTests` 检查桌面解析、原生图标、文件夹／文件分类及重名处理；`QuickFindExternalTests`、`QuickFindSaveDialogTests`、`QuickFindFolderDialogTests` 会短暂打开只含自动生成测试文件的系统选择窗口，检查虚拟列表定位和输入框隔离。它们需要交互式 Windows 桌面并串行运行。启用 WinUI 时，`DesktopFindTests` 还检查盒子视图的实际键盘事件、滚动和选择。
 
@@ -70,9 +70,9 @@ ctest --test-dir build -C Release --output-on-failure -R "^(ExplorerTabsTests|Na
 
 | 构建产物 | 职责 |
 | --- | --- |
-| `FolderNote.exe` | 备注编辑、批量操作、统一设置、中键菜单，以及按需运行的桌面 / 文件对话框后台组件 |
-| `FolderNoteShell.dll` | 传统菜单和 Windows 11 现代菜单命令，接收完整选择列表并启动主程序 |
-| `FolderNoteNavigation.dll` | 资源管理器内部导航扩展、文件视图消息处理和 Windows 10 标签栏 |
+| `ShibaKit.exe` | 备注编辑、批量操作、统一设置、中键菜单，以及按需运行的桌面 / 文件对话框后台组件 |
+| `ShibaKitShell.dll` | 传统菜单和 Windows 11 现代菜单命令，接收完整选择列表并启动主程序 |
+| `ShibaKitNavigation.dll` | 资源管理器内部导航扩展、文件视图消息处理和 Windows 10 标签栏 |
 | `Install.exe` | 通用版安装、版本目录切换、当前用户菜单和快捷方式注册 |
 | `Uninstall.exe` | 完整卸载当前用户组件，处理被占用文件及 Windows 11 菜单包 |
 | `Install-Win11.exe` | Windows 11 首层菜单测试包的安装入口 |
@@ -107,7 +107,7 @@ Shell 查询和导航可能重入窗口消息，甚至在调用尚未返回时�
 
 双击空白处导航由扩展处理。后台组件的启用条件为 `quickEnabled() || (tabsSupported() && tabsEnabled() && preferNewTabEnabled()) || quick_find::external::enabled()`：中键快速定位、Windows 10 新标签接管和跨软件快捷搜索共用 `--quick-helper` 及本工具自己的登录启动项，三者均停用时退出。只开启新标签接管时不应启用中键鼠标处理。安装、升级与设置保存统一调用 `quick::syncHelper`，卸载调用 `quick::stopHelper`，保留用户功能设置。文件对话框支持关闭时，资源管理器中键仍由扩展处理；开启时由后台组件处理资源管理器和文件对话框，避免重复触发。全局鼠标钩子只做轻量判断，完整窗口与权限校验留在处理线程。桌面窗口需匹配 Shell 进程与桌面宿主结构；点击菜单中的目录通过 Shell 或新标签请求打开，不对桌面调用目录导航。不要把可选组件改为所有安装都必须运行的后台服务。
 
-“始终在新标签中打开文件夹”保存为当前用户 `Software\FolderNote` 下的 `ExplorerOpenInNewTab` DWORD，默认关闭。旧版 `saveSettings` 调用保留这个值，关闭多标签也不清除用户选择。只接管启用后新出现的资源管理器窗口，不合并已存在的窗口；没有可用标签宿主时保留首个普通窗口。BHO 在 SetSite 阶段向后台申请暂缓呈现，确认已有支持当前协议的目标后，在来源窗口第一次显示前设置 DWM APP cloak；不改变 WS_VISIBLE，保证 Shell 视图和标签栏继续初始化。窗口拥有独立的 20 秒恢复计时器，关闭过程不解除 cloak，失败、停用和超时则恢复显示。晚于首次显示才附着的 BHO 不强制隐藏既有窗口。交接确认遇到同目录的重复完成事件会限时重试，不重新增加标签；真实导航或选择变化仍取消关闭。标签右键“在新窗口打开”绕过接管，保留原标签。Windows 11 原生标签不在该功能范围内。
+“始终在新标签中打开文件夹”保存为当前用户 `Software\ShibaKit` 下的 `ExplorerOpenInNewTab` DWORD，默认关闭。旧版 `saveSettings` 调用保留这个值，关闭多标签也不清除用户选择。只接管启用后新出现的资源管理器窗口，不合并已存在的窗口；没有可用标签宿主时保留首个普通窗口。BHO 在 SetSite 阶段向后台申请暂缓呈现，确认已有支持当前协议的目标后，在来源窗口第一次显示前设置 DWM APP cloak；不改变 WS_VISIBLE，保证 Shell 视图和标签栏继续初始化。窗口拥有独立的 20 秒恢复计时器，关闭过程不解除 cloak，失败、停用和超时则恢复显示。晚于首次显示才附着的 BHO 不强制隐藏既有窗口。交接确认遇到同目录的重复完成事件会限时重试，不重新增加标签；真实导航或选择变化仍取消关闭。标签右键“在新窗口打开”绕过接管，保留原标签。Windows 11 原生标签不在该功能范围内。
 
 复制与移动直接通过普通中键菜单顶部的两个文字按钮选择，没有单独开关，也不注册 Ctrl / Shift 中键手势。菜单显示前校验前台和原视图，不依赖鼠标是否位于选中项目上，从 `IFolderView2::GetSelection(FALSE)` 克隆绝对 PIDL 数组；无选择时隐藏操作按钮与数量，有选择但无法生成有效文件快照时显示数量并禁用操作按钮；空白处点击沿用当前选择。按钮点击通过根分支的 `invoke` 回调原位切换模式，保留同一个窗口和焦点，清理旧子菜单；选中目标目录才返回执行命令。不能把无选择解释为当前目录，也不能在选好目标后重读另一批选择。通过 `IFileOperation::CopyItems` / `MoveItems` 批量提交，保留系统进度、错误、冲突和撤销界面；提交前再次核对中键总开关与菜单请求代次，弹出菜单的锁不得覆盖文件操作耗时。
 
@@ -133,7 +133,7 @@ Shell 查询和导航可能重入窗口消息，甚至在调用尚未返回时�
 | 标签栏 | `ExplorerTabsTests`、`NavigationViewTests`、`NavigationExtensionTests` |
 | 主题、设置与图标 | `ThemeControlsTests`、`SettingsHubTests`、`QuickIconTests`、`WindowPositionTests` |
 
-部分测试夹具保留在系统临时目录的 `FolderNote-Test-*` 下，便于检查。`QuickDialogProbe` 和 `TabsActivationProbe` 是额外诊断程序，不是全部验收的替代品。`QuickDialogProbe --verify` 显示自己的系统保存对话框，等待前台后验证目录实际变化和文件名保留，并自动取消；它会影响前台焦点，应单独运行，不放入常规 CTest。无参数模式保留窗口供人工验证，不写入文件。`TabsActivationProbe` 默认读取当前 Shell 窗口和标签栏状态；不要在自动测试中使用会改变真实窗口的激活操作。
+部分测试夹具保留在系统临时目录的 `ShibaKit-Test-*` 下，便于检查。`QuickDialogProbe` 和 `TabsActivationProbe` 是额外诊断程序，不是全部验收的替代品。`QuickDialogProbe --verify` 显示自己的系统保存对话框，等待前台后验证目录实际变化和文件名保留，并自动取消；它会影响前台焦点，应单独运行，不放入常规 CTest。无参数模式保留窗口供人工验证，不写入文件。`TabsActivationProbe` 默认读取当前 Shell 窗口和标签栏状态；不要在自动测试中使用会改变真实窗口的激活操作。
 
 实机验收至少记录系统版本、程序版本、是否加载旧 DLL、缩放比例和主题。发布前按改动覆盖安装 / 升级 / 卸载、连续菜单开关、多选、普通目录与慢速路径、背景标签关闭、滚轮快速切换及真实文件对话框跳转。安装器不会强制重启资源管理器；若旧窗口仍加载旧扩展，应在没有复制或移动任务时关闭相关窗口并重新打开，必要时由使用者安排重启资源管理器。
 
@@ -153,7 +153,7 @@ cmake --build build-x86 --config Release --target LegacyDialogFixture
 
 ## 版本与打包
 
-版本号只在 `CMakeLists.txt` 的 `project(FolderNote VERSION ...)` 中维护。重新配置后，CMake 生成窗口版本文字、资源版本及 MSIX 清单版本。发布时同时更新 [版本记录](../CHANGELOG.md) 和受影响的说明；不要直接编辑 `build/generated/` 下的生成文件。
+版本号只在 `CMakeLists.txt` 的 `project(ShibaKit VERSION ...)` 中维护。重新配置后，CMake 生成窗口版本文字、资源版本及 MSIX 清单版本。发布时同时更新 [版本记录](../CHANGELOG.md) 和受影响的说明；不要直接编辑 `build/generated/` 下的生成文件。
 
 ### 本地生成安装包
 
@@ -163,7 +163,7 @@ cmake --build build-x86 --config Release --target LegacyDialogFixture
 .\packaging\build-release.ps1
 ```
 
-脚本在 `dist` 生成通用版 `FolderNote-<版本>-Setup-x64.exe`、Windows 11 首层菜单测试版 `FolderNote-<版本>-Setup-Win11-x64.exe`、兼容 ZIP 和 SHA-256 校验清单。EXE 可直接运行，无需解压。`-StableNames` 省略文件名中的版本号，用于 GitHub Releases 和在线更新。
+脚本在 `dist` 生成通用版 `ShibaKit-<版本>-Setup-x64.exe`、Windows 11 首层菜单测试版 `ShibaKit-<版本>-Setup-Win11-x64.exe`、兼容 ZIP 和 SHA-256 校验清单。EXE 可直接运行，无需解压。`-StableNames` 省略文件名中的版本号，用于 GitHub Releases 和在线更新。
 
 `build-setup.ps1` 使用 Windows 自带的 MakeCab 将固定组件打包，随后构建 `Setup-standard` / `Setup-win11`，内嵌 CAB、软件图标与版本资源。启动器通过 SetupAPI 解包到独立临时目录，调用现有安装器并等待完成后清理目录。打包阶段运行 `SetupPackageTests` 对实际发布 EXE 解包、逐文件比较字节及全部图标尺寸，不修改宿主安装。`UpdateTests` 离线验证 EXE 优先选择、旧 ZIP 回退以及下载地址和 SHA-256 元数据校验。
 
@@ -172,18 +172,18 @@ cmake --build build-x86 --config Release --target LegacyDialogFixture
 在 GitHub 建立一个公开仓库，以便程序无需登录即可读取 Releases。在项目目录审阅 `git status` 和提交内容后，执行以下命令，将 `OWNER` 替换为自己的 GitHub 用户名或组织名。已有 `github` 远程仓库时，跳过添加远程仓库的命令。
 
 ```powershell
-$version = (Get-Item .\build\Release\FolderNote.exe).VersionInfo.ProductVersion
+$version = (Get-Item .\build\Release\ShibaKit.exe).VersionInfo.ProductVersion
 git add .github packaging src tests docs CMakeLists.txt README.md README.en.md CHANGELOG.md
 git diff --cached --stat
 git diff --cached
-git commit -m "Release FolderNote $version"
-git remote add github https://github.com/OWNER/FolderNote.git
+git commit -m "Release ShibaKit $version"
+git remote add github https://github.com/OWNER/ShibaKit.git
 git push -u github main
-git tag -a "v$version" -m "FolderNote $version"
+git tag -a "v$version" -m "ShibaKit $version"
 git push github "v$version"
 ```
 
-推送 `main` 会在 Actions 生成构建产物，推送与 CMake 版本一致的 `v<版本>` 标签后会自动发布 Releases。CI 从 CHANGELOG 提取当前版本说明，上传两个独立 EXE、两个兼容 ZIP 和 SHA-256 清单后，将草稿公开并标记为最新版本。旧客户端继续下载 ZIP，新客户端优先下载同类型 EXE。CI 将当前 GitHub 仓库写入发布版，设置窗口便能检查后续发布。本地若要启用同一更新源，构建前用 `cmake --preset windows-x64 -DFOLDERNOTE_UPDATE_REPOSITORY=OWNER/FolderNote` 配置。
+推送 `main` 会在 Actions 生成构建产物，推送与 CMake 版本一致的 `v<版本>` 标签后会自动发布 Releases。CI 从 CHANGELOG 提取当前版本说明，上传两个独立 EXE、两个兼容 ZIP 和 SHA-256 清单后，将草稿公开并标记为最新版本。旧客户端继续下载 ZIP，新客户端优先下载同类型 EXE。CI 将当前 GitHub 仓库写入发布版，设置窗口便能检查后续发布。本地若要启用同一更新源，构建前用 `cmake --preset windows-x64 -DSHIBAKIT_UPDATE_REPOSITORY=OWNER/ShibaKit` 配置。
 
 ### Windows 11 首层菜单测试包
 
@@ -191,7 +191,7 @@ git push github "v$version"
 .\packaging\build-win11.ps1
 ```
 
-脚本读取 `build/AppxManifest.xml` 和 `build/Release/`，检查主程序与清单版本一致，调用 SDK 中的 `MakeAppx.exe` 校验并打包，输出 `dist/FolderNote-Win11-<版本>/` 及 `dist/FolderNote-<版本>-win11-test.zip`。因此运行脚本前应使用上面的默认 `build/` 目录完成 Release 构建。
+脚本读取 `build/AppxManifest.xml` 和 `build/Release/`，检查主程序与清单版本一致，调用 SDK 中的 `MakeAppx.exe` 校验并打包，输出 `dist/ShibaKit-Win11-<版本>/` 及 `dist/ShibaKit-<版本>-win11-test.zip`。因此运行脚本前应使用上面的默认 `build/` 目录完成 Release 构建。
 
 目前 MSIX 为未签名的个人测试包。MakeAppx 成功只说明包结构通过校验；正式分发需要准备签名，并在目标 Windows 11 系统验证安装、菜单分组和卸载。更多安装限制见 [Windows 11 说明](../packaging/README-Win11.md)。
 

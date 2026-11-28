@@ -38,7 +38,7 @@ int main(int argc, char **argv) {
     QuickFindTestSettings isolated;
     check(settings() == Settings{}, "missing preferences preserve defaults");
     DWORD legacy = 1;
-    RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"PinyinQuickFind", REG_DWORD, &legacy, sizeof(legacy));
+    RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"PinyinQuickFind", REG_DWORD, &legacy, sizeof(legacy));
     check(settings().explorer && settings().dialogs, "migrate existing external search switch");
     Settings preferences;
     preferences.boxes = preferences.lists = preferences.openFolders = preferences.atPointer = preferences.showIcons = false;
@@ -48,7 +48,7 @@ int main(int argc, char **argv) {
     auto invalid = preferences; invalid.visibleRows = 0;
     check(saveSettings(invalid) == ERROR_INVALID_PARAMETER && settings() == preferences, "invalid row count preserves saved settings");
     DWORD damaged = 0xffffffff;
-    RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"QuickFindOptions", REG_DWORD, &damaged, sizeof(damaged));
+    RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"QuickFindOptions", REG_DWORD, &damaged, sizeof(damaged));
     check(settings().visibleRows == 9 && settings().explorer && !settings().openFiles, "corrupt settings use safe legacy defaults");
     check(saveSettings({}) == ERROR_SUCCESS, "restore test defaults");
     check(matches(L"设计素材", L"sjsc"), "Chinese initials");
@@ -110,14 +110,14 @@ int main(int argc, char **argv) {
       const auto icon = quick::icons::read(quick::icons::Source::system(SIID_DOCNOASSOC), 16);
       std::vector<CandidateIcon> icons(samples.size(), CandidateIcon::copy(icon ? icon->handle : nullptr));
       for (DWORD mode : {1u, 2u}) {
-        RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"Theme", REG_DWORD, &mode, sizeof(mode));
+        RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"Theme", REG_DWORD, &mode, sizeof(mode));
         for (const auto &entry : {std::pair{L"f", "overflow"}, std::pair{L"项目分析", "single"}, std::pair{L"zzz", "empty"}}) {
           Popup preview; preview.begin(parent, samples, {}, icons);
           for (auto character : std::wstring(entry.first)) preview.character(character);
           render(preview.handle(), directory / (std::string(mode == 1 ? "light-" : "dark-") + entry.second + ".bmp"));
         }
       }
-      RegDeleteKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"Theme");
+      RegDeleteKeyValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"Theme");
     }
     const auto list = CreateWindowExW(0, L"LISTBOX", L"", WS_CHILD | LBS_HASSTRINGS | LBS_NOTIFY,
                                       0, 0, 220, 160, parent, reinterpret_cast<HMENU>(1), nullptr, nullptr);

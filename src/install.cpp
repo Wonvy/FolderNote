@@ -41,13 +41,13 @@ static void removeKey(const std::wstring &p) {
     fn::fail(L"无法移除菜单", e);
 }
 static fn::fs::path settingsShortcut() {
-#ifdef FOLDERNOTE_UNINSTALL_TEST
-  return fn::localRoot().parent_path() / L"StartMenu" / L"FolderNote 设置.lnk";
+#ifdef SHIBAKIT_UNINSTALL_TEST
+  return fn::localRoot().parent_path() / L"StartMenu" / L"ShibaKit 设置.lnk";
 #else
   PWSTR programs = nullptr;
   if (FAILED(SHGetKnownFolderPath(FOLDERID_Programs, KF_FLAG_DEFAULT, nullptr, &programs)))
     throw fn::Error{lang::text(L"无法定位当前用户的开始菜单。")};
-  fn::fs::path path = fn::fs::path(programs) / L"FolderNote" / L"FolderNote 设置.lnk";
+  fn::fs::path path = fn::fs::path(programs) / L"ShibaKit" / L"ShibaKit 设置.lnk";
   CoTaskMemFree(programs);
   return path;
 #endif
@@ -58,25 +58,25 @@ static void createSettingsShortcut(const fn::fs::path &active) {
   IShellLinkW *link = nullptr;
   HRESULT hr = CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&link));
   if (SUCCEEDED(hr)) {
-    hr = link->SetPath((active / L"FolderNote.exe").c_str());
+    hr = link->SetPath((active / L"ShibaKit.exe").c_str());
     if (SUCCEEDED(hr)) hr = link->SetArguments(L"--settings");
     if (SUCCEEDED(hr)) hr = link->SetDescription(lang::text(L"设置文件夹备注、双击导航、中键快速定位和外观主题"));
-    if (SUCCEEDED(hr)) hr = link->SetIconLocation((active / L"FolderNote.exe").c_str(), -IDI_FOLDERNOTE);
+    if (SUCCEEDED(hr)) hr = link->SetIconLocation((active / L"ShibaKit.exe").c_str(), -IDI_SHIBAKIT);
     IPersistFile *file = nullptr;
     if (SUCCEEDED(hr)) hr = link->QueryInterface(IID_PPV_ARGS(&file));
     if (SUCCEEDED(hr)) hr = file->Save(path.c_str(), TRUE);
     if (file) file->Release();
     link->Release();
   }
-  if (FAILED(hr)) throw fn::Error{lang::text(L"无法创建 FolderNote 设置的开始菜单入口。")};
+  if (FAILED(hr)) throw fn::Error{lang::text(L"无法创建 ShibaKit 设置的开始菜单入口。")};
 }
 static void registerMenus(const fn::fs::path &active, bool modern, bool seedSettings = true) {
-  const auto icon = L"\"" + (active / L"FolderNote.exe").native() + L"\",-" +
-                    std::to_wstring(IDI_FOLDERNOTE);
+  const auto icon = L"\"" + (active / L"ShibaKit.exe").native() + L"\",-" +
+                    std::to_wstring(IDI_SHIBAKIT);
   for (int i = 0; i < 3; ++i) {
     const wchar_t *id = fn::ids[i];
     auto cls = std::wstring(L"Software\\Classes\\CLSID\\") + id + L"\\InprocServer32";
-    value(cls, nullptr, (active / L"FolderNoteShell.dll").native());
+    value(cls, nullptr, (active / L"ShibaKitShell.dll").native());
     value(cls, L"ThreadingModel", L"Apartment");
   }
   for (int i = 0; i < 3; ++i) {
@@ -92,8 +92,8 @@ static void registerMenus(const fn::fs::path &active, bool modern, bool seedSett
   }
   // Settings live in Start, including when both features are off. Remove the
   // old always-visible context entries when upgrading from 1.4.0.
-  removeKey(L"Software\\Classes\\Directory\\shell\\FolderNote.Settings");
-  removeKey(L"Software\\Classes\\Directory\\Background\\shell\\FolderNote.Settings");
+  removeKey(L"Software\\Classes\\Directory\\shell\\ShibaKit.Settings");
+  removeKey(L"Software\\Classes\\Directory\\Background\\shell\\ShibaKit.Settings");
   removeKey(std::wstring(L"Software\\Classes\\CLSID\\") + fn::settingsId);
   // Background upgrades leave settings and existing menu visibility to the settings window.
   // Persist defaults during interactive installations so previously cached modules also see them.
@@ -101,7 +101,7 @@ static void registerMenus(const fn::fs::path &active, bool modern, bool seedSett
     navigation::saveSettings(navigation::notesEnabled(), navigation::configuredAction(),
                              navigation::preferredAction());
 }
-static constexpr const wchar_t* payloadNames[]={L"FolderNote.exe",L"FolderNoteShell.dll",L"FolderNoteNavigation.dll",L"Install.exe",L"Uninstall.exe"};
+static constexpr const wchar_t* payloadNames[]={L"ShibaKit.exe",L"ShibaKitShell.dll",L"ShibaKitNavigation.dll",L"Install.exe",L"Uninstall.exe"};
 static constexpr auto winuiBootstrap = L"Microsoft.WindowsAppRuntime.Bootstrap.dll";
 static bool isVersionDirectory(const fn::fs::path& p) {
   const auto name=p.filename().native();GUID id{};
@@ -142,11 +142,11 @@ static fn::fs::path stageVersion(const fn::fs::path& source,const fn::fs::path& 
   catch(...){std::wstring unused;removePayload(version,unused);throw;}
   return version;
 }
-#ifdef FOLDERNOTE_UNINSTALL_ONLY
+#ifdef SHIBAKIT_UNINSTALL_ONLY
 // Remove only our exact package identity for the current user. Never enumerate
 // or remove other users' packages, and never change system trust policies.
 static bool removeModernPackage() {
-#ifdef FOLDERNOTE_UNINSTALL_TEST
+#ifdef SHIBAKIT_UNINSTALL_TEST
   return true;
 #else
   wchar_t system[MAX_PATH];
@@ -154,8 +154,8 @@ static bool removeModernPackage() {
   auto ps = fn::fs::path(system) / L"WindowsPowerShell" / L"v1.0" / L"powershell.exe";
   std::wstring command = L"\"" + ps.native() +
                          L"\" -NoProfile -NonInteractive -Command \"try { Get-AppxPackage -Name "
-                         L"'FolderNote.Desktop' -ErrorAction Stop | Where-Object { $_.Publisher "
-                         L"-eq 'CN=FolderNote, OID.2.25.311729368913984317654407730594956997722=1' "
+                         L"'ShibaKit.Desktop' -ErrorAction Stop | Where-Object { $_.Publisher "
+                         L"-eq 'CN=ShibaKit, OID.2.25.311729368913984317654407730594956997722=1' "
                          L"} | ForEach-Object { Remove-AppxPackage -Package $_.PackageFullName "
                          L"-ErrorAction Stop }; exit 0 } catch { exit 1 }\"";
   STARTUPINFOW si{sizeof(si)};
@@ -199,7 +199,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
     bool uninstall = n > 1 && std::wstring(args[1]) == L"--uninstall";
     bool worker = n > 1 && std::wstring(args[1]) == L"--uninstall-worker";
     bool navigationOnly = n > 1 && std::wstring(args[1]) == L"--navigation-only";
-#ifdef FOLDERNOTE_UNINSTALL_ONLY
+#ifdef SHIBAKIT_UNINSTALL_ONLY
     uninstall = !worker;
 #endif
     const bool automaticUpdate = !uninstall && n > 1 && std::wstring_view(args[1]) == L"--automatic-update";
@@ -217,13 +217,13 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
       }
     if (uninstall &&
         MessageBoxW(nullptr,
-#ifdef FOLDERNOTE_UNINSTALL_ONLY
-                    lang::text(L"卸载当前用户的 FolderNote（通用版及 Win11 "
+#ifdef SHIBAKIT_UNINSTALL_ONLY
+                    lang::text(L"卸载当前用户的 ShibaKit（通用版及 Win11 "
                     L"首层菜单版），移除双击导航扩展及右键菜单？\n\n移除自动加载注册可能需要管理员授权。所有文件夹中的备注都会保留。"),
 #else
-                    lang::text(L"移除 FolderNote 和右键菜单？已保存的文件夹备注会保留。"),
+                    lang::text(L"移除 ShibaKit 和右键菜单？已保存的文件夹备注会保留。"),
 #endif
-                    L"FolderNote", MB_YESNO | MB_ICONQUESTION) != IDYES) {
+                    L"ShibaKit", MB_YESNO | MB_ICONQUESTION) != IDYES) {
       LocalFree(args);
       CoUninitialize();
       return 0;
@@ -231,7 +231,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
     if (uninstall && (self.parent_path() == dest ||
         (self.parent_path().parent_path()==dest/L"Versions" && isVersionDirectory(self.parent_path())))) {
       auto temp = fn::fs::temp_directory_path() /
-                  (L"FolderNote-Uninstall-" + std::to_wstring(GetCurrentProcessId()) + L".exe");
+                  (L"ShibaKit-Uninstall-" + std::to_wstring(GetCurrentProcessId()) + L".exe");
       if (!CopyFileW(self.c_str(), temp.c_str(), TRUE))
         fn::fail(L"无法启动卸载");
       std::wstring cmd = L"\"" + temp.native() + L"\" --uninstall-worker --parent " +
@@ -248,13 +248,13 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
     } else if (uninstall || worker) {
       // Complete privileged registration removal before touching user files.
       // The elevated helper never accesses the original user's HKCU or files.
-#ifdef FOLDERNOTE_UNINSTALL_TEST
+#ifdef SHIBAKIT_UNINSTALL_TEST
       navreg::unregisterMachine(navreg::currentUserSid());
 #else
       navreg::removeMachine(self);
 #endif
       navigation::stop();
-#ifndef FOLDERNOTE_UNINSTALL_TEST
+#ifndef SHIBAKIT_UNINSTALL_TEST
       try {
         quick::removeElevatedHelper(quick::executable());
       } catch (const fn::Error &) {
@@ -267,7 +267,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
       navreg::unregisterUser();
       context::unregisterCommands();
       const auto unresolvedContextMenus = context::restoreAll();
-#ifndef FOLDERNOTE_UNINSTALL_TEST
+#ifndef SHIBAKIT_UNINSTALL_TEST
       {
         const auto machineMounts = explorer_entries::pendingMachineMountIds();
         if (!machineMounts.empty()) {
@@ -297,11 +297,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
       }
       try { unresolvedEntries += explorer_entries::removeAllCustom(); }
       catch (...) { ++unresolvedEntries; }
-#ifdef FOLDERNOTE_UNINSTALL_ONLY
+#ifdef SHIBAKIT_UNINSTALL_ONLY
       bool modernRemoved = removeModernPackage();
 #endif
-      removeKey(L"Software\\Classes\\Directory\\Background\\shell\\FolderNote.Settings");
-      removeKey(L"Software\\Classes\\Directory\\shell\\FolderNote.Settings");
+      removeKey(L"Software\\Classes\\Directory\\Background\\shell\\ShibaKit.Settings");
+      removeKey(L"Software\\Classes\\Directory\\shell\\ShibaKit.Settings");
       removeKey(std::wstring(L"Software\\Classes\\CLSID\\") + fn::settingsId);
       for (int i = 0; i < 3; ++i) {
         removeKey(std::wstring(L"Software\\Classes\\Directory\\shell\\") + fn::verbs[i]);
@@ -338,10 +338,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
       }
       RemoveDirectoryW((dest / L"Requests").c_str());
       RemoveDirectoryW(dest.c_str());
-#ifdef FOLDERNOTE_UNINSTALL_ONLY
+#ifdef SHIBAKIT_UNINSTALL_ONLY
       if (!modernRemoved)
         throw fn::Error{lang::text(L"通用版卸载已执行，但 Win11 应用包未能移除。请在 Windows 设置 → "
-                        L"应用中卸载“FolderNote 文件夹备注”。备注数据未删除。")};
+                        L"应用中卸载“ShibaKit 文件夹备注”。备注数据未删除。")};
 #endif
       if (!remaining.empty())
         result = 2;
@@ -359,48 +359,48 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
         message += lang::text(L"部分文件夹入口未能还原或移除，处理记录仍保留。");
         result = 2;
       }
-      MessageBoxW(nullptr, message.c_str(), L"FolderNote", MB_OK | MB_ICONINFORMATION);
+      MessageBoxW(nullptr, message.c_str(), L"ShibaKit", MB_OK | MB_ICONINFORMATION);
     } else {
       auto source = self.parent_path();
-      for (auto name : {L"FolderNote.exe", L"FolderNoteShell.dll", L"FolderNoteNavigation.dll", L"Uninstall.exe"})
+      for (auto name : {L"ShibaKit.exe", L"ShibaKitShell.dll", L"ShibaKitNavigation.dll", L"Uninstall.exe"})
         if (GetFileAttributesW((source / name).c_str()) == INVALID_FILE_ATTRIBUTES)
-          throw fn::Error{lang::text(L"请完整解压安装包，保持 Install.exe、FolderNote.exe、"
-                          L"FolderNoteShell.dll、FolderNoteNavigation.dll 和 Uninstall.exe 在同一文件夹。")};
+          throw fn::Error{lang::text(L"请完整解压安装包，保持 Install.exe、ShibaKit.exe、"
+                          L"ShibaKitShell.dll、ShibaKitNavigation.dll 和 Uninstall.exe 在同一文件夹。")};
       navreg::ensureMachine(self, !automaticUpdate);
       auto active=stageVersion(source,dest);
-      const auto icon = L"\"" + (active / L"FolderNote.exe").native() + L"\",-" +
-                        std::to_wstring(IDI_FOLDERNOTE);
+      const auto icon = L"\"" + (active / L"ShibaKit.exe").native() + L"\",-" +
+                        std::to_wstring(IDI_SHIBAKIT);
       navigation::stopLegacy();
       navreg::registerUser(active);
       registerMenus(active, navigationOnly, !automaticUpdate);
-      context::registerCommands(active / L"FolderNote.exe");
+      context::registerCommands(active / L"ShibaKit.exe");
       createSettingsShortcut(active);
       std::wstring u = L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstal"
-                       L"l\\FolderNote";
-      value(u, L"DisplayName", lang::text(L"FolderNote 系统工具"));
+                       L"l\\ShibaKit";
+      value(u, L"DisplayName", lang::text(L"ShibaKit 系统工具"));
       value(u, L"DisplayVersion", app::version);
       value(u, L"DisplayIcon", icon);
       value(u, L"UninstallString", L"\"" + (active / L"Uninstall.exe").native() + L"\"");
       value(u, L"InstallLocation", dest.native());
       SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
       navigation::reload();
-#ifndef FOLDERNOTE_UNINSTALL_TEST
-      quick::syncHelper((active / L"FolderNote.exe").native());
-      quick::syncElevatedHelper((active / L"FolderNote.exe").native(), !automaticUpdate);
-      if (!desktop_groups::sync((active / L"FolderNote.exe").native()))
+#ifndef SHIBAKIT_UNINSTALL_TEST
+      quick::syncHelper((active / L"ShibaKit.exe").native());
+      quick::syncElevatedHelper((active / L"ShibaKit.exe").native(), !automaticUpdate);
+      if (!desktop_groups::sync((active / L"ShibaKit.exe").native()))
         throw fn::Error{lang::text(L"无法更新桌面盒子启动项。")};
 #endif
       MessageBoxW(nullptr,
-                  lang::text(L"安装完成。从开始菜单搜索“FolderNote 设置”调整功能和主题。首次安装默认开启双击返回上一级，备注和中键快速定位默认关闭。覆盖升级保留已有选择、备注、置顶和历史记录。\n\n"
+                  lang::text(L"安装完成。从开始菜单搜索“ShibaKit 设置”调整功能和主题。首次安装默认开启双击返回上一级，备注和中键快速定位默认关闭。覆盖升级保留已有选择、备注、置顶和历史记录。\n\n"
                   L"新版使用独立目录，不受旧文件占用影响。安装器不会注销或重启资源管理器；请关闭并重新打开文件夹窗口以加载新版扩展。\n\n"
                   L"通用版右键菜单在 Windows 11 的“显示更多选项”中；首层菜单请使用 Win11 安装包。"),
-                  L"FolderNote", MB_OK | MB_ICONINFORMATION);
+                  L"ShibaKit", MB_OK | MB_ICONINFORMATION);
     }
   } catch (const fn::Error &e) {
-    MessageBoxW(nullptr, e.message.c_str(), lang::text(L"FolderNote 操作未完成"), MB_OK | MB_ICONERROR);
+    MessageBoxW(nullptr, e.message.c_str(), lang::text(L"ShibaKit 操作未完成"), MB_OK | MB_ICONERROR);
     result = 1;
   } catch (...) {
-    MessageBoxW(nullptr, lang::text(L"安装或卸载失败，请检查文件权限。"), L"FolderNote", MB_OK | MB_ICONERROR);
+    MessageBoxW(nullptr, lang::text(L"安装或卸载失败，请检查文件权限。"), L"ShibaKit", MB_OK | MB_ICONERROR);
     result = 1;
   }
   LocalFree(args);

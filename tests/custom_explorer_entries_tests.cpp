@@ -33,7 +33,7 @@ constexpr wchar_t thisPc[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Exp
 constexpr wchar_t desktop[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Desktop\\NameSpace\\";
 constexpr wchar_t classes[] = L"Software\\Classes\\CLSID\\";
 constexpr wchar_t hideIcons[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\HideDesktopIcons\\NewStartPanel";
-constexpr wchar_t records[] = L"Software\\FolderNote\\ExplorerEntries\\Custom\\";
+constexpr wchar_t records[] = L"Software\\ShibaKit\\ExplorerEntries\\Custom\\";
 
 void check(bool condition, const char *message) {
   if (!condition) throw std::runtime_error(message);
@@ -47,8 +47,8 @@ struct Fixture {
     GUID guid{};
     wchar_t id[39]{};
     check(SUCCEEDED(CoCreateGuid(&guid)) && StringFromGUID2(guid, id, _countof(id)), "create test id");
-    registry = std::wstring(L"Software\\FolderNoteCustomEntryTests\\") + id;
-    directory = fn::fs::temp_directory_path() / (std::wstring(L"FolderNoteEntryTests-") + id);
+    registry = std::wstring(L"Software\\ShibaKitCustomEntryTests\\") + id;
+    directory = fn::fs::temp_directory_path() / (std::wstring(L"ShibaKitEntryTests-") + id);
     personalDesktop = directory / L"Desktop";
     sharedDesktop = directory / L"PublicDesktop";
     check(fn::fs::create_directories(personalDesktop) && fn::fs::create_directory(sharedDesktop),
@@ -134,7 +134,7 @@ void desktopTest(const fn::fs::path &target, const fn::fs::path &otherTarget) {
 void run(Fixture &fixture) {
   const auto target = fixture.directory.native();
   check(customEntries(Surface::ThisPc).empty(), "empty fixture");
-  addCustom(Surface::ThisPc, L"FolderNote Test", target);
+  addCustom(Surface::ThisPc, L"ShibaKit Test", target);
   auto entries = customEntries(Surface::ThisPc);
   check(entries.size() == 1 && entries[0].target == target, "load saved This PC entry");
   auto computerEntry = entries.front();
@@ -144,10 +144,10 @@ void run(Fixture &fixture) {
   check(dword(computerClass, L"System.IsPinnedToNameSpaceTree") == 0, "This PC entry is not a navigation root");
 
   bool duplicateRejected = false;
-  try { addCustom(Surface::ThisPc, L"foldernote test", target + L"\\."); }
+  try { addCustom(Surface::ThisPc, L"shibakit test", target + L"\\."); }
   catch (const fn::Error &) { duplicateRejected = true; }
   check(duplicateRejected && customEntries(Surface::ThisPc).size() == 1, "reject normalized duplicate");
-  addCustom(Surface::Navigation, L"FolderNote Test", target);
+  addCustom(Surface::Navigation, L"ShibaKit Test", target);
   entries = customEntries(Surface::Navigation);
   check(entries.size() == 1 && entries[0].id != computerEntry.id, "allow same target in a different location");
   const auto navigationEntry = entries.front();

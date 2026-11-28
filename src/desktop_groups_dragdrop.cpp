@@ -425,7 +425,7 @@ bool itemEditInfo(const std::wstring &path, std::wstring &editText, int &selectL
 }
 
 void DropTarget::clearMarker() {
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
   if (panel.hasSurface()) panel.surface->showItemInsertion(std::nullopt);
 #endif
   if (!IsRectEmpty(&panel.desktop.dropMarker)) {
@@ -563,7 +563,7 @@ void DropTarget::updateFeedback(POINT screen, DWORD allowed, const std::wstring 
         return item->window == panel.desktop.dropHighlight;
       });
       if (previous != panel.desktop.panels.end()) {
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
         if ((*previous)->hasSurface()) (*previous)->surface->showItemInsertion(std::nullopt);
 #endif
         InvalidateRect((*previous)->list, &panel.desktop.dropMarker, FALSE);
@@ -571,7 +571,7 @@ void DropTarget::updateFeedback(POINT screen, DWORD allowed, const std::wstring 
     }
     panel.desktop.highlight(highlighted);
   }
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
   if (panel.hasSurface()) {
     panel.surface->showItemInsertion(highlighted && !IsRectEmpty(&marker) ? std::optional<RECT>(marker) : std::nullopt);
   }
@@ -795,7 +795,7 @@ void Desktop::clearDropFeedback() {
       return panel->window == dropHighlight;
     });
     if (previous != panels.end()) {
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
       if ((*previous)->hasSurface()) (*previous)->surface->showItemInsertion(std::nullopt);
 #endif
       InvalidateRect((*previous)->list, &dropMarker, FALSE);
@@ -874,7 +874,7 @@ void Desktop::drag(Panel &panel, int index) {
     RECT preview{};
     POINT cursor{};
     bool hasPreview = false;
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
     if (panel.hasSurface()) hasPreview = panel.surface->imageBounds(index, preview);
 #endif
     if (!panel.hasSurface() && ListView_GetItemRect(panel.list, index, &preview, LVIR_ICON)) {
@@ -907,7 +907,7 @@ void Desktop::drag(Panel &panel, int index) {
       HWND srcWnd;
       DragScope(Desktop &desktop, HWND source) : owner(desktop), srcWnd(source) {}
       ~DragScope() {
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
         if (auto *srcPanel = owner.panelForWindow(srcWnd); srcPanel && srcPanel->hasSurface()) {
           srcPanel->surface->setDragActive(false);
         }
@@ -921,7 +921,7 @@ void Desktop::drag(Panel &panel, int index) {
       }
     } scope(*this, sourceWindow);
 
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
     if (panel.hasSurface()) {
       panel.surface->setDragActive(true);
       for (size_t di = 0; di < paths.size(); ++di) {
@@ -1195,7 +1195,7 @@ std::wstring Desktop::dropFolder(Panel *panel, POINT point) const {
     if (!PtInRect(&bounds, client)) return {};
 
     int row = -1;
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
     if (panel->hasSurface()) row = panel->surface->hit(point);
 #endif
     if (!panel->hasSurface() && IsWindowVisible(panel->list)) {
@@ -1348,7 +1348,7 @@ bool Desktop::ungroup(std::span<const std::wstring> paths, HWND owner) {
 Insertion Panel::insertion(POINT point) const {
   const auto &group = desktop.groups[index];
   Insertion insertion;
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
   if (surface && surface->available()) {
     if (group.sort != Sort::Manual || collapsed()) return insertion;
     const bool rows = group.view == View::List;
@@ -1414,7 +1414,7 @@ Insertion Panel::insertion(POINT point) const {
 
 void Panel::autoscroll(POINT point) {
   if (desktop.groups[index].displayMode == DisplayMode::Pages) return;
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
   if (surface && surface->available()) {
     const auto now = GetTickCount64();
     if (now - desktop.lastDragScroll >= 75 && surface->scrollAt(point)) desktop.lastDragScroll = now;

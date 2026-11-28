@@ -19,7 +19,7 @@ struct MenuPreviewItem {
 
 // Enumerates the visible items and direct submenus in a classic Shell menu. An empty
 // background path refers to the desktop namespace. Call from a COM STA.
-// Only pass verified, FolderNote-managed hidden handlers as hiddenHandlerCandidates.
+// Only pass verified, ShibaKit-managed hidden handlers as hiddenHandlerCandidates.
 // Their isolated preview items go into hiddenHandlerItems, outside the visible order.
 std::vector<MenuPreviewItem> actualMenuOrder(HWND owner, const std::wstring &path,
                                              PreviewTarget target = PreviewTarget::Object,

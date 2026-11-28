@@ -271,7 +271,7 @@ struct Request {
   quick::detail::MenuRequest current, replacement;
   static std::wstring nextName() {
     static unsigned serial = 0;
-    return L"Local\\FolderNote.QuickDialogTests." + std::to_wstring(GetCurrentProcessId()) + L"." +
+    return L"Local\\ShibaKit.QuickDialogTests." + std::to_wstring(GetCurrentProcessId()) + L"." +
         std::to_wstring(GetTickCount64()) + L"." + std::to_wstring(++serial);
   }
   Request() : name(nextName()), current(name.c_str()), replacement(name.c_str()) {
@@ -492,7 +492,7 @@ void classicDialogs() {
     Request request;
     simulation.classicMode = true;
     simulation.enumerateAddress = false;
-    const auto result = quick::dialog::navigate(targetWindow(), L"Z:\\FolderNoteNonExistent_Test\\MissingDir", request.current);
+    const auto result = quick::dialog::navigate(targetWindow(), L"Z:\\ShibaKitNonExistent_Test\\MissingDir", request.current);
     check(result == Result::AddressWriteFailed && !simulation.classicEnterPosts && !simulation.classicOkCommands &&
           !count(WM_SETTEXT) && simulation.classicEditText == L"纸巾盒 D4 紧配.dwg",
           "non-existent directory refuses classic navigation before writing or submitting");

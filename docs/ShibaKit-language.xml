@@ -1,21 +1,21 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<foldernote-language version="1" name="My language">
-  <message id="870aeb0e41664272">FolderNote Tabs</message>
-  <message id="d081d2d236f9059">FolderNote installation incomplete</message>
-  <message id="20ca7bca8c5086d0">FolderNote operation incomplete</message>
-  <message id="7758c816ac1ae69c">FolderNote folder tabs</message>
-  <message id="c7998b57c8c11203">FolderNote Update</message>
-  <message id="913099e4884121d9">FolderNote system tools</message>
-  <message id="9c7fff8dd7167e8">FolderNote is installed. Folder notes, double-click navigation, and quick folders can be enabled independently. Choose a light, dark, or system theme in settings.
+<shibakit-language version="1" name="My language">
+  <message id="870aeb0e41664272">ShibaKit Tabs</message>
+  <message id="d081d2d236f9059">ShibaKit installation incomplete</message>
+  <message id="20ca7bca8c5086d0">ShibaKit operation incomplete</message>
+  <message id="7758c816ac1ae69c">ShibaKit folder tabs</message>
+  <message id="c7998b57c8c11203">ShibaKit Update</message>
+  <message id="913099e4884121d9">ShibaKit system tools</message>
+  <message id="9c7fff8dd7167e8">ShibaKit is installed. Folder notes, double-click navigation, and quick folders can be enabled independently. Choose a light, dark, or system theme in settings.
 
-Close and reopen folder windows to load the extension. Search Start for FolderNote. On first install, double-click navigation is enabled. Enable folder notes to show their context menu commands.
+Close and reopen folder windows to load the extension. Search Start for ShibaKit. On first install, double-click navigation is enabled. Enable folder notes to show their context menu commands.
 
 Upgrades keep your settings. If navigation does not respond, save your double-click navigation setting again.
 
 Windows controls the menu order.</message>
-  <message id="b686caef6217ebd1">FolderNote Settings</message>
-  <message id="e40f8c34b22daeab">FolderNote custom commands</message>
-  <message id="13afc959bbec3db7">FolderNote settings</message>
+  <message id="b686caef6217ebd1">ShibaKit Settings</message>
+  <message id="e40f8c34b22daeab">ShibaKit custom commands</message>
+  <message id="13afc959bbec3db7">ShibaKit settings</message>
   <message id="d87556a25994f943">Could not find a public release or a matching installer on GitHub.</message>
   <message id="283bc016c9473607">GitHub returned invalid release information.</message>
   <message id="83789bc36f8acf6f">The GitHub release has no valid SHA-256 digest.</message>
@@ -76,7 +76,7 @@ Windows controls the menu order.</message>
   <message id="47c1df684eae9311">Copy into custom commands</message>
   <message id="31cb89bceff64d04">Include subfolders</message>
   <message id="ec032b991fa31f94">Click to select, hover to browse</message>
-  <message id="ef3ae6ec1336e4a1">Uninstall FolderNote for the current user, including the standard and Windows 11 menu editions, double-click navigation, and context menu commands?
+  <message id="ef3ae6ec1336e4a1">Uninstall ShibaKit for the current user, including the standard and Windows 11 menu editions, double-click navigation, and context menu commands?
 
 Removing the Explorer extension registration may require administrator approval. Existing folder notes will be kept.</message>
   <message id="f3925ca5791c14d2">History</message>
@@ -86,7 +86,7 @@ Removing the Explorer extension registration may require administrator approval.
   <message id="105944089541c74f">Arguments</message>
   <message id="406172933eb2fb46">Double-click blank desktop to hide boxes</message>
   <message id="e89cf2a246e2191">Double-click empty space to navigate</message>
-  <message id="f9917fa6de56a1bc">FolderNote {0} is available. Download it from GitHub and start the installer?</message>
+  <message id="f9917fa6de56a1bc">ShibaKit {0} is available. Download it from GitHub and start the installer?</message>
   <message id="987873672bd18371">Update {0} is available.</message>
   <message id="580c1e94e86c25b5">Send to</message>
   <message id="1031140894dad7d3">Cancel</message>
@@ -129,7 +129,7 @@ Removing the Explorer extension registration may require administrator approval.
   <message id="cca2eae5d917c8f4">Create link in %1</message>
   <message id="b5b25bf7cabf4b3c">Open in new window</message>
   <message id="93a34f54b6a346f4">Open in File Explorer</message>
-  <message id="8b908fcb23eed1e">Type name initials in File Explorer and system file dialogs to select an item. Desktop boxes and FolderNote lists always support this.</message>
+  <message id="8b908fcb23eed1e">Type name initials in File Explorer and system file dialogs to select an item. Desktop boxes and ShibaKit lists always support this.</message>
   <message id="18e80eeef56897e">Double-click empty space in the File Explorer list.</message>
   <message id="d370ab3013b00b2d">Vertical offset</message>
   <message id="b5e483038844c2db">Vertical offset  {0} px</message>
@@ -159,7 +159,7 @@ Removing the Explorer extension registration may require administrator approval.
   <message id="340d9405659210e3">Always open folders in new tabs</message>
   <message id="dfc49cd2c45fe8eb">The installer failed SHA-256 verification. Download it again.</message>
   <message id="5efa5688de6570c5">Extract all installer files before running Install.exe.</message>
-  <message id="2253cb99ee2fbb29">Installation complete. Search Start for FolderNote to adjust features and appearance. On first install, double-click navigation is enabled. Folder notes and quick folders are optional. Upgrades keep your settings, notes, pins, and history.
+  <message id="2253cb99ee2fbb29">Installation complete. Search Start for ShibaKit to adjust features and appearance. On first install, double-click navigation is enabled. Folder notes and quick folders are optional. Upgrades keep your settings, notes, pins, and history.
 
 Close and reopen folder windows to load the updated Explorer extension.
 
@@ -183,10 +183,10 @@ On Windows 11, the standard edition's context menu commands are under “Show mo
   <message id="62f699522bd5c7e2">Expand box</message>
   <message id="1252ba410f8f53e1">Working directory</message>
   <message id="12dabc829703c685">Navigation pane</message>
-  <message id="e572694a8791ccf1">FolderNote was uninstalled. Existing folder notes were kept.</message>
+  <message id="e572694a8791ccf1">ShibaKit was uninstalled. Existing folder notes were kept.</message>
   <message id="cff8797a0b119e93">Processed: {0} · Already correct: {1}&#13;
 Missing note file: {2} · No note: {3} · Failed: {4}</message>
-  <message id="6eee3c22a994917a">FolderNote {0} was installed. Reopen Settings to use the new version.</message>
+  <message id="6eee3c22a994917a">ShibaKit {0} was installed. Reopen Settings to use the new version.</message>
   <message id="634298c382e0e0da">Repaired: {0} · Already correct: {1}&#13;
 Missing note file: {2} · No note: {3} · Failed: {4}</message>
   <message id="506d77db51b39251">Shown</message>
@@ -233,7 +233,7 @@ After upgrading, reopen your File Explorer windows.</message>
   <message id="3820c4dd783b371d">Command preview · {path} and {parent} are available</message>
   <message id="67a88ab81059bca">Extension</message>
   <message id="46ab18245e6c28fb">Batch processing</message>
-  <message id="123905f98956642d">Batch processing — FolderNote</message>
+  <message id="123905f98956642d">Batch processing — ShibaKit</message>
   <message id="998bff22188c220c">Restore all</message>
   <message id="42b93505cf3c7c2b">Could not find the Windows extraction component.</message>
   <message id="70223b080d5797d3">Drop shadow</message>
@@ -262,8 +262,8 @@ After upgrading, reopen your File Explorer windows.</message>
   <message id="3f6ddb70c4af1a8">Folder entries</message>
   <message id="fb941ceb4f5eea1">The folder list is too large. Remove some entries.</message>
   <message id="f3db5f8b37ebc944">Folder notes</message>
-  <message id="275a113f5dabe988">Folder notes — FolderNote</message>
-  <message id="7f915d1463929645">Folder notes are disabled. Enable them in FolderNote settings and try again.</message>
+  <message id="275a113f5dabe988">Folder notes — ShibaKit</message>
+  <message id="7f915d1463929645">Folder notes are disabled. Enable them in ShibaKit settings and try again.</message>
   <message id="26e3ed8b6353eb8e">Folder tabs</message>
   <message id="7f727b3108078dda">Folder background</message>
   <message id="a4cf4a48865edfc1">The file dialog did not respond to the address change. Try again later.</message>
@@ -297,7 +297,7 @@ After upgrading, reopen your File Explorer windows.</message>
   <message id="f626a1cf63270e79">Could not initialize a connection to GitHub</message>
   <message id="9d11332f2fbf59b6">Could not prepare the Quick Folders menu</message>
   <message id="4aae6614cb4901ee">Could not prepare the update folder.</message>
-  <message id="176c53821e3d3bdb">Could not create the FolderNote settings shortcut in Start.</message>
+  <message id="176c53821e3d3bdb">Could not create the ShibaKit settings shortcut in Start.</message>
   <message id="e4818542e84c5050">Could not create temporary file</message>
   <message id="10860634b2db307a">Could not create the Context Menu Manager window.</message>
   <message id="22de5ab8b93df5d7">Could not create a context menu configuration identifier.</message>
@@ -323,14 +323,14 @@ After upgrading, reopen your File Explorer windows.</message>
   <message id="8e922b86107353">Could not complete the operation.</message>
   <message id="fcad6eba5261b65e">Could not locate the current user's Start menu.</message>
   <message id="8c5fbf9a5a7a3d25">Could not import backup.</message>
-  <message id="113c5f0de7ff2550">Could not import the language file. Use a valid FolderNote XML language template.</message>
+  <message id="113c5f0de7ff2550">Could not import the language file. Use a valid ShibaKit XML language template.</message>
   <message id="bc71229592b4e7da">Could not export backup.</message>
   <message id="377e8b77678d4a30">Could not move the files back to the desktop.</message>
   <message id="d1e64fd5729a368b">Could not restore the items to their original locations. Check the desktop and the .desktop folder.</message>
   <message id="e697b1e6efc0dc0a">Could not restore note file attributes</message>
   <message id="9bbfa9d15bcf6728">Could not restore the Explorer entry</message>
-  <message id="8db76832c27025c0">Could not open FolderNote Settings. Try opening it from the Start menu.</message>
-  <message id="cdbbde4c0ed37037">Could not open FolderNote settings. Try from Start, or reinstall FolderNote if the program files are missing.</message>
+  <message id="8db76832c27025c0">Could not open ShibaKit Settings. Try opening it from the Start menu.</message>
+  <message id="cdbbde4c0ed37037">Could not open ShibaKit settings. Try from Start, or reinstall ShibaKit if the program files are missing.</message>
   <message id="f80fc04a09a9219e">Could not open the Quick Folders menu</message>
   <message id="afd3198ee05b7f0f">Could not open the folder picker.</message>
   <message id="36cca66fec102119">Couldn't open desktop boxes.</message>
@@ -354,7 +354,7 @@ After upgrading, reopen your File Explorer windows.</message>
   <message id="6eef561034276aed">Could not check navigation extension registration</message>
   <message id="dcdd0a57262fc87c">Could not check the previous tab toolbar registration</message>
   <message id="3cfc853647110493">Could not check configuration file</message>
-  <message id="817207af7f015870">Could not register FolderNote context menus</message>
+  <message id="817207af7f015870">Could not register ShibaKit context menus</message>
   <message id="b6cb3647c07e5582">Could not register the navigation extension</message>
   <message id="5ac62fde735c951b">Could not register the navigation extension for the current user</message>
   <message id="6b2dbb7016ac25cd">Could not register the tab toolbar name</message>
@@ -366,7 +366,7 @@ After upgrading, reopen your File Explorer windows.</message>
   <message id="9e3b3a1bcb0f60e9">Could not confirm the installation result.</message>
   <message id="de095f1e46669163">Could not confirm the navigation extension registration result.</message>
   <message id="f745eb1700ff436c">Some desktop items could not be moved.</message>
-  <message id="442888357038d9e7">Could not remove FolderNote context menus</message>
+  <message id="442888357038d9e7">Could not remove ShibaKit context menus</message>
   <message id="c8fc670ba9f24df9">Could not remove the navigation extension registration</message>
   <message id="d842e582dcd31944">Could not remove the navigation extension user registration</message>
   <message id="889974136b8e90e8">Could not remove the navigation extension for the current user</message>
@@ -431,8 +431,8 @@ After upgrading, reopen your File Explorer windows.</message>
   <message id="1491de8fb26dc76a">Most Visited</message>
   <message id="4841900d88274013">Recent</message>
   <message id="1abe58c938939cb2">{0} items could not be restored. Another program may have changed them.</message>
-  <message id="a407cb1217a1c6b6">FolderNote.msix was not found.</message>
-  <message id="bc379d8274912855">Could not find the installed FolderNote application. Reinstall it and try again.</message>
+  <message id="a407cb1217a1c6b6">ShibaKit.msix was not found.</message>
+  <message id="bc379d8274912855">Could not find the installed ShibaKit application. Reinstall it and try again.</message>
   <message id="f93aa86abbdbef87">No folder path available</message>
   <message id="7a67ed7d01aa09">Unknown command.</message>
   <message id="6f8ecf72c8d80893">Could not open the folder in the original file dialog.</message>
@@ -466,7 +466,7 @@ The background helper provides access to recent and frequent folders.</message>
   <message id="5dd5486ebbddb05b">Reading menus from File Explorer…</message>
   <message id="a0b76fbe3f8f4bc9">This folder has already been added here.</message>
   <message id="7be7ec9068c508b2">There are no manageable entries in this location.</message>
-  <message id="bbee9e3928b89142">This entry is shared by all users. Run FolderNote as administrator and try again.</message>
+  <message id="bbee9e3928b89142">This entry is shared by all users. Run ShibaKit as administrator and try again.</message>
   <message id="70b63b317b0d05df">This build has no GitHub update source. Install a package from GitHub Releases.</message>
   <message id="8f189ce45047bb9">This PC</message>
   <message id="60f9d29b2c662d33">View the existing menu items for this category.</message>
@@ -520,7 +520,7 @@ Files and folders dropped into a box move to the hidden .desktop folder.</messag
   <message id="6ba4adf7f562d710">Move selected items to…</message>
   <message id="866157f34ed6e100">The selected items cannot be moved</message>
   <message id="c61b620856ba22ba">Remove</message>
-  <message id="e5d5486c6847e359">Remove FolderNote and its context menu commands? Existing folder notes will be kept.</message>
+  <message id="e5d5486c6847e359">Remove ShibaKit and its context menu commands? Existing folder notes will be kept.</message>
   <message id="6bf4c0b2200127ca">Remove entry</message>
   <message id="18e2e8059d0a8923">Remove current tab</message>
   <message id="dfe445b1a8c4e33b">Remove tab</message>
@@ -555,7 +555,7 @@ Files and folders dropped into a box move to the hidden .desktop folder.</messag
   <message id="7a74291d9de2a826">Auto-collapse</message>
   <message id="2544185c50aeffe3">Automatic updates</message>
   <message id="ad7434e5b6cb0c2d">Custom commands</message>
-  <message id="c424dbe1247d2707">Custom commands appear in this order in the FolderNote submenu.</message>
+  <message id="c424dbe1247d2707">Custom commands appear in this order in the ShibaKit submenu.</message>
   <message id="6e76f6ede4899dcc">Custom color...</message>
   <message id="4ca37ff981a2c52f">Menu name</message>
   <message id="ebac0044121f28b1">Behavior &amp; automation</message>
@@ -563,7 +563,7 @@ Files and folders dropped into a box move to the hidden .desktop folder.</messag
   <message id="bce40ac96d09102c">Devices and drives ({0})</message>
   <message id="cd423a09356c197d">Settings</message>
   <message id="bec31470caf841cd">Your settings were saved. Click Save again to apply the desktop boxes setting.</message>
-  <message id="c30fd06dc1da9c44">Settings were saved, but the previous folder background process could not exit. Open FolderNote settings as administrator and save again, or sign out and sign back in.</message>
+  <message id="c30fd06dc1da9c44">Settings were saved, but the previous folder background process could not exit. Open ShibaKit settings as administrator and save again, or sign out and sign back in.</message>
   <message id="61a632a5203c3c68">Settings were saved. Reopen File Explorer windows to load the tab bar.
 If it still does not appear, copy diagnostics to check its status.</message>
   <message id="14ccb14d694accfe">Configure folder notes, double-click navigation, quick folders, and appearance</message>
@@ -572,14 +572,14 @@ If it still does not appear, copy diagnostics to check its status.</message>
   <message id="e25d1b77c3af2562">Visit count data is corrupt. The original records were kept.</message>
   <message id="a98879bbae6494f0">Diagnostics copied. You can share them with the developer.</message>
   <message id="a263d016b98bd2a9">The folder is missing, access was denied, or the request timed out. The pin was kept.</message>
-  <message id="4d7343a776e9169">Close FolderNote settings before installing the update.</message>
+  <message id="4d7343a776e9169">Close ShibaKit settings before installing the update.</message>
   <message id="5bb2793c3ddac488">Use path placeholders outside quotation marks.</message>
   <message id="e9b72f3ecb9e048f">Right-click a folder and choose “Add/Edit note” or “Repair folder notes.”
 
 Run Install.exe to add these commands. In File Explorer, switch to Details view, right-click a column heading, and enable the Comments column.</message>
   <message id="7ee0558b19f20150">Enter a menu name and the program, address or command to run.</message>
   <message id="2c8595a996f4bed">Extract the complete Windows 11 package and keep all program files in the same folder.</message>
-  <message id="c9af49e83cac6765">Extract the complete package. Keep Install.exe, FolderNote.exe, FolderNoteShell.dll, FolderNoteNavigation.dll, and Uninstall.exe in the same folder.</message>
+  <message id="c9af49e83cac6765">Extract the complete package. Keep Install.exe, ShibaKit.exe, ShibaKitShell.dll, ShibaKitNavigation.dll, and Uninstall.exe in the same folder.</message>
   <message id="49d0d0971a45eee">Release Ctrl, Shift, and Alt, then try opening the folder again.</message>
   <message id="8b66ba4ffa8459e8">Enter an HTTP or HTTPS URL.</message>
   <message id="d321e183fc81f28e">Enter a valid entry name.</message>
@@ -599,13 +599,13 @@ Run Install.exe to add these commands. In File Explorer, switch to Details view,
   <message id="38ad2c0e35419892">Extra large icons</message>
   <message id="adea7069d35b5725">System default</message>
   <message id="4837567f05b41f8e">The path contains a line break.</message>
-  <message id="dfa9372e355ad01e">FolderNote lists and middle-click menus</message>
+  <message id="dfa9372e355ad01e">ShibaKit lists and middle-click menus</message>
   <message id="14c3e07304ac8add">Enter a color in #RRGGBB format</message>
   <message id="18f6d6c287f2b958">Type a name or Chinese initials to show matches. Changes save immediately and apply to the next search.</message>
   <message id="ba812378750cf102">Go to parent folder</message>
   <message id="95eea581a05f6150">Back to entries</message>
   <message id="dc572909426511e8">Restore</message>
-  <message id="165c3e6f13c720f5">Restore the changes FolderNote made to existing menu items?</message>
+  <message id="165c3e6f13c720f5">Restore the changes ShibaKit made to existing menu items?</message>
   <message id="3e8187b76e616c71">The selected item is outside this command's scope.</message>
   <message id="d00b67f134d37b0f">Select items, middle-click, then choose Copy or Move and a destination.
 You can middle-click empty space while items are selected.</message>
@@ -619,8 +619,8 @@ You can middle-click empty space while items are selected.</message>
   <message id="53d497e704a21802">Choose a folder to pin</message>
   <message id="64ca372d3d4f8ddc">Settings were saved. The Quick Folders background process could not be started</message>
   <message id="ca695277909a148f">Settings were saved. The Quick Folders startup entry could not be enabled</message>
-  <message id="85564db44c15e767">The standard edition was removed. To remove the Windows 11 app package, uninstall FolderNote from Windows Settings → Apps. Existing notes were kept.</message>
-  <message id="5e62cabc1737155c">Some context menu items changed outside FolderNote. Their recovery records were kept.</message>
+  <message id="85564db44c15e767">The standard edition was removed. To remove the Windows 11 app package, uninstall ShibaKit from Windows Settings → Apps. Existing notes were kept.</message>
+  <message id="5e62cabc1737155c">Some context menu items changed outside ShibaKit. Their recovery records were kept.</message>
   <message id="9f34198a942be70a">Some folder entries could not be restored or removed. Their records were kept.</message>
   <message id="bc1232b72e7f1a02">The configuration file contains invalid Unicode.</message>
   <message id="4485369a449a0bdc">The configuration file contains null characters.</message>
@@ -644,4 +644,4 @@ Right-click a tab to open it in a separate window.</message>
   <message id="be88850b509c0fd8"> (unavailable)</message>
   <message id="672d0bd9501181b1"> (selected)</message>
   <message id="b01cd64c873c3d5a">; </message>
-</foldernote-language>
+</shibakit-language>

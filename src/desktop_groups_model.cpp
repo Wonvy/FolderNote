@@ -29,7 +29,7 @@ using Microsoft::WRL::ComPtr;
 using Microsoft::WRL::Wrappers::HString;
 using Microsoft::WRL::Wrappers::HStringReference;
 
-constexpr wchar_t settingsKey[] = L"Software\\FolderNote";
+constexpr wchar_t settingsKey[] = L"Software\\ShibaKit";
 constexpr wchar_t groupsValue[] = L"DesktopGroups";
 constexpr wchar_t readError[] = L"无法读取桌面盒子";
 constexpr wchar_t writeError[] = L"无法保存桌面盒子";
@@ -925,7 +925,7 @@ RECT scaleBoundsToWorkArea(RECT bounds, RECT fromWork, RECT toWork) {
 
 namespace {
 constexpr LONG backupVersion = 1;
-constexpr wchar_t quickFoldersSubkey[] = L"Software\\FolderNote\\QuickFolders";
+constexpr wchar_t quickFoldersSubkey[] = L"Software\\ShibaKit\\QuickFolders";
 
 void appendRegistryKeyJson(std::wstring &out, const wchar_t *subkey) {
   out += L'[';

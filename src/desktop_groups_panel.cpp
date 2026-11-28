@@ -5,7 +5,7 @@
 namespace desktop_groups::detail {
 void Panel::applyTheme(const ui::Palette &colors) {
   const auto surfaceColors = surfacePalette();
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
   if (hasSurface()) {
     applyBackground();
     syncSurfaceHeader();
@@ -43,7 +43,7 @@ ui::Palette Panel::surfacePalette() const {
 }
 
 void Panel::applyBackground() {
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
   if (hasSurface()) {
     const auto colors = surfacePalette();
     const auto opacity = static_cast<BYTE>(MulDiv(backgroundOpacity(), 255, 100));
@@ -71,7 +71,7 @@ bool Panel::saveSpacing(int spacing) {
   changed[index].itemSpacing = spacing;
   return desktop.commit(std::move(changed), window, false);
 }
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
 void Panel::syncSurfaceHeader() {
   if (!hasSurface()) return;
   const auto &group = desktop.groups[index];
@@ -149,7 +149,7 @@ void Panel::selectAndRevealPath(const std::wstring &path, bool startRename) {
   ListView_SetItemState(list, -1, 0, LVIS_SELECTED | LVIS_FOCUSED);
   ListView_SetItemState(list, row, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
   ListView_EnsureVisible(list, row, FALSE);
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
   if (hasSurface()) {
     surface->select({row});
     surface->reveal(row);
@@ -334,7 +334,7 @@ void Panel::tickFolderHover(POINT cursor, bool insideWindow, ULONGLONG now) {
   }
 
   int row = -1;
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
   if (hasSurface()) row = surface->hit(cursor);
 #endif
   if (!hasSurface() && IsWindowVisible(list)) {
@@ -380,7 +380,7 @@ void Panel::showFolderHoverMenu(int row) {
   POINT cursor{};
   if (!GetCursorPos(&cursor) || !insideDesktopWindow(window, WindowFromPoint(cursor))) return;
   int currentHit = -1;
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
   if (hasSurface()) currentHit = surface->hit(cursor);
 #endif
   if (!hasSurface() && IsWindowVisible(list)) {
@@ -395,7 +395,7 @@ void Panel::showFolderHoverMenu(int row) {
   if (rootFolder.empty() || !isLocalPath(rootFolder) || !PathIsDirectoryW(rootFolder.c_str())) return;
 
   RECT anchorBounds{};
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
   if (hasSurface() && !surface->itemBounds(row, anchorBounds)) return;
 #endif
   if (!hasSurface()) {
@@ -480,7 +480,7 @@ void Panel::showFolderHoverMenu(int row) {
   // Re-verify pointer stayed on the target folder during initial scan.
   if (!GetCursorPos(&cursor) || !insideDesktopWindow(window, WindowFromPoint(cursor))) return;
 
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
   if (hasSurface()) surface->closeToolTip();
 #endif
 
@@ -501,7 +501,7 @@ void Panel::showFolderHoverMenu(int row) {
   if (GetCursorPos(&afterCursor)) {
     int afterRow = -1;
     if (insideDesktopWindow(window, WindowFromPoint(afterCursor))) {
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
       if (hasSurface()) afterRow = surface->hit(afterCursor);
 #endif
       if (!hasSurface() && IsWindowVisible(list)) {
@@ -558,7 +558,7 @@ void Desktop::setAppearance(const Appearance &value) {
     if (previous.opacity != value.opacity || previous.glass != value.glass) {
       panel->applyBackground();
     }
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
     if (panel->hasSurface()) {
       if (previous.radius != value.radius) panel->syncSurfaceHeader();
     }
@@ -605,7 +605,7 @@ void Panel::showTab(size_t tab, bool allowDuringDrag) {
   hoveredFolderRow = -1;
   suppressedHoverRow = -1;
   currentPage = pageWheelRemainder = 0;
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
   syncSurfaceHeader();
 #endif
   refresh(desktop.groups[index]);
@@ -613,7 +613,7 @@ void Panel::showTab(size_t tab, bool allowDuringDrag) {
 }
 
 void Panel::beginTitleRename() {
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
   if (hasSurface() && surface->beginTitleRename([this](std::wstring name) { queueTitleRename(std::move(name)); })) return;
 #endif
   RECT area{};
@@ -676,7 +676,7 @@ void Panel::beginItemRename(int row) {
   if (!itemEditInfo(path, editText, selectLength)) return;
   ListView_SetItemState(list, -1, 0, LVIS_SELECTED | LVIS_FOCUSED);
   ListView_SetItemState(list, row, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
   if (hasSurface()) {
     surface->select({row});
     if (surface->beginItemRename(row, editText, selectLength,
@@ -753,7 +753,7 @@ LRESULT CALLBACK Panel::itemEditInput(HWND control, UINT message, WPARAM w, LPAR
 }
 
 std::optional<size_t> Panel::tabAt(POINT screen) const {
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
   if (hasSurface()) return surface->tabAt(screen);
 #endif
   if (!IsWindowVisible(tabs) || !ScreenToClient(tabs, &screen)) return std::nullopt;
@@ -764,7 +764,7 @@ std::optional<size_t> Panel::tabAt(POINT screen) const {
 
 std::optional<size_t> Panel::tabInsertion(POINT screen) const {
   if (dockHidden) return std::nullopt;
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
   if (hasSurface()) return surface->tabInsertion(screen);
 #endif
   RECT client{};
@@ -784,7 +784,7 @@ std::optional<size_t> Panel::tabInsertion(POINT screen) const {
 void Panel::showTabInsertion(std::optional<size_t> slot) {
   if (tabInsertionMark == slot) return;
   tabInsertionMark = slot;
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
   if (hasSurface()) {
     surface->showTabInsertion(slot);
     return;
@@ -819,7 +819,7 @@ void Panel::paintTabInsertion(HDC dc) const {
 }
 
 bool Panel::wheelOnTab(POINT screen, int delta) {
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
   if (hasSurface()) return surface->wheelOnTab(screen, delta);
 #endif
   if (!tabAt(screen)) return false;
@@ -1302,7 +1302,7 @@ void Panel::zoom(int delta) {
   if (next) changed[index].iconSize = sizes[next];
   if (!desktop.commit(std::move(changed), window, false)) return;
   renderPage(desktop.groups[index]);
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
   if (hasSurface()) surface->animateZoom(next > step);
 #endif
 }
@@ -1369,7 +1369,7 @@ void Panel::applyThumbnails() {
       ListView_SetItem(list, &item);
     }
     if (thumbnailCache.size() < 256) thumbnailCache.try_emplace(displayed[row], std::move(image));
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
     if (surface && surface->available() && item.iImage >= 0) {
       const auto icon = ImageList_GetIcon(scaledIcons, item.iImage, ILD_TRANSPARENT);
       if (icon) {
@@ -1417,7 +1417,7 @@ bool Panel::showDockedBox(bool show) {
     dockHidden = show;
     return false;
   }
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
   if (hasSurface()) surface->show(show);
 #endif
   if (show) ShowWindow(dockTrigger, SW_HIDE);
@@ -1733,7 +1733,7 @@ void Panel::setCollapsed() {
   SetWindowTextW(toggle, lang::text(collapsed ? L"展开盒子" : L"折叠盒子"));
   if (collapsed && GetFocus() == list) SetFocus(toggle);
   bool nativeVisible = !collapsed;
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
   if (hasSurface()) {
     nativeVisible = false;
     syncSurfaceHeader();
@@ -1756,7 +1756,7 @@ void Panel::beginCollapseHold(POINT start) {
 }
 
 void Panel::showCollapseMove(bool show) {
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
   if (hasSurface()) surface->showCollapseMove(show);
 #endif
   InvalidateRect(toggle, nullptr, FALSE);
@@ -1810,7 +1810,7 @@ void Panel::beginGesture(WPARAM edge, POINT point, bool capture) {
   if (capture) SetCapture(window);
   SendMessageW(window, WM_ENTERSIZEMOVE, 0, 0);
   bool paced = false;
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
   if (hasSurface()) {
     surface->animateReflow(edge != HTCAPTION);
     paced = surface->onFrame([this] {
@@ -1826,7 +1826,7 @@ void Panel::beginGesture(WPARAM edge, POINT point, bool capture) {
 
 void Panel::stopGesture() {
   if (window) KillTimer(window, boxMoveTimer);
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
   if (surface) {
     surface->onFrame({});
     surface->animateReflow(false);

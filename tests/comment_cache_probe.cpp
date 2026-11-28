@@ -90,7 +90,7 @@ static void pump(DWORD milliseconds) {
 int wmain() {
   CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
   GUID guid{}; CoCreateGuid(&guid); wchar_t token[40]; StringFromGUID2(guid, token, 40);
-  auto root = fn::fs::temp_directory_path() / (std::wstring(L"FolderNote-CacheProbe-") + token);
+  auto root = fn::fs::temp_directory_path() / (std::wstring(L"ShibaKit-CacheProbe-") + token);
   fn::fs::create_directory(root);
   const std::wstring original = L"; Keep comment\r\n[.ShellClassInfo]\r\n"
       L"InfoTip=original\r\nIconResource=C:\\icons.ico,0\r\nCustomKey = keep\r\n"

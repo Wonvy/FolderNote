@@ -5,8 +5,8 @@
 
 namespace desktop_groups {
 namespace {
-constexpr wchar_t hiddenBy[] = L"FolderNote.DesktopGroups.HiddenBy";
-constexpr wchar_t visibilityMutex[] = L"Local\\FolderNote.DesktopGroups.IconVisibility";
+constexpr wchar_t hiddenBy[] = L"ShibaKit.DesktopGroups.HiddenBy";
+constexpr wchar_t visibilityMutex[] = L"Local\\ShibaKit.DesktopGroups.IconVisibility";
 
 struct Handle {
   HANDLE value = nullptr;
@@ -105,7 +105,7 @@ bool restore(DWORD onlyOwner) {
 std::wstring readinessName(DWORD pid, HANDLE process) {
   FILETIME created{}, exited{}, kernel{}, user{};
   if (!GetProcessTimes(process, &created, &exited, &kernel, &user)) return {};
-  return L"Local\\FolderNote.DesktopGroups.IconWatch." + std::to_wstring(pid) + L"." +
+  return L"Local\\ShibaKit.DesktopGroups.IconWatch." + std::to_wstring(pid) + L"." +
       std::to_wstring((static_cast<ULONGLONG>(created.dwHighDateTime) << 32) | created.dwLowDateTime);
 }
 

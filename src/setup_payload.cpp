@@ -62,7 +62,7 @@ Staging::Staging() {
   wchar_t token[40]{};
   if (FAILED(CoCreateGuid(&guid)) || !StringFromGUID2(guid, token, ARRAYSIZE(token)))
     throw std::runtime_error("create staging identifier");
-  path = std::filesystem::temp_directory_path() / (std::wstring(L"FolderNote-Setup-") + token);
+  path = std::filesystem::temp_directory_path() / (std::wstring(L"ShibaKit-Setup-") + token);
   if (!CreateDirectoryW(path.c_str(), nullptr)) {
     const auto error = GetLastError();
     path.clear();

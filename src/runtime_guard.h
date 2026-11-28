@@ -2,13 +2,13 @@
 #include <windows.h>
 #include <string>
 
-// Lightweight, process-safe diagnostics shared by every FolderNote role.
+// Lightweight, process-safe diagnostics shared by every ShibaKit role.
 // Everything here is noexcept: diagnostics must never become a failure source.
 namespace guard {
-// Appends one line to %LOCALAPPDATA%\Programs\FolderNote\Logs\FolderNote.log.
+// Appends one line to %LOCALAPPDATA%\Programs\ShibaKit\Logs\ShibaKit.log.
 // Rotates at 1 MiB keeping three files; serialized across processes.
 void log(const std::wstring &message) noexcept;
-// Records unhandled SEH crashes: writes a minidump to ...\FolderNote\Crashes
+// Records unhandled SEH crashes: writes a minidump to ...\ShibaKit\Crashes
 // (keeping the newest five) and logs module+offset, then lets Windows
 // terminate the process normally so the exit code still reports the crash.
 void installCrashHandler(const wchar_t *role) noexcept;

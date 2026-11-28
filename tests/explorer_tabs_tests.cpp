@@ -57,7 +57,7 @@ static BOOL testShellExecuteExW(SHELLEXECUTEINFOW *launch) {
 static HWND testOwnedHelper = nullptr;
 static HWND testFindWindowExW(HWND parent, HWND after, LPCWSTR className, LPCWSTR title) {
   if (parent == HWND_MESSAGE && reinterpret_cast<ULONG_PTR>(className) > 0xffff &&
-      !wcscmp(className, L"FolderNote.QuickFolders.Helper.v1")) return testOwnedHelper;
+      !wcscmp(className, L"ShibaKit.QuickFolders.Helper.v1")) return testOwnedHelper;
   return FindWindowExW(parent, after, className, title);
 }
 static HRESULT WINAPI testBindToParent(PCIDLIST_ABSOLUTE, REFIID, void **, PCUITEMID_CHILD *);
@@ -474,7 +474,7 @@ struct ToolSite final : IOleWindow, IServiceProvider {
 static void bandTests() {
   if (!navigation::tabsSupported()) return;
   WNDCLASSW cls{}; cls.hInstance = GetModuleHandleW(nullptr); cls.lpszClassName = L"CabinetWClass"; cls.lpfnWndProc = DefWindowProcW; RegisterClassW(&cls);
-  HWND frame = CreateWindowW(cls.lpszClassName, L"FolderNote hidden band test", WS_OVERLAPPED, 0, 0, 900, 200, nullptr, nullptr, cls.hInstance, nullptr);
+  HWND frame = CreateWindowW(cls.lpszClassName, L"ShibaKit hidden band test", WS_OVERLAPPED, 0, 0, 900, 200, nullptr, nullptr, cls.hInstance, nullptr);
   HWND parent = CreateWindowW(L"STATIC", L"host", WS_CHILD, 0, 0, 900, 100, frame, nullptr, cls.hInstance, nullptr);
   Browser browser; browser.parent = parent;
   ComPtr<IObjectWithSite> site; require(SUCCEEDED(tabs::create(IID_PPV_ARGS(&site))), "create tool band");
@@ -482,7 +482,7 @@ static void bandTests() {
   ComPtr<IPersistStream> persist; require(SUCCEEDED(site.As(&persist)), "stream persistence interface");
   CLSID id{}; require(SUCCEEDED(persist->GetClassID(&id)) && id == tabs::clsid, "band class identity");
   require(site->SetSite(&browser) == E_ACCESSDENIED, "disabled feature refuses attachment");
-  DWORD enabled = 1; RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"ExplorerTabsEnabled", REG_DWORD, &enabled, sizeof(enabled));
+  DWORD enabled = 1; RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"ExplorerTabsEnabled", REG_DWORD, &enabled, sizeof(enabled));
   require(SUCCEEDED(site->SetSite(&browser)), "attach to isolated Explorer host");
   HWND window = nullptr; require(SUCCEEDED(band->GetWindow(&window)) && window, "band creates child window");
   require(GetPropW(frame, tabs::windowProperty) == window, "activation can find hosted band");
@@ -537,12 +537,12 @@ static void bandTests() {
   require(toolSite.unknownServiceQueries > 0, "toolband service accepting IUnknown is supported");
   require(SUCCEEDED(band->GetWindow(&window)) && IsWindow(window), "indirect browser service creates actual band child");
   wchar_t stage[64]{}; DWORD bytes = sizeof(stage), status = DWORD(E_FAIL), statusBytes = sizeof(status);
-  require(RegGetValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"TabsLastBandStage", RRF_RT_REG_SZ, nullptr, stage, &bytes) == ERROR_SUCCESS && !wcscmp(stage, L"attached"), "diagnostics identify successful SetSite stage");
-  require(RegGetValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"TabsLastBandResult", RRF_RT_REG_DWORD, nullptr, &status, &statusBytes) == ERROR_SUCCESS && status == S_OK, "diagnostics report actual SetSite result");
+  require(RegGetValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"TabsLastBandStage", RRF_RT_REG_SZ, nullptr, stage, &bytes) == ERROR_SUCCESS && !wcscmp(stage, L"attached"), "diagnostics identify successful SetSite stage");
+  require(RegGetValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"TabsLastBandResult", RRF_RT_REG_DWORD, nullptr, &status, &statusBytes) == ERROR_SUCCESS && status == S_OK, "diagnostics report actual SetSite result");
   site->SetSite(nullptr); toolSite.web.available = false;
   require(site->SetSite(static_cast<IOleWindow *>(&toolSite)) == E_NOINTERFACE, "missing browser service fails without fake success");
   bytes = sizeof(stage);
-  require(RegGetValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"TabsLastBandStage", RRF_RT_REG_SZ, nullptr, stage, &bytes) == ERROR_SUCCESS && !wcscmp(stage, L"browser-service"), "diagnostics locate missing browser service");
+  require(RegGetValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"TabsLastBandStage", RRF_RT_REG_SZ, nullptr, stage, &bytes) == ERROR_SUCCESS && !wcscmp(stage, L"browser-service"), "diagnostics locate missing browser service");
   toolSite.web.available = true; toolSite.web.onService = [&] { site->SetSite(nullptr); };
   require(FAILED(site->SetSite(static_cast<IOleWindow *>(&toolSite))), "reentrant detach during web browser fallback aborts stale attachment");
   toolSite.web.onService = {}; site->SetSite(nullptr);
@@ -587,7 +587,7 @@ struct TooltipFolder {
     wchar_t temporary[32768]{}, token[40]{}; GUID id{}; CoCreateGuid(&id);
     require(GetTempPathW(ARRAYSIZE(temporary), temporary) != 0 && StringFromGUID2(id, token, ARRAYSIZE(token)) != 0,
             "choose isolated tooltip folder");
-    root = std::wstring(temporary) + L"FolderNote-Tooltip-" + token;
+    root = std::wstring(temporary) + L"ShibaKit-Tooltip-" + token;
     path = root + L"\\完整路径_中文_Emoji_\U0001F4C1_&_" + std::wstring(50, L'x');
     require(CreateDirectoryW(root.c_str(), nullptr) != FALSE, "create tooltip fixture root");
     if (!CreateDirectoryW(path.c_str(), nullptr)) { RemoveDirectoryW(root.c_str()); require(false, "create long Unicode tooltip directory"); }
@@ -610,7 +610,7 @@ static void stableLayoutTests() {
   WNDCLASSW cls{}; cls.hInstance = GetModuleHandleW(nullptr); cls.lpszClassName = L"CabinetWClass"; cls.lpfnWndProc = DefWindowProcW;
   require(RegisterClassW(&cls) != 0, "register stable layout host");
   DWORD enabled = 1;
-  RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"ExplorerTabsEnabled", REG_DWORD, &enabled, sizeof(enabled));
+  RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"ExplorerTabsEnabled", REG_DWORD, &enabled, sizeof(enabled));
   for (UINT dpi : {96u, 144u, 192u}) {
     struct DpiScope { UINT previous = simulatedDpi; explicit DpiScope(UINT value) { simulatedDpi = value; } ~DpiScope() { simulatedDpi = previous; } } dpiScope(dpi);
     auto px = [dpi](int value) { return MulDiv(value, dpi, 96); };
@@ -861,7 +861,7 @@ static void rollbackViewportTests() {
   WNDCLASSW cls{}; cls.hInstance = GetModuleHandleW(nullptr); cls.lpszClassName = L"CabinetWClass"; cls.lpfnWndProc = DefWindowProcW;
   require(RegisterClassW(&cls) != 0, "register overflow rollback host");
   DWORD enabled = 1;
-  RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"ExplorerTabsEnabled", REG_DWORD, &enabled, sizeof(enabled));
+  RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"ExplorerTabsEnabled", REG_DWORD, &enabled, sizeof(enabled));
   HWND frame = CreateWindowW(cls.lpszClassName, L"Hidden overflow rollback test", WS_OVERLAPPED,
       0, 0, 1400, 200, nullptr, nullptr, cls.hInstance, nullptr);
   require(frame != nullptr, "create overflow rollback frame");
@@ -967,7 +967,7 @@ static void tabInputTests() {
   WNDCLASSW cls{}; cls.hInstance = GetModuleHandleW(nullptr); cls.lpszClassName = L"CabinetWClass"; cls.lpfnWndProc = DefWindowProcW;
   require(RegisterClassW(&cls) != 0, "register tab input fixture");
   DWORD enabled = 1;
-  RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"ExplorerTabsEnabled", REG_DWORD, &enabled, sizeof(enabled));
+  RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"ExplorerTabsEnabled", REG_DWORD, &enabled, sizeof(enabled));
   HWND frame = CreateWindowW(cls.lpszClassName, L"Hidden tab input test", WS_OVERLAPPED, 0, 0, 1400, 200, nullptr, nullptr, cls.hInstance, nullptr);
   Browser browser; browser.parent = frame;
   const std::vector<tabs::Location> folders{browser.view.folder, known(FOLDERID_Profile), known(FOLDERID_RoamingAppData), known(FOLDERID_LocalAppData)};
@@ -1099,7 +1099,7 @@ static void tabDropTests() {
   } cleanup{sourceFile, copiedFile};
   auto file = CreateFileW(sourceFile.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
   require(file != INVALID_HANDLE_VALUE, "create isolated drag source file");
-  const char content[] = "FolderNote drop test";
+  const char content[] = "ShibaKit drop test";
   DWORD written = 0;
   const bool writeOk = WriteFile(file, content, sizeof(content), &written, nullptr) && written == sizeof(content);
   CloseHandle(file);
@@ -1124,7 +1124,7 @@ static void tabDropTests() {
   fixture.cls.lpfnWndProc = DefWindowProcW;
   require(RegisterClassW(&fixture.cls) != 0, "register isolated tab drop host");
   DWORD enabled = 1;
-  RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"ExplorerTabsEnabled", REG_DWORD, &enabled, sizeof(enabled));
+  RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"ExplorerTabsEnabled", REG_DWORD, &enabled, sizeof(enabled));
   fixture.frame = CreateWindowW(fixture.cls.lpszClassName, L"Hidden tab drop test", WS_OVERLAPPED,
       0, 0, 1000, 200, nullptr, nullptr, fixture.cls.hInstance, nullptr);
   require(fixture.frame != nullptr, "create isolated tab drop frame");
@@ -1258,7 +1258,7 @@ static void directHostTests() {
       0, 0, 900, 70, frame, nullptr, cls.hInstance, nullptr); };
   Browser browser; browser.parent = frame;
   tabs::Host host;
-  DWORD enabled = 1; RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"ExplorerTabsEnabled", REG_DWORD, &enabled, sizeof(enabled));
+  DWORD enabled = 1; RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"ExplorerTabsEnabled", REG_DWORD, &enabled, sizeof(enabled));
   require(!host.update(frame, &browser, nullptr), "missing rebar is retryable without changing Explorer view geometry");
   HWND rebar = makeRebar(); require(rebar != nullptr, "create real hidden test rebar");
   HWND existing = CreateWindowW(L"STATIC", L"Unrelated band", WS_CHILD | WS_VISIBLE, 0, 0, 500, 24, rebar, nullptr, cls.hInstance, nullptr);
@@ -1324,11 +1324,11 @@ static void directHostTests() {
   tabWindow = static_cast<HWND>(GetPropW(frame, tabs::windowProperty));
   require(IsWindow(tabWindow) && tabs::childBand(rebar, tabWindow) >= 0 && tabs::childBand(rebar, existing) >= 0 && SendMessageW(rebar, RB_GETBANDCOUNT, 0, 0) == 2,
       "reentrant resize leaves only new host and unrelated row");
-  enabled = 0; RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"ExplorerTabsEnabled", REG_DWORD, &enabled, sizeof(enabled));
+  enabled = 0; RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"ExplorerTabsEnabled", REG_DWORD, &enabled, sizeof(enabled));
   require(host.update(frame, &browser, nullptr), "software disable succeeds");
   require(!IsWindow(tabWindow) && !GetPropW(frame, tabs::windowProperty) && SendMessageW(rebar, RB_GETBANDCOUNT, 0, 0) == 1 && tabs::childBand(rebar, existing) >= 0,
       "disable removes only own row and destroys tab window");
-  enabled = 1; RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"ExplorerTabsEnabled", REG_DWORD, &enabled, sizeof(enabled));
+  enabled = 1; RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"ExplorerTabsEnabled", REG_DWORD, &enabled, sizeof(enabled));
   require(host.update(frame, &browser, nullptr), "software re-enable attaches again");
   DestroyWindow(rebar); pump();
   require(!GetPropW(frame, tabs::windowProperty) && tabs::activeObjects() == 0, "rebar destruction releases tab host");
@@ -1433,11 +1433,11 @@ static void routingTests() {
   if (!navigation::tabsSupported()) return;
   auto preference = [](bool enabled) {
     DWORD value = enabled ? 1 : 0;
-    require(RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"ExplorerOpenInNewTab", REG_DWORD, &value, sizeof(value)) == ERROR_SUCCESS,
+    require(RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"ExplorerOpenInNewTab", REG_DWORD, &value, sizeof(value)) == ERROR_SUCCESS,
             "set isolated new-tab routing preference");
   };
   DWORD enabled = 1;
-  require(RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"ExplorerTabsEnabled", REG_DWORD, &enabled, sizeof(enabled)) == ERROR_SUCCESS,
+  require(RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"ExplorerTabsEnabled", REG_DWORD, &enabled, sizeof(enabled)) == ERROR_SUCCESS,
           "enable isolated tab fixture");
   WNDCLASSW cls{}; cls.hInstance = GetModuleHandleW(nullptr); cls.lpszClassName = L"CabinetWClass"; cls.lpfnWndProc = RoutingHost::frameProc;
   require(RegisterClassW(&cls) != 0, "register routing fixture class");
@@ -1658,7 +1658,7 @@ static void routingTests() {
 int main() {
   CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
   GUID token{}; CoCreateGuid(&token); wchar_t text[40]{}; StringFromGUID2(token, text, ARRAYSIZE(text));
-  auto key = std::wstring(L"Software\\FolderNoteTabsTests\\") + text;
+  auto key = std::wstring(L"Software\\ShibaKitTabsTests\\") + text;
   HKEY root = nullptr;
   if (RegCreateKeyExW(HKEY_CURRENT_USER, key.c_str(), 0, nullptr, 0, KEY_ALL_ACCESS, nullptr, &root, nullptr) || RegOverridePredefKey(HKEY_CURRENT_USER, root)) return 2;
   int result = 0;

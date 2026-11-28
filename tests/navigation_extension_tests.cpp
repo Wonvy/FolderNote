@@ -127,13 +127,13 @@ struct IsolatedSettings {
   std::wstring path;
   IsolatedSettings() {
     require(RegOpenCurrentUser(KEY_ALL_ACCESS, &realUser) == ERROR_SUCCESS, "open test settings");
-    path = L"Software\\FolderNote-HostTests-" + std::to_wstring(GetCurrentProcessId()) + L"-" +
+    path = L"Software\\ShibaKit-HostTests-" + std::to_wstring(GetCurrentProcessId()) + L"-" +
            std::to_wstring(GetTickCount64());
     require(RegCreateKeyExW(realUser, path.c_str(), 0, nullptr, 0, KEY_ALL_ACCESS, nullptr,
                             &temporary, nullptr) == ERROR_SUCCESS, "create isolated host settings");
     require(RegOverridePredefKey(HKEY_CURRENT_USER, temporary) == ERROR_SUCCESS, "isolate host settings");
     DWORD action = 1;
-    require(RegSetKeyValueW(temporary, L"Software\\FolderNote", L"BlankDoubleClick", REG_DWORD,
+    require(RegSetKeyValueW(temporary, L"Software\\ShibaKit", L"BlankDoubleClick", REG_DWORD,
                             &action, sizeof(action)) == ERROR_SUCCESS, "enable isolated navigation");
   }
   ~IsolatedSettings() {
@@ -170,8 +170,8 @@ void reentrantHostAttachment() {
       require(SUCCEEDED(host->SetSite(&original.browser)), "attach initial fake browser");
       pumpHostMessages();
       require(original.browser.queries == queryStage, "reentrant attachment stage reached");
-      require(!GetPropW(original.surface, L"FolderNote.Navigation.ViewOwner.v2") &&
-              !GetPropW(original.frame, L"FolderNote.Navigation.Controller.v3") &&
+      require(!GetPropW(original.surface, L"ShibaKit.Navigation.ViewOwner.v2") &&
+              !GetPropW(original.frame, L"ShibaKit.Navigation.Controller.v3") &&
               !GetPropW(original.frame, ownerProperty), "stale attachment leaves no callbacks or owner");
       ComPtr<IShellBrowser> retained;
       HRESULT result = host->GetSite(IID_PPV_ARGS(&retained));
@@ -179,7 +179,7 @@ void reentrantHostAttachment() {
         require(SUCCEEDED(result) && retained.Get() == &replacement.browser,
                 "newer site survives old update completion");
         require(viewnav::activeControllers() == 1 &&
-                GetPropW(replacement.surface, L"FolderNote.Navigation.ViewOwner.v2"),
+                GetPropW(replacement.surface, L"ShibaKit.Navigation.ViewOwner.v2"),
                 "only replacement browser receives navigation controller");
       } else {
         require(result == E_FAIL && !retained && viewnav::activeControllers() == 0,
@@ -199,7 +199,7 @@ void deferredHostRecovery() {
   if (!navigation::tabsSupported()) return;
   IsolatedSettings settings;
   DWORD tabsOff = 0;
-  require(RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"ExplorerTabsEnabled",
+  require(RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"ExplorerTabsEnabled",
                           REG_DWORD, &tabsOff, sizeof(tabsOff)) == ERROR_SUCCESS,
           "disable tab rendering in isolated BHO lifecycle tests");
   WNDCLASSW cls{}; cls.lpfnWndProc = DefWindowProcW;
@@ -212,7 +212,7 @@ void deferredHostRecovery() {
     require(SUCCEEDED(host->SetSite(&fixture.browser)), "attach initially hidden browser");
     pumpHostMessages();
     HWND helper = nullptr, candidate = nullptr;
-    while ((candidate = FindWindowExW(HWND_MESSAGE, candidate, L"STATIC", L"FolderNote Navigation Host"))) {
+    while ((candidate = FindWindowExW(HWND_MESSAGE, candidate, L"STATIC", L"ShibaKit Navigation Host"))) {
       DWORD process = 0;
       if (GetWindowThreadProcessId(candidate, &process) == GetCurrentThreadId() &&
           process == GetCurrentProcessId()) { helper = candidate; break; }
@@ -226,7 +226,7 @@ void deferredHostRecovery() {
     ShowWindow(fixture.frame, SW_SHOWNOACTIVATE);
     pumpHostMessages();
     require(viewnav::activeControllers() == 1 &&
-            GetPropW(fixture.surface, L"FolderNote.Navigation.ViewOwner.v2"),
+            GetPropW(fixture.surface, L"ShibaKit.Navigation.ViewOwner.v2"),
             "show event recovers browser after exhausted startup retries");
     host->SetSite(nullptr); host.Reset();
     require(viewnav::activeControllers() == 0 && fixture.browser.refs == 1 && fixture.view.refs == 1,
@@ -243,7 +243,7 @@ void deferredHostRecovery() {
     pumpHostMessages();
     require(viewnav::activeControllers() == 1, "same frame hosts share one navigation controller");
     const auto firstQueries = fixture.browser.queries, secondQueries = duplicate.queries;
-    const auto sync = RegisterWindowMessageW(L"FolderNote.Navigation.SyncTabs.v1");
+    const auto sync = RegisterWindowMessageW(L"ShibaKit.Navigation.SyncTabs.v1");
     require(SendMessageW(fixture.frame, sync, 0, 0) == 1 &&
             fixture.browser.queries > firstQueries && duplicate.queries > secondQueries,
             "synchronous settings reach every frame subclass and aggregate acknowledgment");
@@ -268,7 +268,7 @@ int wmain() {
     HKEY real = nullptr, temporary = nullptr; std::wstring path;
     Registry() {
       GUID id{}; CoCreateGuid(&id); wchar_t token[40]{}; StringFromGUID2(id, token, ARRAYSIZE(token));
-      path = std::wstring(L"Software\\FolderNoteExtensionTests\\") + token;
+      path = std::wstring(L"Software\\ShibaKitExtensionTests\\") + token;
       require(RegOpenCurrentUser(KEY_ALL_ACCESS, &real) == ERROR_SUCCESS &&
           RegCreateKeyExW(real, path.c_str(), 0, nullptr, 0, KEY_ALL_ACCESS, nullptr, &temporary, nullptr) == ERROR_SUCCESS &&
           RegOverridePredefKey(HKEY_CURRENT_USER, temporary) == ERROR_SUCCESS, "isolate extension diagnostics");
@@ -276,7 +276,7 @@ int wmain() {
     ~Registry() { RegOverridePredefKey(HKEY_CURRENT_USER, nullptr); RegCloseKey(temporary); RegDeleteTreeW(real, path.c_str()); RegCloseKey(real); }
   } registry;
   HMODULE library =
-      LoadLibraryW((fn::modulePath().parent_path() / L"FolderNoteNavigation.dll").c_str());
+      LoadLibraryW((fn::modulePath().parent_path() / L"ShibaKitNavigation.dll").c_str());
   if (!library) {
     CoUninitialize();
     return 1;
@@ -342,7 +342,7 @@ int wmain() {
     require(SUCCEEDED(CLSIDFromString(tabs::clsidText, &tabClsid)) && tabClsid == tabs::clsid, "registered tab GUID exactly matches factory GUID");
     require(get(tabClsid, IID_IDispatch, &unknown) == E_NOINTERFACE && !unknown, "tab factory rejects unsupported interface");
     DWORD code = 0, size = sizeof(code);
-    require(RegGetValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"TabsLastFactoryResult", RRF_RT_REG_DWORD, nullptr, &code, &size) == ERROR_SUCCESS && code == DWORD(E_NOINTERFACE), "factory failures are recorded before CreateInstance");
+    require(RegGetValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"TabsLastFactoryResult", RRF_RT_REG_DWORD, nullptr, &code, &size) == ERROR_SUCCESS && code == DWORD(E_NOINTERFACE), "factory failures are recorded before CreateInstance");
     require(SUCCEEDED(get(tabClsid, IID_PPV_ARGS(&factory))), "production DLL supplies tab factory");
     ComPtr<IDeskBand2> band;
     require(SUCCEEDED(factory->CreateInstance(nullptr, IID_PPV_ARGS(&band))), "production DLL creates tab band");
@@ -350,7 +350,7 @@ int wmain() {
     require(SUCCEEDED(band.As(&persist)) && SUCCEEDED(band.As(&tabSite)) && SUCCEEDED(band.As(&input)), "production band supports all required hosting interfaces");
     GUID persisted{}; require(persist->GetClassID(&persisted) == S_OK && persisted == tabClsid, "band persistence reports registered class");
     size = sizeof(code);
-    require(RegGetValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"TabsLastFactoryResult", RRF_RT_REG_DWORD, nullptr, &code, &size) == ERROR_SUCCESS && code == S_OK, "successful factory result recorded");
+    require(RegGetValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"TabsLastFactoryResult", RRF_RT_REG_DWORD, nullptr, &code, &size) == ERROR_SUCCESS && code == S_OK, "successful factory result recorded");
     require(tabSite->SetSite(factory.Get()) == E_ACCESSDENIED, "production band rejects foreign process attachment");
     factory.Reset(); require(unload() == S_FALSE, "tab COM references retain module");
     input.Reset(); tabSite.Reset(); persist.Reset(); band.Reset();

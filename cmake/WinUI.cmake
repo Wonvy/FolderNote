@@ -1,4 +1,4 @@
-function(foldernote_nuget_package result id version checksum)
+function(shibakit_nuget_package result id version checksum)
   string(TOLOWER "${id}" package)
   set(package_cache "$ENV{NUGET_PACKAGES}")
   if(NOT package_cache)
@@ -30,7 +30,7 @@ function(foldernote_nuget_package result id version checksum)
   set(${result} "${folder}" PARENT_SCOPE)
 endfunction()
 
-function(foldernote_add_winui target application)
+function(shibakit_add_winui target application)
   if(NOT MSVC OR NOT CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION)
     message(FATAL_ERROR "The WinUI desktop requires a Visual Studio generator and Windows SDK.")
   endif()
@@ -52,14 +52,14 @@ function(foldernote_add_winui target application)
   endif()
 
   # Match the versions distributed together in Windows App SDK 1.8.260921001.
-  foldernote_nuget_package(winui Microsoft.WindowsAppSDK.WinUI 1.8.260803003
+  shibakit_nuget_package(winui Microsoft.WindowsAppSDK.WinUI 1.8.260803003
     bdf72c0cbc385ba6e6ab916b17d3aa00950811c9d6372d11ac2f32f1c83f2496)
-  foldernote_nuget_package(foundation Microsoft.WindowsAppSDK.Foundation 1.8.260803002
+  shibakit_nuget_package(foundation Microsoft.WindowsAppSDK.Foundation 1.8.260803002
     b9232041afd605b606c6f78f442d92ead0076453f1f2a3260d2b7f8089bcab0e)
-  foldernote_nuget_package(interactive Microsoft.WindowsAppSDK.InteractiveExperiences 1.8.260708001
+  shibakit_nuget_package(interactive Microsoft.WindowsAppSDK.InteractiveExperiences 1.8.260708001
     496eea92d353b5d3601b67353f06dcadd6d2d9b635575acebe6e42587dbfad76)
   # WinUI metadata references WebView2 types. The fence does not use WebView2.
-  foldernote_nuget_package(webview Microsoft.Web.WebView2 1.0.3179.45
+  shibakit_nuget_package(webview Microsoft.Web.WebView2 1.0.3179.45
     70bd381c5d67f97a6a80294001cde125ab5b24b6d36098ad901d8e15efd752d0)
 
   file(GLOB projections_in CONFIGURE_DEPENDS
@@ -72,12 +72,12 @@ function(foldernote_add_winui target application)
   add_custom_command(OUTPUT "${projection}"
     COMMAND "${cppwinrt_tool}" -input ${projections_in} -reference "${metadata}" -output "${generated}"
     DEPENDS ${projections_in} "${metadata}" VERBATIM)
-  add_custom_target(foldernote_winui_projection DEPENDS "${projection}")
-  add_dependencies(${target} foldernote_winui_projection)
+  add_custom_target(shibakit_winui_projection DEPENDS "${projection}")
+  add_dependencies(${target} shibakit_winui_projection)
   target_sources(${target} PRIVATE src/desktop_groups_winui.cpp)
   target_include_directories(${target} PRIVATE "${generated}" "${foundation}/include" "${interactive}/include"
                                             "${winui}/include" "${sdk_root}/Include/${sdk_version}/cppwinrt")
-  target_compile_definitions(${target} PUBLIC FOLDERNOTE_WINUI=1)
+  target_compile_definitions(${target} PUBLIC SHIBAKIT_WINUI=1)
   target_link_libraries(${target} PRIVATE oleaut32 windowscodecs)
 
   set(bootstrap "${foundation}/runtimes/win-${architecture}/native/Microsoft.WindowsAppRuntime.Bootstrap.dll")

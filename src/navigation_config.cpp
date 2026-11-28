@@ -12,12 +12,12 @@ bool tabsSupported() {
 }
 bool tabsEnabled() {
   DWORD value = 0, size = sizeof(value);
-  return RegGetValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"ExplorerTabsEnabled", RRF_RT_REG_DWORD,
+  return RegGetValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"ExplorerTabsEnabled", RRF_RT_REG_DWORD,
       nullptr, &value, &size) == ERROR_SUCCESS && value == 1;
 }
 bool preferNewTabEnabled() {
   DWORD value = 0, size = sizeof(value);
-  return RegGetValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"ExplorerOpenInNewTab", RRF_RT_REG_DWORD,
+  return RegGetValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"ExplorerOpenInNewTab", RRF_RT_REG_DWORD,
       nullptr, &value, &size) == ERROR_SUCCESS && value == 1;
 }
 bool isDoubleClick(const Click &a, const Click &b, UINT interval, int width, int height) {
@@ -29,7 +29,7 @@ bool isDoubleClick(const Click &a, const Click &b, UINT interval, int width, int
 
 Action configuredAction() {
   DWORD value = 0, size = sizeof(value);
-  const auto result = RegGetValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"BlankDoubleClick",
+  const auto result = RegGetValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"BlankDoubleClick",
                                   RRF_RT_REG_DWORD, nullptr, &value, &size);
   // First use enables Parent; an explicit Off survives upgrades and reinstalls.
   if (result == ERROR_FILE_NOT_FOUND || result == ERROR_PATH_NOT_FOUND)
@@ -40,12 +40,12 @@ Action configuredAction() {
 bool noteCommandHidden(int operation) {
   if (operation < 0 || operation >= 3) return false;
   DWORD value = 0, bytes = sizeof(value);
-  RegGetValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"HiddenNoteCommands", RRF_RT_REG_DWORD, nullptr, &value, &bytes);
+  RegGetValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"HiddenNoteCommands", RRF_RT_REG_DWORD, nullptr, &value, &bytes);
   return (value & (1u << operation)) != 0;
 }
 bool notesEnabled() {
   DWORD value = 0, size = sizeof(value);
-  const auto result = RegGetValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"NotesEnabled",
+  const auto result = RegGetValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"NotesEnabled",
                                   RRF_RT_REG_DWORD, nullptr, &value, &size);
   // Notes are opt-in. A saved choice is preserved by the installer.
   return result == ERROR_SUCCESS && value == 1;
@@ -53,7 +53,7 @@ bool notesEnabled() {
 
 Action preferredAction() {
   DWORD value = 0, size = sizeof(value);
-  const auto result = RegGetValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"NavigationPreference",
+  const auto result = RegGetValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"NavigationPreference",
                                   RRF_RT_REG_DWORD, nullptr, &value, &size);
   if (result == ERROR_SUCCESS && (value == DWORD(Action::Parent) || value == DWORD(Action::Back)))
     return Action(value);
@@ -62,23 +62,23 @@ Action preferredAction() {
 }
 bool quickEnabled() {
   DWORD value = 0, bytes = sizeof(value);
-  return RegGetValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"QuickFoldersEnabled",
+  return RegGetValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"QuickFoldersEnabled",
       RRF_RT_REG_DWORD, nullptr, &value, &bytes) == ERROR_SUCCESS && value == 1;
 }
 bool dialogQuickEnabled() {
   DWORD value = 1, bytes = sizeof(value);
-  const auto result = RegGetValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"QuickFoldersInDialogs",
+  const auto result = RegGetValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"QuickFoldersInDialogs",
       RRF_RT_REG_DWORD, nullptr, &value, &bytes);
   return result == ERROR_FILE_NOT_FOUND || result == ERROR_PATH_NOT_FOUND || (result == ERROR_SUCCESS && value == 1);
 }
 bool elevatedDialogQuickEnabled() {
   DWORD value = 0, bytes = sizeof(value);
-  return RegGetValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"QuickFoldersElevatedDialogs",
+  return RegGetValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"QuickFoldersElevatedDialogs",
       RRF_RT_REG_DWORD, nullptr, &value, &bytes) == ERROR_SUCCESS && value == 1;
 }
 void setElevatedDialogQuickEnabled(bool enabled) {
   const DWORD value = enabled ? 1UL : 0UL;
-  RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"QuickFoldersElevatedDialogs",
+  RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"QuickFoldersElevatedDialogs",
       REG_DWORD, &value, sizeof(value));
 }
 } // namespace navigation

@@ -1,35 +1,35 @@
 <p align="center">
-  <img src="docs/previews/foldernote-icon.png" width="88" alt="FolderNote icon">
+  <img src="docs/previews/shibakit-icon.png" width="88" alt="ShibaKit icon">
 </p>
-<h1 align="center">FolderNote</h1>
+<h1 align="center">ShibaKit</h1>
 <p align="center"><strong>Organize your desktop. Find files faster. Make Explorer work your way.</strong></p>
 <p align="center">Desktop boxes · Chinese initials search · Middle-click menu · Folder notes</p>
 <p align="center">
-  <a href="https://github.com/Wonvy/FolderNote/releases/latest"><img src="https://img.shields.io/github/v/release/Wonvy/FolderNote?style=flat-square&amp;color=2563eb" alt="Latest release"></a>
+  <a href="https://github.com/Wonvy/ShibaKit/releases/latest"><img src="https://img.shields.io/github/v/release/Wonvy/ShibaKit?style=flat-square&amp;color=2563eb" alt="Latest release"></a>
   <img src="https://img.shields.io/badge/Windows-10%20%2F%2011%20x64-64748b?style=flat-square" alt="Windows 10 / 11 x64">
-  <a href="https://github.com/Wonvy/FolderNote/actions/workflows/windows-release.yml"><img src="https://github.com/Wonvy/FolderNote/actions/workflows/windows-release.yml/badge.svg" alt="Windows build status"></a>
+  <a href="https://github.com/Wonvy/ShibaKit/actions/workflows/windows-release.yml"><img src="https://github.com/Wonvy/ShibaKit/actions/workflows/windows-release.yml/badge.svg" alt="Windows build status"></a>
 </p>
 <p align="center">
   <a href="README.md">简体中文</a> · <strong>English</strong><br>
-  <a href="https://github.com/Wonvy/FolderNote/releases/latest">Download</a> ·
+  <a href="https://github.com/Wonvy/ShibaKit/releases/latest">Download</a> ·
   <a href="docs/USER_GUIDE.md">User guide (中文)</a> ·
   <a href="CHANGELOG.md">Changelog (中文)</a> ·
-  <a href="https://github.com/Wonvy/FolderNote/issues">Report an issue</a>
+  <a href="https://github.com/Wonvy/ShibaKit/issues">Report an issue</a>
 </p>
 
 ---
 
-FolderNote adds tools to Windows File Explorer. Collect desktop files into boxes, find items by typing a few letters, and return to favorite folders with the middle-click menu. Enable folder notes, menu management, and Windows 10 tabs as needed, all from one settings window.
+ShibaKit adds tools to Windows File Explorer. Collect desktop files into boxes, find items by typing a few letters, and return to favorite folders with the middle-click menu. Enable folder notes, menu management, and Windows 10 tabs as needed, all from one settings window.
 
 ## Download and get started
 
 | Installer | Choose this for |
 | --- | --- |
-| **[Download the standard installer](https://github.com/Wonvy/FolderNote/releases/latest/download/FolderNote-Setup-x64.exe)** | Windows 10 / 11 x64. On Win11, folder note commands appear under **Show more options** |
-| [Download the Win11 first-level menu test edition](https://github.com/Wonvy/FolderNote/releases/latest/download/FolderNote-Setup-Win11-x64.exe) | Folder note commands in the new Win11 menu's app area. See the [test edition guide](packaging/README-Win11.md) |
+| **[Download the standard installer](https://github.com/Wonvy/ShibaKit/releases/latest/download/ShibaKit-Setup-x64.exe)** | Windows 10 / 11 x64. On Win11, folder note commands appear under **Show more options** |
+| [Download the Win11 first-level menu test edition](https://github.com/Wonvy/ShibaKit/releases/latest/download/ShibaKit-Setup-Win11-x64.exe) | Folder note commands in the new Win11 menu's app area. See the [test edition guide](packaging/README-Win11.md) |
 
 1. **Install**: run the single EXE. No extraction is needed; follow the installer prompts.
-2. **Configure**: search the Start menu for **FolderNote Settings**, enable the features you want, and save.
+2. **Configure**: search the Start menu for **ShibaKit Settings**, enable the features you want, and save.
 3. **Start using it**: reopen your Explorer windows. To search from the desktop, enable **Desktop and File Explorer** on the **Quick search** page.
 
 > On a fresh install, double-clicking empty space goes up one folder. Boxes, notes, the middle-click menu, and tabs are opt-in. Upgrades preserve existing settings and data. Uninstall through Windows **Installed apps**.
@@ -105,7 +105,7 @@ Automated build and release completed. Published installers passed version, SHA-
 | Item | Details |
 | --- | --- |
 | Windows | Windows 10 / 11 **x64**; no ARM64 package. The main hands-on validation environment is Windows 10 22H2 |
-| Tabs | FolderNote's tab bar is for Windows 10; Windows 11 uses its built-in tabs |
+| Tabs | ShibaKit's tab bar is for Windows 10; Windows 11 uses its built-in tabs |
 | Desktop UI | WinUI 3 requires Microsoft Windows App Runtime 1.8. Boxes fall back to Win32 if it is missing. [Runtime downloads](https://learn.microsoft.com/windows/apps/windows-app-sdk/downloads-archive) |
 | File locations | Regular boxes store files in the hidden `.desktop` folder on your desktop. Mapped files stay in place. Notes are stored in each folder's `desktop.ini` |
 | Local data | Settings, pins, history, and box layouts stay on the computer. Update checks connect to GitHub |
@@ -121,7 +121,7 @@ See the [user guide](docs/USER_GUIDE.md) for dialog support, wallpaper-based blu
 | [Development guide (中文)](docs/DEVELOPMENT.md) | Builds, modules, tests, installers, and automated releases |
 | [Changelog (中文)](CHANGELOG.md) | Features and fixes by version |
 | [Contributing (中文)](CONTRIBUTING.md) | Issue reports, contribution workflow, and validation |
-| [Language template](docs/FolderNote-language.xml) | Simplified Chinese and English are built in; custom XML translations can be imported |
+| [Language template](docs/ShibaKit-language.xml) | Simplified Chinese and English are built in; custom XML translations can be imported |
 
 Requires Visual Studio 2022 C++ desktop tools, Windows SDK, and CMake 3.24+:
 

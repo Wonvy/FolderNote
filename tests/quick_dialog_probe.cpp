@@ -215,7 +215,7 @@ struct Verification {
     if (FAILED(dialog->SetFileName(filename)) || !hasFixtureName()) { close(false); return; }
     worker->target = target; worker->destination = destination;
     navigationStarted = GetTickCount64();
-    worker->requestName = L"Local\\FolderNote.DialogProbe." + std::to_wstring(GetCurrentProcessId()) + L"." + std::to_wstring(started);
+    worker->requestName = L"Local\\ShibaKit.DialogProbe." + std::to_wstring(GetCurrentProcessId()) + L"." + std::to_wstring(started);
     auto argument = new std::shared_ptr<Worker>(worker);
     log(L"navigate-start: owned foreground file dialog; fixture temporary folder -> Windows folder");
     thread = CreateThread(nullptr, 0, work, argument, 0, nullptr);
@@ -258,8 +258,8 @@ int verify(bool open) {
   ComPtr<IShellItem> initial;
   if (FAILED(SHCreateItemFromParsingName(state.initial.c_str(), nullptr, IID_PPV_ARGS(&initial))) || FAILED(state.dialog->SetFolder(initial.Get()))) return 1;
   DWORD options = 0; state.dialog->GetOptions(&options); state.dialog->SetOptions(options | FOS_DONTADDTORECENT | FOS_NOCHANGEDIR);
-  state.dialog->SetTitle(L"FolderNote 自动定位验证（自动取消，不保存文件）"); state.dialog->SetFileName(filename);
-  WNDCLASSW cls{}; cls.hInstance = GetModuleHandleW(nullptr); cls.lpfnWndProc = ownerProc; cls.lpszClassName = L"FolderNote.DialogProbe.Owner.v1";
+  state.dialog->SetTitle(L"ShibaKit 自动定位验证（自动取消，不保存文件）"); state.dialog->SetFileName(filename);
+  WNDCLASSW cls{}; cls.hInstance = GetModuleHandleW(nullptr); cls.lpfnWndProc = ownerProc; cls.lpszClassName = L"ShibaKit.DialogProbe.Owner.v1";
   if (!RegisterClassW(&cls)) return 1;
   state.owner = CreateWindowExW(WS_EX_TOOLWINDOW, cls.lpszClassName, L"Probe owner", WS_OVERLAPPED,
       0, 0, 0, 0, nullptr, nullptr, cls.hInstance, &state);
@@ -296,7 +296,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
     ComPtr<IFileSaveDialog> dialog;
     if (SUCCEEDED(CoCreateInstance(CLSID_FileSaveDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog)))) {
       DWORD options = 0; dialog->GetOptions(&options); dialog->SetOptions(options | FOS_DONTADDTORECENT);
-      dialog->SetTitle(L"FolderNote 快速定位测试（不会写入文件）");
+      dialog->SetTitle(L"ShibaKit 快速定位测试（不会写入文件）");
       dialog->SetFileName(filename);
       dialog->Show(nullptr);
     }

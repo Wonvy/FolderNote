@@ -43,12 +43,12 @@ struct Fixture {
     check(SUCCEEDED(CoCreateGuid(&id)), "allocate unique fixture id");
     wchar_t token[40]{};
     check(StringFromGUID2(id, token, ARRAYSIZE(token)) != 0, "format fixture id");
-    root = fn::fs::temp_directory_path() / (L"FolderNoteDesktopLinks-" + std::wstring(token));
+    root = fn::fs::temp_directory_path() / (L"ShibaKitDesktopLinks-" + std::wstring(token));
     personalDesktop = root / L"Desktop";
     publicDesktop = root / L"PublicDesktop";
     fn::fs::create_directories(personalDesktop);
     fn::fs::create_directories(publicDesktop);
-    key = std::wstring(L"Software\\FolderNoteDesktopLinkTests\\") + token;
+    key = std::wstring(L"Software\\ShibaKitDesktopLinkTests\\") + token;
     check(RegOpenCurrentUser(KEY_ALL_ACCESS, &user) == ERROR_SUCCESS &&
           RegCreateKeyExW(user, key.c_str(), 0, nullptr, REG_OPTION_NON_VOLATILE, KEY_ALL_ACCESS, nullptr,
                           &registry, nullptr) == ERROR_SUCCESS &&

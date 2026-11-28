@@ -97,8 +97,8 @@ bool sameApplication(HWND window) {
   return queried && samePath(path, fn::modulePath().wstring());
 }
 HWND receiver() {
-  const auto window = FindWindowW(L"FolderNote.DesktopGroups.Receiver", nullptr);
-  return window && GetPropW(window, L"FolderNote.DesktopGroups.Ready") && sameApplication(window) ? window : nullptr;
+  const auto window = FindWindowW(L"ShibaKit.DesktopGroups.Receiver", nullptr);
+  return window && GetPropW(window, L"ShibaKit.DesktopGroups.Ready") && sameApplication(window) ? window : nullptr;
 }
 bool locate(const Entry &entry, HWND target) {
   if (!target) target = receiver();

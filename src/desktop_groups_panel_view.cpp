@@ -3,7 +3,7 @@
 
 namespace desktop_groups::detail {
 void Panel::syncSurfaceTransfers() {
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
   if (!hasSurface()) return;
   std::vector<std::pair<std::wstring, winui::TransferVisual>> visuals;
   visuals.reserve(activeTransfers.size());
@@ -122,12 +122,12 @@ void Panel::chooseMatch(int match, bool focus) {
     ListView_SetItemState(list, -1, 0, LVIS_SELECTED | LVIS_FOCUSED);
     ListView_SetItemState(list, row, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
     ListView_EnsureVisible(list, row, FALSE);
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
     if (hasSurface()) { surface->select({row}); surface->reveal(row); }
 #endif
     queueScrollSync();
     if (focus) {
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
       if (hasSurface()) surface->focus(row);
       else
 #endif
@@ -143,7 +143,7 @@ int Panel::pageSize(const Group &group) const {
   const auto dpi = GetDpiForWindow(window);
   const int spacing = spacingPreview.value_or(group.itemSpacing);
   const auto fit = [&](bool showDots) {
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
     if (hasSurface())
       return surface->pageCapacity(group.view == View::List, group.iconSize,
                                    titleHeightPreview ? titleHeightPreview : group.titleHeight,
@@ -209,7 +209,7 @@ void Panel::renderPage(const Group &group) {
   const int first = pageCount ? currentPage * pageCapacity : 0;
   const int last = pageCount ? first + std::min(pageCapacity, size - first) : size;
   std::vector<std::wstring> items(orderedItems.begin() + first, orderedItems.begin() + last);
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
   if (hasSurface()) surface->pagination(currentPage, pageCount, [this](int page) {
     PostMessageW(window, goToPageMessage, FALSE, page);
   });
@@ -370,7 +370,7 @@ void Panel::renderPage(const Group &group) {
       ListView_Scroll(list, 0, (row - ListView_GetTopIndex(list)) * (item.bottom - item.top));
   }
   if (redrawNative) SendMessageW(list, WM_SETREDRAW, TRUE, 0);
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
   if (surface && surface->available()) {
     std::vector<winui::Item> entries;
     entries.reserve(displayed.size());
@@ -447,7 +447,7 @@ void Panel::resize() {
     SetWindowPos(list, nullptr, 0, 0, 0, 0, SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOMOVE | SWP_NOSIZE | SWP_FRAMECHANGED);
   }
   MoveWindow(list, pad, contentTop, width, std::max(0, contentBottom - contentTop), TRUE);
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
   if (hasSurface()) {
     if (!EqualRect(&surfaceBounds, &area)) {
       surfaceBounds = area;
@@ -474,7 +474,7 @@ void Panel::updateHeaderActions(POINT cursor) {
   const bool show = IsWindowVisible(window) && PtInRect(&bounds, cursor) &&
       (hit == window || IsChild(window, hit)) &&
       !movingOrSizing && !tabDrag && !desktop.menuOpen && !desktop.dragging;
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
   if (hasSurface()) {
     if (headerActions != show) {
       headerActions = show;
@@ -584,7 +584,7 @@ void Panel::contextMenu(POINT point, bool title) {
     hit.pt = point;
     ScreenToClient(list, &hit.pt);
     if (IsWindowVisible(list)) row = keyboard ? selection() : ListView_HitTest(list, &hit);
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
     if (hasSurface()) row = keyboard ? selection() : surface->hit(point);
 #endif
   }
@@ -593,7 +593,7 @@ void Panel::contextMenu(POINT point, bool title) {
     if (!keyboard && !(ListView_GetItemState(list, row, LVIS_SELECTED) & LVIS_SELECTED)) {
       ListView_SetItemState(list, -1, 0, LVIS_SELECTED);
       ListView_SetItemState(list, row, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
       if (hasSurface()) surface->select({row});
 #endif
     }
@@ -999,7 +999,7 @@ LRESULT CALLBACK Panel::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
       const bool collapsed = panel->collapsed();
       if (panel->hasSurface() && point.y >= bounds.top + header - MulDiv(3, dpi, 96) &&
           point.y < bounds.top + header + (collapsed ? 0 : MulDiv(4, dpi, 96))) return resizeTitle;
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
       if (panel->hasSurface() && panel->surface->headerInteractive(point)) return HTCLIENT;
 #endif
       RECT button{};
@@ -1284,7 +1284,7 @@ LRESULT CALLBACK Panel::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
       return 0;
     }
     case WM_SETFOCUS:
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
       if (panel->hasSurface()) { panel->surface->focus(); return 0; }
 #endif
       SetFocus(panel->collapsed() ? panel->toggle : panel->list);
@@ -1496,7 +1496,7 @@ LRESULT CALLBACK Panel::proc(HWND window, UINT message, WPARAM w, LPARAM l) {
   return DefWindowProcW(window, message, w, l);
 }
 
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
 void Panel::openSurface() {
   winui::Events events;
   events.selection = [this](std::vector<int> rows) {

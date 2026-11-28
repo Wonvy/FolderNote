@@ -35,7 +35,7 @@ DWORD testProcessPath(HMODULE module, LPWSTR text, DWORD capacity) {
 }
 BOOL testVisible(HWND window) { auto found = windows.find(window); return found == windows.end() ? IsWindowVisible(window) : found->second.visible; }
 HWND testFindWindow(HWND parent, HWND after, LPCWSTR cls, LPCWSTR title) {
-  if (parent == HWND_MESSAGE && reinterpret_cast<ULONG_PTR>(cls) > 0xffff && !wcscmp(cls, L"FolderNote.QuickFolders.Helper.v1")) return fakeHelper;
+  if (parent == HWND_MESSAGE && reinterpret_cast<ULONG_PTR>(cls) > 0xffff && !wcscmp(cls, L"ShibaKit.QuickFolders.Helper.v1")) return fakeHelper;
   return FindWindowExW(parent, after, cls, title);
 }
 LRESULT testSend(HWND destination, UINT message, WPARAM w, LPARAM l, UINT flags, UINT timeout, PDWORD_PTR result) {
@@ -90,7 +90,7 @@ int checks = 0;
 void require(bool value, const char *message) { ++checks; if (!value) throw message; }
 void preference(bool value) {
   DWORD setting = value ? 1 : 0;
-  require(RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"ExplorerOpenInNewTab", REG_DWORD, &setting, sizeof(setting)) == ERROR_SUCCESS,
+  require(RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"ExplorerOpenInNewTab", REG_DWORD, &setting, sizeof(setting)) == ERROR_SUCCESS,
           "save isolated gate preference");
 }
 struct Frame {
@@ -107,12 +107,12 @@ struct Registry {
   HKEY real = nullptr, root = nullptr;
   std::wstring path;
   Registry() {
-    path = L"Software\\FolderNoteGateTests-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64());
+    path = L"Software\\ShibaKitGateTests-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64());
     require(RegOpenCurrentUser(KEY_ALL_ACCESS, &real) == ERROR_SUCCESS &&
             RegCreateKeyExW(real, path.c_str(), 0, nullptr, 0, KEY_ALL_ACCESS, nullptr, &root, nullptr) == ERROR_SUCCESS &&
             RegOverridePredefKey(HKEY_CURRENT_USER, root) == ERROR_SUCCESS, "isolate gate settings");
     DWORD enabled = 1;
-    require(RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"ExplorerTabsEnabled", REG_DWORD, &enabled, sizeof(enabled)) == ERROR_SUCCESS,
+    require(RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"ExplorerTabsEnabled", REG_DWORD, &enabled, sizeof(enabled)) == ERROR_SUCCESS,
             "enable isolated Win10 tabs");
     preference(true);
   }
@@ -159,7 +159,7 @@ void scenarios() {
   }
   {
     Frame frame; require(frame.arm(), "arm settings gate"); preference(false);
-    SendMessageW(frame.window, RegisterWindowMessageW(L"FolderNote.Navigation.SettingsChanged.v2"), 0, 0);
+    SendMessageW(frame.window, RegisterWindowMessageW(L"ShibaKit.Navigation.SettingsChanged.v2"), 0, 0);
     require(frame.state().cloak == 0 && tabs::gate::activeObjects() == 0, "disabled preference immediately releases presentation"); preference(true);
   }
   {
@@ -168,7 +168,7 @@ void scenarios() {
   }
   {
     Frame frame; require(frame.arm(), "arm shutdown gate");
-    SendMessageW(frame.window, RegisterWindowMessageW(L"FolderNote.Navigation.Shutdown.v2"), 0, 0);
+    SendMessageW(frame.window, RegisterWindowMessageW(L"ShibaKit.Navigation.Shutdown.v2"), 0, 0);
     require(frame.state().cloak == 0, "shutdown restores held frame");
   }
   for (int failure = 0; failure < 4; ++failure) {
@@ -220,7 +220,7 @@ void nativeSmoke() {
   require(SUCCEEDED(compositionResult), "query native DWM composition availability");
   if (!composition) { std::cout << "SKIP native DWM smoke: composition is disabled\n"; return; }
   struct NativeFrame {
-    HWND window = ::CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, L"STATIC", L"FolderNote native cloak smoke",
+    HWND window = ::CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, L"STATIC", L"ShibaKit native cloak smoke",
         WS_POPUP, 0, 0, 64, 64, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
     ~NativeFrame() { if (::IsWindow(window)) ::DestroyWindow(window); }
   } frame;

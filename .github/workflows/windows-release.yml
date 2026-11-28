@@ -18,13 +18,13 @@ jobs:
         with:
           persist-credentials: false
       - name: Configure
-        run: cmake --preset windows-x64 "-DFOLDERNOTE_UPDATE_REPOSITORY=$env:GITHUB_REPOSITORY" -DFOLDERNOTE_LEGACY_TRANSPORT_ONLY=ON
+        run: cmake --preset windows-x64 "-DSHIBAKIT_UPDATE_REPOSITORY=$env:GITHUB_REPOSITORY" -DSHIBAKIT_LEGACY_TRANSPORT_ONLY=ON
       - name: Build
         run: cmake --build --preset release --parallel
       - name: Validate release version
         if: github.ref_type == 'tag'
         run: |
-          $version = (Get-Item build/Release/FolderNote.exe).VersionInfo.ProductVersion
+          $version = (Get-Item build/Release/ShibaKit.exe).VersionInfo.ProductVersion
           if ($env:GITHUB_REF_NAME -cne "v$version") {
             throw "Git tag must match product version v$version."
           }
@@ -40,33 +40,33 @@ jobs:
         run: .\packaging\build-release.ps1 -StableNames
       - name: Prepare release notes
         run: |
-          $version = (Get-Item build/Release/FolderNote.exe).VersionInfo.ProductVersion
+          $version = (Get-Item build/Release/ShibaKit.exe).VersionInfo.ProductVersion
           $log = Get-Content CHANGELOG.md -Raw -Encoding utf8
           $section = [regex]::Match($log, '(?ms)^## ' + [regex]::Escape($version) + ' [^\r\n]+\r?\n(.*?)(?=^## |\z)')
           if (!$section.Success) { throw "Missing changelog for $version." }
-          $intro = "下载 **FolderNote-Setup-x64.exe** 即可安装，无需解压。Win11 首层菜单测试版请下载 **FolderNote-Setup-Win11-x64.exe**。安装包使用软件图标，可从 Windows 已安装的应用中卸载；覆盖升级保留用户设置和数据。`n`nZIP 用于兼容旧版在线更新。`n`n"
+          $intro = "下载 **ShibaKit-Setup-x64.exe** 即可安装，无需解压。Win11 首层菜单测试版请下载 **ShibaKit-Setup-Win11-x64.exe**。安装包使用软件图标，可从 Windows 已安装的应用中卸载；覆盖升级保留用户设置和数据。`n`nZIP 用于兼容旧版在线更新。`n`n"
           ($intro + $section.Groups[1].Value.Trim()) | Set-Content dist/ReleaseNotes.md -Encoding utf8
       - name: Collect debug symbols
         run: |
-          $expected = 'FolderNote', 'FolderNoteShell', 'FolderNoteNavigation', 'Install', 'Uninstall', 'Install-Win11' |
+          $expected = 'ShibaKit', 'ShibaKitShell', 'ShibaKitNavigation', 'Install', 'Uninstall', 'Install-Win11' |
             ForEach-Object { "build/Release/$_.pdb" }
           $missing = $expected | Where-Object { !(Test-Path $_) }
           if ($missing) { throw "Missing release PDBs: $($missing -join ', ')" }
-          $symbols = 'dist/FolderNote-symbols-x64.zip'
+          $symbols = 'dist/ShibaKit-symbols-x64.zip'
           Compress-Archive -Path $expected -DestinationPath $symbols -Force
           $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $symbols).Hash
-          Add-Content -LiteralPath dist/SHA256SUMS.txt -Value "$hash  FolderNote-symbols-x64.zip" -Encoding ascii
+          Add-Content -LiteralPath dist/SHA256SUMS.txt -Value "$hash  ShibaKit-symbols-x64.zip" -Encoding ascii
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
-          name: FolderNote-windows-x64
+          name: ShibaKit-windows-x64
           path: |
-            dist/FolderNote-Setup-x64.exe
-            dist/FolderNote-Setup-Win11-x64.exe
-            dist/FolderNote-win-x64.zip
-            dist/FolderNote-win11-test.zip
+            dist/ShibaKit-Setup-x64.exe
+            dist/ShibaKit-Setup-Win11-x64.exe
+            dist/ShibaKit-win-x64.zip
+            dist/ShibaKit-win11-test.zip
             dist/SHA256SUMS.txt
             dist/ReleaseNotes.md
-            dist/FolderNote-symbols-x64.zip
+            dist/ShibaKit-symbols-x64.zip
           if-no-files-found: error
 
   release:
@@ -81,7 +81,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
         with:
-          name: FolderNote-windows-x64
+          name: ShibaKit-windows-x64
           path: packages
       - name: Publish GitHub Release
         env:
@@ -89,10 +89,10 @@ jobs:
         run: |
           $tag = $env:GITHUB_REF_NAME
           $repo = $env:GITHUB_REPOSITORY
-          $assets = 'packages/FolderNote-Setup-x64.exe', 'packages/FolderNote-Setup-Win11-x64.exe', 'packages/FolderNote-win-x64.zip', 'packages/FolderNote-win11-test.zip', 'packages/SHA256SUMS.txt', 'packages/FolderNote-symbols-x64.zip'
+          $assets = 'packages/ShibaKit-Setup-x64.exe', 'packages/ShibaKit-Setup-Win11-x64.exe', 'packages/ShibaKit-win-x64.zip', 'packages/ShibaKit-win11-test.zip', 'packages/SHA256SUMS.txt', 'packages/ShibaKit-symbols-x64.zip'
           $existing = gh release view $tag --repo $repo --json isDraft 2>$null
           if ($LASTEXITCODE -ne 0) {
-            gh release create $tag --repo $repo --verify-tag --title "FolderNote $tag" --notes-file packages/ReleaseNotes.md --draft
+            gh release create $tag --repo $repo --verify-tag --title "ShibaKit $tag" --notes-file packages/ReleaseNotes.md --draft
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           } elseif (-not ($existing | ConvertFrom-Json).isDraft) {
             Write-Host "Release $tag is already published."

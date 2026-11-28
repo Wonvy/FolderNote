@@ -5,7 +5,7 @@
 #include <vector>
 
 namespace quick::detail {
-inline constexpr wchar_t popupMutexName[] = L"Local\\FolderNote.QuickFolders.Popup.v1";
+inline constexpr wchar_t popupMutexName[] = L"Local\\ShibaKit.QuickFolders.Popup.v1";
 
 inline PSECURITY_DESCRIPTOR sameUserMediumLabelSecurity() noexcept {
   HANDLE token = nullptr;

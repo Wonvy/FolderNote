@@ -18,15 +18,15 @@
 namespace context {
 namespace {
 constexpr wchar_t classes[] = L"Software\\Classes\\";
-constexpr wchar_t journal[] = L"Software\\FolderNote\\ContextMenuChanges";
-constexpr wchar_t sendToJournal[] = L"Software\\FolderNote\\ContextSendToChanges";
-constexpr wchar_t blockJournal[] = L"Software\\FolderNote\\ContextShellBlockChanges";
-constexpr wchar_t overlayJournal[] = L"Software\\FolderNote\\ContextMachineOverlayChanges";
-constexpr wchar_t handlerJournal[] = L"Software\\FolderNote\\ContextHandlerRegistrations";
+constexpr wchar_t journal[] = L"Software\\ShibaKit\\ContextMenuChanges";
+constexpr wchar_t sendToJournal[] = L"Software\\ShibaKit\\ContextSendToChanges";
+constexpr wchar_t blockJournal[] = L"Software\\ShibaKit\\ContextShellBlockChanges";
+constexpr wchar_t overlayJournal[] = L"Software\\ShibaKit\\ContextMachineOverlayChanges";
+constexpr wchar_t handlerJournal[] = L"Software\\ShibaKit\\ContextHandlerRegistrations";
 constexpr wchar_t disabledHandlerId[] = L"{00000000-0000-0000-0000-000000000000}";
 constexpr wchar_t commandStore[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\CommandStore\\shell\\";
 constexpr wchar_t blockedExtensions[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Shell Extensions\\Blocked";
-constexpr wchar_t overlayOwner[] = L"FolderNote.ContextOverlayOwner";
+constexpr wchar_t overlayOwner[] = L"ShibaKit.ContextOverlayOwner";
 constexpr DWORD maxValueBytes = 65536;
 constexpr size_t maxEntries = 8192;
 constexpr const wchar_t *fields[]{L"LegacyDisable", L"MUIVerb", L"Icon", L"ProgrammaticAccessOnly"};
@@ -156,7 +156,7 @@ bool protectedVerb(std::wstring_view name) {
       L"find", L"edit", L"print", L"printto", L"properties", L"runas", L"runasuser", L"delete", L"rename",
       L"cut", L"copy", L"paste", L"share", L"pin", L"unpin", L"format", L"install", L"eject", L"mount",
       L"unmount", L"cmd", L"powershell", L"openwith", L"new"};
-  return starts(name, L"FolderNote.") || starts(name, L"Windows.") || starts(name, L"Microsoft.") ||
+  return starts(name, L"ShibaKit.") || starts(name, L"Windows.") || starts(name, L"Microsoft.") ||
       std::any_of(std::begin(names), std::end(names), [&](auto value) { return equal(name, value); });
 }
 std::vector<std::wstring> cascadeIds(HKEY verb) {
@@ -301,7 +301,7 @@ void changed(bool refreshComputer = false) {
 }
 
 struct Mutex {
-  HANDLE handle = CreateMutexW(nullptr, FALSE, L"Local\\FolderNote.ContextMenuInventory.v1");
+  HANDLE handle = CreateMutexW(nullptr, FALSE, L"Local\\ShibaKit.ContextMenuInventory.v1");
   Mutex() {
     if (!handle) fn::fail(L"无法锁定右键菜单修改");
     auto result = WaitForSingleObject(handle, 5000);
@@ -546,7 +546,7 @@ std::wstring thirdPartyModule(const std::wstring &id) {
   if (path.size() >= 2 && path.front() == L'"' && path.back() == L'"') path = path.substr(1, path.size() - 2);
   if (!equal(std::filesystem::path(path).extension().native(), L".dll")) return {};
   auto final = finalLocalPath(path);
-  if (final.empty() || starts(std::filesystem::path(final).filename().native(), L"FolderNote")) return {};
+  if (final.empty() || starts(std::filesystem::path(final).filename().native(), L"ShibaKit")) return {};
   wchar_t windows[MAX_PATH]{};
   const auto length = GetSystemWindowsDirectoryW(windows, ARRAYSIZE(windows));
   if (!length || length >= ARRAYSIZE(windows)) return {};
@@ -569,7 +569,7 @@ bool machineBlocked(const std::wstring &id) {
 }
 bool validBlockRecord(const MaybeValue &saved) {
   auto token = stringValue(saved);
-  constexpr std::wstring_view prefix = L"FolderNote ";
+  constexpr std::wstring_view prefix = L"ShibaKit ";
   GUID guid{};
   return saved && saved->type == REG_SZ && token.size() == prefix.size() + 38 &&
       token.starts_with(prefix) && SUCCEEDED(CLSIDFromString(token.c_str() + prefix.size(), &guid));
@@ -579,7 +579,7 @@ Value ownerToken() {
   wchar_t value[40]{};
   if (FAILED(CoCreateGuid(&token)) || !StringFromGUID2(token, value, ARRAYSIZE(value)))
     throw fn::Error{lang::text(L"右键菜单恢复记录无效。")};
-  return *stringData(std::wstring(L"FolderNote ") + value);
+  return *stringData(std::wstring(L"ShibaKit ") + value);
 }
 void readBlockState(ExistingItem &item) {
   const auto blocked = blockKey(HKEY_CURRENT_USER, blockedExtensions);
@@ -859,7 +859,7 @@ void addVerbs(std::vector<ExistingItem> &out, bool machine, const std::wstring &
   const auto shell = classes + className + L"\\shell";
   const auto verbs = open(root, shell);
   for (const auto &name : children(verbs.handle)) {
-    if (starts(name, L"FolderNote.")) continue;
+    if (starts(name, L"ShibaKit.")) continue;
     try {
       auto path = shell + L'\\' + name;
       auto overlay = backup(path, false, overlayJournal);

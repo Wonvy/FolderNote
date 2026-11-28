@@ -24,7 +24,7 @@
 namespace tabs {
 namespace {
 using Microsoft::WRL::ComPtr;
-constexpr wchar_t bandClass[] = L"FolderNote.ExplorerTabs.Band.v1";
+constexpr wchar_t bandClass[] = L"ShibaKit.ExplorerTabs.Band.v1";
 constexpr UINT changedMessage = WM_APP + 121, actionMessage = WM_APP + 122, iconMessage = WM_APP + 123;
 constexpr UINT failedMessage = WM_APP + 124;
 constexpr UINT wheelMessage = WM_APP + 125;
@@ -63,7 +63,7 @@ void recordAttachment(const wchar_t *stage, HRESULT result) noexcept {
     lastStage = stage ? stage : L"";
     lastResult = result;
   } catch (...) {}
-  constexpr auto key = L"Software\\FolderNote";
+  constexpr auto key = L"Software\\ShibaKit";
   RegSetKeyValueW(HKEY_CURRENT_USER, key, L"TabsLastBandStage", REG_SZ, stage, DWORD((wcslen(stage) + 1) * sizeof(wchar_t)));
   RegSetKeyValueW(HKEY_CURRENT_USER, key, L"TabsLastBandResult", REG_DWORD, &result, sizeof(result));
   DWORD process = GetCurrentProcessId();
@@ -594,14 +594,14 @@ class Band final : public IDeskBand2, public IObjectWithSite, public IPersistStr
     const auto sender = window;
     const auto exemption = routing::enabled() ? routing::bypass(sender, routing::bypassAdd, id) : 0;
     if (routing::enabled() && routing::helperWindow() && !exemption) {
-      ui::message(frame, lang::text(L"无法创建独立窗口，请稍后重试。"), L"FolderNote", MB_OK | MB_ICONERROR); return;
+      ui::message(frame, lang::text(L"无法创建独立窗口，请稍后重试。"), L"ShibaKit", MB_OK | MB_ICONERROR); return;
     }
     SHELLEXECUTEINFOW launch{sizeof(launch)};
     launch.hwnd = frame; launch.fMask = SEE_MASK_IDLIST | SEE_MASK_FLAG_NO_UI;
     launch.lpVerb = L"opennewwindow"; launch.lpIDList = const_cast<ITEMIDLIST *>(id); launch.nShow = SW_SHOWNORMAL;
     if (!ShellExecuteExW(&launch)) {
       if (exemption) routing::bypass(sender, routing::bypassCancel, nullptr, exemption);
-      ui::message(frame, lang::text(L"无法在新窗口打开此文件夹。"), L"FolderNote", MB_OK | MB_ICONERROR);
+      ui::message(frame, lang::text(L"无法在新窗口打开此文件夹。"), L"ShibaKit", MB_OK | MB_ICONERROR);
     }
   }
   void layout(bool repaint = false) {
@@ -727,7 +727,7 @@ class Band final : public IDeskBand2, public IObjectWithSite, public IPersistStr
         launch.lpParameters = L"--settings"; launch.nShow = SW_SHOWNORMAL;
         if (ShellExecuteExW(&launch)) return;
       } catch (...) { }
-      ui::message(frame, lang::text(L"无法打开 FolderNote 设置，请从开始菜单重试；若程序文件已被移除，请重新安装。"), L"FolderNote", MB_OK | MB_ICONERROR);
+      ui::message(frame, lang::text(L"无法打开 ShibaKit 设置，请从开始菜单重试；若程序文件已被移除，请重新安装。"), L"ShibaKit", MB_OK | MB_ICONERROR);
       return;
     }
     if (changing || model.items.empty() || !navigation::tabsEnabled()) return;
@@ -1189,7 +1189,7 @@ public:
       site = std::move(newSite); browser = std::move(newBrowser); web = std::move(newWeb); input = std::move(newInput);
       stage = L"create-band-window";
       WNDCLASSW cls{}; cls.hInstance = codeModule(); cls.lpfnWndProc = proc; cls.lpszClassName = bandClass; cls.hCursor = LoadCursorW(nullptr, IDC_ARROW); RegisterClassW(&cls);
-      window = CreateWindowExW(WS_EX_CONTROLPARENT, bandClass, lang::text(L"FolderNote 文件夹标签"), WS_CHILD | WS_CLIPCHILDREN,
+      window = CreateWindowExW(WS_EX_CONTROLPARENT, bandClass, lang::text(L"ShibaKit 文件夹标签"), WS_CHILD | WS_CLIPCHILDREN,
           0, 0, 400, 34, parent, nullptr, codeModule(), this);
       if (!window) { detach(); return finish(E_FAIL); }
       dpi = GetDpiForWindow(window);

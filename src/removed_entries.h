@@ -5,7 +5,7 @@
 
 namespace explorer_entries {
 namespace removal_detail {
-inline constexpr wchar_t settingsKey[] = LR"(Software\FolderNote)";
+inline constexpr wchar_t settingsKey[] = LR"(Software\ShibaKit)";
 inline constexpr wchar_t markerPrefix[] = L"RemovedExplorerEntry.";
 
 inline bool missing(LSTATUS status) {

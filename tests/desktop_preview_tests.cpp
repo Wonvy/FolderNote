@@ -75,14 +75,14 @@ LRESULT CALLBACK receive(HWND window, UINT message, WPARAM w, LPARAM l) {
 
 int main() {
   const auto root = std::filesystem::temp_directory_path() /
-      (L"FolderNotePreviewTests-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
+      (L"ShibaKitPreviewTests-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
   int result = 0;
   try {
     check(std::filesystem::create_directory(root), "create isolated preview files");
     const auto file = root / L"空格 preview.txt";
     std::ofstream(file) << "synthetic preview content";
     WNDCLASSW cls{}; cls.hInstance = GetModuleHandleW(nullptr); cls.lpfnWndProc = receive;
-    cls.lpszClassName = L"FolderNote.PreviewTests";
+    cls.lpszClassName = L"ShibaKit.PreviewTests";
     check(RegisterClassW(&cls) != 0, "register the isolated receiver");
     receiver = CreateWindowW(cls.lpszClassName, L"", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, cls.hInstance, nullptr);
     check(receiver != nullptr, "create the isolated receiver without contacting the user's Seer");
@@ -125,7 +125,7 @@ int main() {
     std::cout << "PASS Seer IPC: Unicode paths, toggling, repeat suppression, failures and clipboard preservation\n";
   } catch (const std::exception &error) { std::cerr << error.what() << '\n'; result = 1; }
   if (receiver) DestroyWindow(receiver);
-  UnregisterClassW(L"FolderNote.PreviewTests", GetModuleHandleW(nullptr));
+  UnregisterClassW(L"ShibaKit.PreviewTests", GetModuleHandleW(nullptr));
   std::error_code error; std::filesystem::remove_all(root, error);
   return result;
 }

@@ -44,7 +44,7 @@
 {L"无法创建桌面快捷方式", L"Could not create the desktop shortcut"},
 {L"无法移除桌面快捷方式", L"Could not remove the desktop shortcut"},
 {L"无法修改资源管理器入口", L"Could not change the Explorer entry"},
-{L"此入口由所有用户共享。请以管理员身份打开 FolderNote 后重试。", L"This entry is shared by all users. Run FolderNote as administrator and try again."},
+{L"此入口由所有用户共享。请以管理员身份打开 ShibaKit 后重试。", L"This entry is shared by all users. Run ShibaKit as administrator and try again."},
 {L"无法读取资源管理器入口", L"Could not read Explorer entries"},
 {L"资源管理器入口位置无效", L"Invalid Explorer entry location"},
 {L"无法读取入口原始设置", L"Could not read the entry's original settings"},

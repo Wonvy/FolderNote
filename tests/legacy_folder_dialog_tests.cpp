@@ -41,7 +41,7 @@ int child(const wchar_t *name, bool modern) {
   if (!shared || !changed) return 2;
   CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
   ChildState state{shared, changed};
-  BROWSEINFOW info{}; info.lpszTitle = L"FolderNote isolated folder dialog test";
+  BROWSEINFOW info{}; info.lpszTitle = L"ShibaKit isolated folder dialog test";
   info.ulFlags = BIF_RETURNONLYFSDIRS | (modern ? BIF_NEWDIALOGSTYLE : 0);
   info.lpfn = browseCallback; info.lParam = reinterpret_cast<LPARAM>(&state);
   auto selected = SHBrowseForFolderW(&info);
@@ -49,7 +49,7 @@ int child(const wchar_t *name, bool modern) {
   SetEvent(changed); UnmapViewOfFile(shared); CloseHandle(mapping); CloseHandle(changed); CoUninitialize(); return 0;
 }
 
-#ifndef FOLDERNOTE_LEGACY_FIXTURE_ONLY
+#ifndef SHIBAKIT_LEGACY_FIXTURE_ONLY
 #include "../src/quick_folders.h"
 #include "../src/quick_menu_gate.h"
 namespace {
@@ -59,7 +59,7 @@ int checks = 0;
 HWND fakeForeground() { return simulatedForeground; }
 BOOL fakeSetForeground(HWND window) { return window == simulatedForeground; }
 HWND fakeFindWindow(HWND parent, HWND after, LPCWSTR name, LPCWSTR title) {
-  if (parent == HWND_MESSAGE && name && !wcscmp(name, L"FolderNote.QuickFolders.Helper.v1")) return helper;
+  if (parent == HWND_MESSAGE && name && !wcscmp(name, L"ShibaKit.QuickFolders.Helper.v1")) return helper;
   return FindWindowExW(parent, after, name, title);
 }
 void check(bool ok, const char *message) { ++checks; if (!ok) throw std::runtime_error(message); }
@@ -88,7 +88,7 @@ bool waitFor(const std::function<bool()> &condition, DWORD timeout = 5000) {
 }
 std::wstring token() { GUID id{}; CoCreateGuid(&id); wchar_t text[40]{}; StringFromGUID2(id, text, ARRAYSIZE(text)); return text; }
 struct Fixture {
-  std::wstring name = L"Local\\FolderNote.LegacyTest." + token();
+  std::wstring name = L"Local\\ShibaKit.LegacyTest." + token();
   HANDLE mapping = nullptr, changed = nullptr, process = nullptr;
   Shared *shared = nullptr;
   Fixture(const std::wstring &executable, bool modern) {
@@ -127,7 +127,7 @@ void dialogs(const std::wstring &executable, bool verifyNativeSelection) {
   const auto length = GetLongPathNameW(temp, expanded, ARRAYSIZE(expanded));
   std::wstring tempDirectory = length && length < ARRAYSIZE(expanded) ? expanded : temp;
   if (!tempDirectory.empty() && tempDirectory.back() != L'\\') tempDirectory += L'\\';
-  const std::wstring root = tempDirectory + L"FolderNote-Legacy-" + token();
+  const std::wstring root = tempDirectory + L"ShibaKit-Legacy-" + token();
   const auto destination = root + L"\\中文 空格 😀", other = root + L"\\Other folder";
   check(CreateDirectoryW(root.c_str(), nullptr) && CreateDirectoryW(destination.c_str(), nullptr) && CreateDirectoryW(other.c_str(), nullptr), "create private Unicode test directories");
   struct Cleanup { std::wstring root, first, second; ~Cleanup() { RemoveDirectoryW(first.c_str()); RemoveDirectoryW(second.c_str()); RemoveDirectoryW(root.c_str()); } } cleanup{root, destination, other};
@@ -137,7 +137,7 @@ void dialogs(const std::wstring &executable, bool verifyNativeSelection) {
       EnumChildWindows(simulatedForeground, [](HWND window, LPARAM) -> BOOL { wchar_t cls[200]{}; GetClassNameW(window, cls, ARRAYSIZE(cls)); std::wcerr << L"child " << cls << L" id=" << GetDlgCtrlID(window) << L"\n"; return TRUE; }, 0);
     }
     check(quick::legacy::isDialog(simulatedForeground), "recognize real native classic and resizable folder pickers");
-    const auto requestName = L"Local\\FolderNote.LegacyRequestTest." + token();
+    const auto requestName = L"Local\\ShibaKit.LegacyRequestTest." + token();
     quick::detail::MenuRequest request(requestName.c_str()); request.begin();
     allowTarget = false;
     check(!quick::legacy::navigate(simulatedForeground, destination, request), "broker permission rejection prevents dispatch");
@@ -171,13 +171,13 @@ void dialogs(const std::wstring &executable, bool verifyNativeSelection) {
 #endif
 int wmain(int argc, wchar_t **argv) {
   if (argc >= 4 && !wcscmp(argv[1], L"--child")) return child(argv[2], !wcscmp(argv[3], L"new"));
-#ifdef FOLDERNOTE_LEGACY_FIXTURE_ONLY
+#ifdef SHIBAKIT_LEGACY_FIXTURE_ONLY
   return 2;
 #else
   CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
   int result = 0;
   try {
-    WNDCLASSW cls{}; cls.hInstance = GetModuleHandleW(nullptr); cls.lpfnWndProc = helperProc; cls.lpszClassName = L"FolderNote.LegacyTest.Helper";
+    WNDCLASSW cls{}; cls.hInstance = GetModuleHandleW(nullptr); cls.lpfnWndProc = helperProc; cls.lpszClassName = L"ShibaKit.LegacyTest.Helper";
     check(RegisterClassW(&cls) != 0, "register private broker");
     helper = CreateWindowW(cls.lpszClassName, L"", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, cls.hInstance, nullptr);
     check(helper != nullptr, "create private broker window");

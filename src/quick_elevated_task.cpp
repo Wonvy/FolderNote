@@ -16,8 +16,8 @@
 namespace quick {
 namespace {
 using Microsoft::WRL::ComPtr;
-constexpr wchar_t taskFolderPath[] = L"\\FolderNote";
-constexpr wchar_t taskFolderName[] = L"FolderNote";
+constexpr wchar_t taskFolderPath[] = L"\\ShibaKit";
+constexpr wchar_t taskFolderName[] = L"ShibaKit";
 constexpr wchar_t taskNamePrefix[] = L"ElevatedDialogHelper-";
 
 struct Bstr {
@@ -103,7 +103,7 @@ void installElevatedTask(const std::wstring &sid, const std::wstring &exePath) {
   const DWORD attrs = GetFileAttributesW(exePath.c_str());
   if (exePath.empty() || attrs == INVALID_FILE_ATTRIBUTES ||
       (attrs & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT))) {
-    fn::fail(lang::text(L"未找到已安装的 FolderNote，请重新安装后再试。"), ERROR_FILE_NOT_FOUND);
+    fn::fail(lang::text(L"未找到已安装的 ShibaKit，请重新安装后再试。"), ERROR_FILE_NOT_FOUND);
   }
   CoInit com;
   if (!com.ok) fn::fail(lang::text(L"无法配置管理员文件对话框计划任务"), static_cast<DWORD>(com.result));
@@ -119,7 +119,7 @@ void installElevatedTask(const std::wstring &sid, const std::wstring &exePath) {
   if (FAILED(hr) || !folder) {
     hr = rootFolder->CreateFolder(Bstr(taskFolderName).get(), empty.get(), &folder);
   }
-  if (FAILED(hr) || !folder) fn::fail(lang::text(L"无法创建 FolderNote 计划任务目录"), static_cast<DWORD>(hr));
+  if (FAILED(hr) || !folder) fn::fail(lang::text(L"无法创建 ShibaKit 计划任务目录"), static_cast<DWORD>(hr));
 
   ComPtr<ITaskDefinition> definition;
   hr = service->NewTask(0, &definition);
@@ -127,8 +127,8 @@ void installElevatedTask(const std::wstring &sid, const std::wstring &exePath) {
 
   ComPtr<IRegistrationInfo> regInfo;
   if (SUCCEEDED(definition->get_RegistrationInfo(&regInfo)) && regInfo) {
-    regInfo->put_Author(Bstr(L"FolderNote").get());
-    regInfo->put_Description(Bstr(L"FolderNote Elevated File Dialog Helper").get());
+    regInfo->put_Author(Bstr(L"ShibaKit").get());
+    regInfo->put_Description(Bstr(L"ShibaKit Elevated File Dialog Helper").get());
   }
 
   ComPtr<IPrincipal> principal;
@@ -191,7 +191,7 @@ void removeElevatedTask(const std::wstring &sid) {
   ComPtr<ITaskFolder> folder;
   hr = service->GetFolder(Bstr(taskFolderPath).get(), &folder);
   if (hr == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND) || hr == HRESULT_FROM_WIN32(ERROR_PATH_NOT_FOUND)) return;
-  if (FAILED(hr) || !folder) fn::fail(lang::text(L"无法打开 FolderNote 计划任务目录"), static_cast<DWORD>(hr));
+  if (FAILED(hr) || !folder) fn::fail(lang::text(L"无法打开 ShibaKit 计划任务目录"), static_cast<DWORD>(hr));
   hr = folder->DeleteTask(Bstr(taskNameForSid(sid)).get(), 0);
   if (FAILED(hr) && hr != HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND) &&
       hr != HRESULT_FROM_WIN32(ERROR_PATH_NOT_FOUND)) {
@@ -341,7 +341,7 @@ void removeElevatedHelper(const std::wstring &exe) {
   if (exeAvailable) {
     configureElevatedHelper(exe, false);
   } else if (elevatedTaskInstalled()) {
-    throw fn::Error{lang::text(L"无法定位 FolderNote 主程序来移除管理员文件对话框计划任务。")};
+    throw fn::Error{lang::text(L"无法定位 ShibaKit 主程序来移除管理员文件对话框计划任务。")};
   }
 }
 } // namespace quick

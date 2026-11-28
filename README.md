@@ -1,35 +1,35 @@
 <p align="center">
-  <img src="docs/previews/foldernote-icon.png" width="88" alt="FolderNote 图标">
+  <img src="docs/previews/shibakit-icon.png" width="88" alt="ShibaKit 图标">
 </p>
-<h1 align="center">FolderNote</h1>
+<h1 align="center">ShibaKit</h1>
 <p align="center"><strong>整理桌面，快速找文件，让资源管理器更顺手。</strong></p>
 <p align="center">桌面盒子 · 首字母搜索 · 中键菜单 · 文件夹备注</p>
 <p align="center">
-  <a href="https://github.com/Wonvy/FolderNote/releases/latest"><img src="https://img.shields.io/github/v/release/Wonvy/FolderNote?style=flat-square&amp;color=2563eb" alt="最新版本"></a>
+  <a href="https://github.com/Wonvy/ShibaKit/releases/latest"><img src="https://img.shields.io/github/v/release/Wonvy/ShibaKit?style=flat-square&amp;color=2563eb" alt="最新版本"></a>
   <img src="https://img.shields.io/badge/Windows-10%20%2F%2011%20x64-64748b?style=flat-square" alt="Windows 10 / 11 x64">
-  <a href="https://github.com/Wonvy/FolderNote/actions/workflows/windows-release.yml"><img src="https://github.com/Wonvy/FolderNote/actions/workflows/windows-release.yml/badge.svg" alt="Windows 构建状态"></a>
+  <a href="https://github.com/Wonvy/ShibaKit/actions/workflows/windows-release.yml"><img src="https://github.com/Wonvy/ShibaKit/actions/workflows/windows-release.yml/badge.svg" alt="Windows 构建状态"></a>
 </p>
 <p align="center">
   <strong>简体中文</strong> · <a href="README.en.md">English</a><br>
-  <a href="https://github.com/Wonvy/FolderNote/releases/latest">下载最新版</a> ·
+  <a href="https://github.com/Wonvy/ShibaKit/releases/latest">下载最新版</a> ·
   <a href="docs/USER_GUIDE.md">功能与使用说明</a> ·
   <a href="CHANGELOG.md">更新记录</a> ·
-  <a href="https://github.com/Wonvy/FolderNote/issues">反馈问题</a>
+  <a href="https://github.com/Wonvy/ShibaKit/issues">反馈问题</a>
 </p>
 
 ---
 
-FolderNote 是一款 Windows 资源管理器增强工具。把散落的桌面文件收进盒子，用几个首字母找到项目，在中键菜单里回到常用目录，再按需要开启备注、菜单管理和 Windows 10 多标签。所有功能集中在同一个设置窗口中。
+ShibaKit 是一款 Windows 资源管理器增强工具。把散落的桌面文件收进盒子，用几个首字母找到项目，在中键菜单里回到常用目录，再按需要开启备注、菜单管理和 Windows 10 多标签。所有功能集中在同一个设置窗口中。
 
 ## 下载与开始使用
 
 | 安装包 | 适用场景 |
 | --- | --- |
-| **[下载通用安装包](https://github.com/Wonvy/FolderNote/releases/latest/download/FolderNote-Setup-x64.exe)** | Windows 10 / 11 x64；Win11 的备注命令位于「显示更多选项」 |
-| [下载 Win11 首层菜单测试版](https://github.com/Wonvy/FolderNote/releases/latest/download/FolderNote-Setup-Win11-x64.exe) | 将备注命令放入 Win11 新版菜单的应用区域；详见[测试版说明](packaging/README-Win11.md) |
+| **[下载通用安装包](https://github.com/Wonvy/ShibaKit/releases/latest/download/ShibaKit-Setup-x64.exe)** | Windows 10 / 11 x64；Win11 的备注命令位于「显示更多选项」 |
+| [下载 Win11 首层菜单测试版](https://github.com/Wonvy/ShibaKit/releases/latest/download/ShibaKit-Setup-Win11-x64.exe) | 将备注命令放入 Win11 新版菜单的应用区域；详见[测试版说明](packaging/README-Win11.md) |
 
 1. **安装**：运行下载的单个 EXE，无需解压；按提示完成授权。
-2. **设置**：在开始菜单搜索 **FolderNote 设置**，按需开启功能并保存。
+2. **设置**：在开始菜单搜索 **ShibaKit 设置**，按需开启功能并保存。
 3. **使用**：重新打开文件夹窗口；要在桌面输入首字母搜索，请到 **快捷搜索** 页开启 **桌面与资源管理器**。
 
 > 首次安装默认开启双击空白处返回上一级；盒子、备注、中键菜单、多标签等按需开启。覆盖升级保留已有设置和数据，可从 Windows「已安装的应用」卸载。
@@ -105,7 +105,7 @@ Windows 继续管理原生桌面图标和右键菜单。将桌面文件拖入普
 | 项目 | 说明 |
 | --- | --- |
 | 系统 | Windows 10 / 11 **x64**；不提供 ARM64 包。主要实机验证环境为 Windows 10 22H2 |
-| 标签 | FolderNote 自带标签栏仅用于 Windows 10；Windows 11 使用系统原生标签 |
+| 标签 | ShibaKit 自带标签栏仅用于 Windows 10；Windows 11 使用系统原生标签 |
 | 桌面界面 | WinUI 3 界面需要 Microsoft Windows App Runtime 1.8；缺少运行时时回退到 Win32 界面。[运行时下载](https://learn.microsoft.com/windows/apps/windows-app-sdk/downloads-archive) |
 | 文件位置 | 普通盒子收纳在个人桌面的隐藏目录 `.desktop`；映射目录内容仍在原位置；备注写入对应文件夹的 `desktop.ini` |
 | 本地数据 | 设置、置顶、访问历史与盒子布局保存在本机；检查更新时连接 GitHub |
@@ -121,7 +121,7 @@ Windows 继续管理原生桌面图标和右键菜单。将桌面文件拖入普
 | [开发指南](docs/DEVELOPMENT.md) | 构建、模块结构、测试、安装包与自动发布 |
 | [版本记录](CHANGELOG.md) | 各版本的功能与修复 |
 | [参与开发](CONTRIBUTING.md) | 问题反馈、修改流程与验证要求 |
-| [语言模板](docs/FolderNote-language.xml) | 内置简体中文和 English，也可导入自定义 XML 翻译 |
+| [语言模板](docs/ShibaKit-language.xml) | 内置简体中文和 English，也可导入自定义 XML 翻译 |
 
 需要 Visual Studio 2022 的 C++ 桌面开发工具、Windows SDK 和 CMake 3.24+：
 

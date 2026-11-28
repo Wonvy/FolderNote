@@ -82,7 +82,7 @@ void contracts() {
   namespace fs = std::filesystem;
   using namespace fn::refresh_detail;
   const auto root = fs::temp_directory_path() /
-                    (L"FolderNote-RefreshTests-" + std::to_wstring(GetCurrentProcessId()));
+                    (L"ShibaKit-RefreshTests-" + std::to_wstring(GetCurrentProcessId()));
   fs::create_directories(root / L"Other");
   auto targets = affectedParents({(root / L"child").native()});
   auto unrelated = affectedParents({(root / L"Other" / L"child").native()});

@@ -21,7 +21,7 @@ namespace {
 using Microsoft::WRL::ComPtr;
 constexpr CLSID navigationClsid = {
     0x87f11db4, 0x74c9, 0x4b54, {0x93, 0x79, 0xe2, 0x6d, 0x75, 0xd1, 0x8b, 0x82}};
-constexpr wchar_t ownerProperty[] = L"FolderNote.Navigation.BrowserOwner.v2";
+constexpr wchar_t ownerProperty[] = L"ShibaKit.Navigation.BrowserOwner.v2";
 constexpr UINT refreshMessage = WM_APP + 0x442;
 constexpr UINT quitMessage = WM_APP + 0x443;
 constexpr UINT_PTR startupTimer = 1;
@@ -370,9 +370,9 @@ class BrowserHost final : public IObjectWithSite {
     auto *self = reinterpret_cast<BrowserHost *>(data); self->AddRef();
     bool syncHandled = false;
     try {
-      static const UINT settingsChanged = RegisterWindowMessageW(L"FolderNote.Navigation.SettingsChanged.v2");
-      static const UINT syncTabs = RegisterWindowMessageW(L"FolderNote.Navigation.SyncTabs.v1");
-      static const UINT shutdownMsg = RegisterWindowMessageW(L"FolderNote.Navigation.Shutdown.v2");
+      static const UINT settingsChanged = RegisterWindowMessageW(L"ShibaKit.Navigation.SettingsChanged.v2");
+      static const UINT syncTabs = RegisterWindowMessageW(L"ShibaKit.Navigation.SyncTabs.v1");
+      static const UINT shutdownMsg = RegisterWindowMessageW(L"ShibaKit.Navigation.Shutdown.v2");
       if (message == settingsChanged) { self->tabsStopped = false; self->queueRefresh(); }
       if (message == syncTabs) { self->tabsStopped = false; self->updateView(); syncHandled = true; }
       if (message == shutdownMsg) { self->tabsStopped = true; self->tabsHost.clear(); }
@@ -448,7 +448,7 @@ public:
         return S_OK;
       site = std::move(newSite);
       web = std::move(newWeb);
-      helper = CreateWindowExW(0, L"STATIC", L"FolderNote Navigation Host", 0, 0, 0, 0, 0,
+      helper = CreateWindowExW(0, L"STATIC", L"ShibaKit Navigation Host", 0, 0, 0, 0, 0,
                                HWND_MESSAGE, nullptr, module, nullptr);
       if (!helper) {
         HRESULT hr = HRESULT_FROM_WIN32(GetLastError());
@@ -553,7 +553,7 @@ public:
   }
 };
 void recordTabFactory(REFIID iid, HRESULT result) noexcept {
-  constexpr auto key = L"Software\\FolderNote";
+  constexpr auto key = L"Software\\ShibaKit";
   wchar_t text[40]{};
   if (StringFromGUID2(iid, text, ARRAYSIZE(text)))
     RegSetKeyValueW(HKEY_CURRENT_USER, key, L"TabsLastFactoryInterface", REG_SZ, text, DWORD((wcslen(text) + 1) * sizeof(wchar_t)));

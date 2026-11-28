@@ -54,7 +54,7 @@ unsigned testShow(HINSTANCE, POINT, std::shared_ptr<Branch> root, ui::ThemeMode,
         "no selection leaves footer text empty while settings and clear remain available");
   if (disableOnSelection) {
     DWORD disabled = 0;
-    check(RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"QuickFoldersEnabled", REG_DWORD,
+    check(RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"QuickFoldersEnabled", REG_DWORD,
                          &disabled, sizeof(disabled)) == ERROR_SUCCESS, "disable isolated setting during selection");
   }
   for (const auto &item : root->items) if (!item.iconPath.empty() && item.command) return item.command;
@@ -79,7 +79,7 @@ struct Fixture {
   std::wstring key;
   Fixture() {
     GUID id{}; CoCreateGuid(&id); wchar_t token[40]{}; StringFromGUID2(id, token, ARRAYSIZE(token));
-    key = std::wstring(L"Software\\FolderNoteDesktopMenuTests\\") + token;
+    key = std::wstring(L"Software\\ShibaKitDesktopMenuTests\\") + token;
     check(RegOpenCurrentUser(KEY_ALL_ACCESS, &real) == ERROR_SUCCESS &&
           RegCreateKeyExW(real, key.c_str(), 0, nullptr, 0, KEY_ALL_ACCESS, nullptr, &temporary, nullptr) == ERROR_SUCCESS &&
           RegOverridePredefKey(HKEY_CURRENT_USER, temporary) == ERROR_SUCCESS, "isolate menu settings and history");
@@ -234,8 +234,8 @@ int main() {
   try {
     Fixture fixture;
     DWORD enabled = 1, dialogs = 0;
-    check(RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"QuickFoldersEnabled", REG_DWORD, &enabled, sizeof(enabled)) == ERROR_SUCCESS &&
-          RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"QuickFoldersInDialogs", REG_DWORD, &dialogs, sizeof(dialogs)) == ERROR_SUCCESS,
+    check(RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"QuickFoldersEnabled", REG_DWORD, &enabled, sizeof(enabled)) == ERROR_SUCCESS &&
+          RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"QuickFoldersInDialogs", REG_DWORD, &dialogs, sizeof(dialogs)) == ERROR_SUCCESS,
           "enable desktop menu without file dialog support");
     wchar_t temp[MAX_PATH]{}; check(GetTempPathW(ARRAYSIZE(temp), temp) != 0, "get existing local folder");
     wchar_t longTemp[32768]{};

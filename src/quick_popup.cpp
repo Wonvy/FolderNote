@@ -17,7 +17,7 @@
 
 namespace quick::popup {
 namespace {
-constexpr wchar_t panelClass[] = L"FolderNote.QuickFolders.Popup.v2";
+constexpr wchar_t panelClass[] = L"ShibaKit.QuickFolders.Popup.v2";
 constexpr UINT checkFocus = WM_APP + 71, contextKey = WM_APP + 72, dismiss = WM_APP + 73, iconsReady = WM_APP + 74;
 constexpr UINT sliderOutsideMove = WM_APP + 75, sliderOutsideRelease = WM_APP + 76;
 constexpr UINT contextCharacter = WM_APP + 77;
@@ -978,7 +978,7 @@ unsigned show(HINSTANCE instance, POINT point, std::shared_ptr<Branch> root, ui:
     const HWND fgRoot = GetAncestor(GetForegroundWindow(), GA_ROOT);
     if (fgRoot && GetClassNameW(fgRoot, cls, ARRAYSIZE(cls))) {
       session.hoverDesktopContext = !wcscmp(cls, L"Progman") || !wcscmp(cls, L"WorkerW") ||
-                                    wcsstr(cls, L"FolderNote.DesktopGroups") != nullptr;
+                                    wcsstr(cls, L"ShibaKit.DesktopGroups") != nullptr;
     }
   }
   auto &panel = session.create(std::move(root), point, false);

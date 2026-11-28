@@ -12,7 +12,7 @@ static const wchar_t *commandId(int operation) {
   return operation == settingsOperation ? fn::settingsId : fn::ids[operation];
 }
 static HRESULT launch(const std::wstring &arguments) {
-  auto exe = fn::modulePath(module).parent_path() / L"FolderNote.exe";
+  auto exe = fn::modulePath(module).parent_path() / L"ShibaKit.exe";
   std::wstring command = L"\"" + exe.native() + L"\" " + arguments;
   STARTUPINFOW startup{sizeof(startup)};
   PROCESS_INFORMATION process{};
@@ -54,7 +54,7 @@ public:
   HRESULT STDMETHODCALLTYPE GetTitle(IShellItemArray*, PWSTR* p) override {
     if (!p) return E_POINTER;
     try {
-      return SHStrDupW(lang::text(op == settingsOperation ? L"FolderNote 设置" : fn::titles[op]), p);
+      return SHStrDupW(lang::text(op == settingsOperation ? L"ShibaKit 设置" : fn::titles[op]), p);
     } catch (...) {
       return E_FAIL;
     }
@@ -64,8 +64,8 @@ public:
       return E_POINTER;
     *p = nullptr;
     try {
-      const auto executable = fn::modulePath(module).parent_path() / L"FolderNote.exe";
-      const auto icon = L"\"" + executable.native() + L"\",-" + std::to_wstring(IDI_FOLDERNOTE);
+      const auto executable = fn::modulePath(module).parent_path() / L"ShibaKit.exe";
+      const auto icon = L"\"" + executable.native() + L"\",-" + std::to_wstring(IDI_SHIBAKIT);
       return SHStrDupW(icon.c_str(), p);
     } catch (...) {
       return E_FAIL;

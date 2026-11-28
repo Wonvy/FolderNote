@@ -264,7 +264,7 @@ LRESULT CALLBACK managerProc(HWND window, UINT message, WPARAM w, LPARAM l) {
 }
 HWND createManagerPage(HINSTANCE instance, HWND parent, ui::ThemeMode theme) {
   WNDCLASSW cls{}; cls.lpfnWndProc = managerProc; cls.hInstance = instance;
-  cls.lpszClassName = L"FolderNote.QuickFolders.ManagerPage";
+  cls.lpszClassName = L"ShibaKit.QuickFolders.ManagerPage";
   cls.hCursor = LoadCursorW(nullptr, IDC_ARROW);
   RegisterClassW(&cls);
   return CreateWindowExW(WS_EX_CONTROLPARENT, cls.lpszClassName, lang::text(L"置顶与历史"),
@@ -286,7 +286,7 @@ int manage(HINSTANCE, HWND owner, ui::ThemeMode) {
   if (!GetModuleFileNameW(nullptr, path, ARRAYSIZE(path))) return 1;
   auto result = ShellExecuteW(owner, L"open", path, L"--quick-manage", nullptr, SW_SHOWNORMAL);
   if (reinterpret_cast<INT_PTR>(result) <= 32) {
-    ui::message(owner, lang::text(L"无法打开 FolderNote 设置，请从开始菜单重试。"), L"FolderNote", MB_OK | MB_ICONERROR);
+    ui::message(owner, lang::text(L"无法打开 ShibaKit 设置，请从开始菜单重试。"), L"ShibaKit", MB_OK | MB_ICONERROR);
     return 1;
   }
   return 0;

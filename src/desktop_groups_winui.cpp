@@ -62,7 +62,7 @@ using ::winrt::Windows::Foundation::Point;
 using ::winrt::Windows::Foundation::Rect;
 
 void logFailure(const wchar_t *operation, const ::winrt::hresult_error &error) {
-  const std::wstring message = std::wstring(L"FolderNote WinUI: ") + operation + L": " +
+  const std::wstring message = std::wstring(L"ShibaKit WinUI: ") + operation + L": " +
       error.message().c_str() + L"\n";
   OutputDebugStringW(message.c_str());
 }

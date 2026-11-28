@@ -275,7 +275,7 @@ int menu(HINSTANCE instance, HWND target, HWND view, POINT point) {
     for (HWND h = under; h && h != underRoot; h = GetParent(h)) {
       wchar_t cls[128]{};
       GetClassNameW(h, cls, ARRAYSIZE(cls));
-      if (!wcscmp(cls, L"FolderNote.DesktopGroups.Panel")) return true;
+      if (!wcscmp(cls, L"ShibaKit.DesktopGroups.Panel")) return true;
     }
     return false;
   }();
@@ -293,7 +293,7 @@ int menu(HINSTANCE instance, HWND target, HWND view, POINT point) {
   };
   if (!foregroundOk()) return 0;
   DWORD targetPid = 0; GetWindowThreadProcessId(target, &targetPid);
-  auto requestName = std::wstring(L"Local\\FolderNote.QuickFolders.Request.v1.") + std::to_wstring(targetPid) + L"." +
+  auto requestName = std::wstring(L"Local\\ShibaKit.QuickFolders.Request.v1.") + std::to_wstring(targetPid) + L"." +
       std::to_wstring(reinterpret_cast<UINT_PTR>(target));
   detail::MenuRequest request(requestName.c_str());
   bool started = false;

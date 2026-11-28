@@ -3,7 +3,7 @@
 // including older executables still open after an in-place upgrade.
 namespace app {
 inline constexpr wchar_t version[] = L"@PROJECT_VERSION@";
-inline constexpr wchar_t updateRepository[] = L"@FOLDERNOTE_UPDATE_REPOSITORY@";
+inline constexpr wchar_t updateRepository[] = L"@SHIBAKIT_UPDATE_REPOSITORY@";
 inline constexpr wchar_t versionLabel[] = L"版本 @PROJECT_VERSION@ · x64";
-inline constexpr wchar_t settingsWindowTag[] = L"FolderNote.Settings.Build.@PROJECT_VERSION@";
+inline constexpr wchar_t settingsWindowTag[] = L"ShibaKit.Settings.Build.@PROJECT_VERSION@";
 }

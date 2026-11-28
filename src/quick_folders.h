@@ -45,7 +45,7 @@ void syncElevatedHelper(const std::wstring &exe, bool allowElevation);
 void removeElevatedHelper(const std::wstring &exe);
 bool handleElevatedConfigureCommand(int argc, wchar_t **argv, int &exitCode);
 // The helper shows menus on a resident thread through this runner (normally
-// quick::menu). Unset, or set HKCU\Software\FolderNote\QuickMenuInProcess=0,
+// quick::menu). Unset, or set HKCU\Software\ShibaKit\QuickMenuInProcess=0,
 // to always use a separate --quick-menu process.
 using MenuRunner = int (*)(HINSTANCE, HWND target, HWND view, POINT point);
 void setInProcessMenu(MenuRunner runner) noexcept;

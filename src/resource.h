@@ -1,2 +1,2 @@
 #pragma once
-#define IDI_FOLDERNOTE 101
+#define IDI_SHIBAKIT 101

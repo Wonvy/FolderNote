@@ -5,10 +5,10 @@
 
 namespace ui {
 namespace {
-constexpr wchar_t surfaceKey[] = L"FolderNote.Theme.Surface";
-constexpr wchar_t mutedKey[] = L"FolderNote.Theme.Muted";
-constexpr wchar_t switchKey[] = L"FolderNote.Theme.Switch";
-constexpr wchar_t hoverKey[] = L"FolderNote.Theme.Hover";
+constexpr wchar_t surfaceKey[] = L"ShibaKit.Theme.Surface";
+constexpr wchar_t mutedKey[] = L"ShibaKit.Theme.Muted";
+constexpr wchar_t switchKey[] = L"ShibaKit.Theme.Switch";
+constexpr wchar_t hoverKey[] = L"ShibaKit.Theme.Hover";
 int px(HWND window, int n) { return MulDiv(n, GetDpiForWindow(window), 96); }
 COLORREF mixColor(COLORREF a, COLORREF b, int weight) {
   const auto channel = [weight](int from, int to) { return (from * (100 - weight) + to * weight) / 100; };
@@ -215,16 +215,16 @@ BOOL CALLBACK styleControl(HWND child, LPARAM data) {
 }
 ThemeMode configuredTheme() {
   DWORD value = 0, size = sizeof(value);
-  return RegGetValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"Theme", RRF_RT_REG_DWORD,
+  return RegGetValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"Theme", RRF_RT_REG_DWORD,
                      nullptr, &value, &size) == ERROR_SUCCESS && value <= 2 ? ThemeMode(value) : ThemeMode::System;
 }
 UINT themeChangedMessage() {
-  static const UINT value = RegisterWindowMessageW(L"FolderNote.ThemeChanged.v1"); return value;
+  static const UINT value = RegisterWindowMessageW(L"ShibaKit.ThemeChanged.v1"); return value;
 }
 void notifyThemeChanged() {
   EnumWindows([](HWND window, LPARAM message) -> BOOL {
     wchar_t name[128]{}; GetClassNameW(window, name, ARRAYSIZE(name));
-    if (!wcsncmp(name, L"FolderNote", 10)) PostMessageW(window, static_cast<UINT>(message), 0, 0);
+    if (!wcsncmp(name, L"ShibaKit", 10)) PostMessageW(window, static_cast<UINT>(message), 0, 0);
     return TRUE;
   }, themeChangedMessage());
 }

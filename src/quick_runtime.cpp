@@ -17,22 +17,22 @@
 #include <vector>
 namespace quick {
 namespace {
-constexpr wchar_t helperClass[] = L"FolderNote.QuickFolders.Helper.v1";
-constexpr wchar_t elevatedHelperClass[] = L"FolderNote.QuickFolders.ElevatedHelper.v1";
-constexpr wchar_t elevatedSupervisorClass[] = L"FolderNote.QuickFolders.ElevatedSupervisor.v1";
-constexpr wchar_t readyProperty[] = L"FolderNote.QuickFolders.Ready.v2";
-constexpr wchar_t elevatedReadyProperty[] = L"FolderNote.QuickFolders.ElevatedReady.v1";
-constexpr wchar_t elevatedMutexName[] = L"Local\\FolderNote.QuickFolders.ElevatedHelper.v1";
+constexpr wchar_t helperClass[] = L"ShibaKit.QuickFolders.Helper.v1";
+constexpr wchar_t elevatedHelperClass[] = L"ShibaKit.QuickFolders.ElevatedHelper.v1";
+constexpr wchar_t elevatedSupervisorClass[] = L"ShibaKit.QuickFolders.ElevatedSupervisor.v1";
+constexpr wchar_t readyProperty[] = L"ShibaKit.QuickFolders.Ready.v2";
+constexpr wchar_t elevatedReadyProperty[] = L"ShibaKit.QuickFolders.ElevatedReady.v1";
+constexpr wchar_t elevatedMutexName[] = L"Local\\ShibaKit.QuickFolders.ElevatedHelper.v1";
 constexpr wchar_t elevatedStopValue[] = L"ElevatedHelperStopGeneration";
-constexpr wchar_t propMouseHook[] = L"FolderNote.QuickFolders.MouseHook.v1";
-constexpr wchar_t propKeyboardHook[] = L"FolderNote.QuickFolders.KeyboardHook.v1";
-constexpr wchar_t propRehookCount[] = L"FolderNote.QuickFolders.RehookCount.v1";
-constexpr wchar_t propRehookReason[] = L"FolderNote.QuickFolders.RehookReason.v1";
-constexpr wchar_t propRehookTick[] = L"FolderNote.QuickFolders.RehookTick.v1";
-constexpr wchar_t propMouseTick[] = L"FolderNote.QuickFolders.MouseTick.v1";
-constexpr wchar_t propKeyboardTick[] = L"FolderNote.QuickFolders.KeyboardTick.v1";
+constexpr wchar_t propMouseHook[] = L"ShibaKit.QuickFolders.MouseHook.v1";
+constexpr wchar_t propKeyboardHook[] = L"ShibaKit.QuickFolders.KeyboardHook.v1";
+constexpr wchar_t propRehookCount[] = L"ShibaKit.QuickFolders.RehookCount.v1";
+constexpr wchar_t propRehookReason[] = L"ShibaKit.QuickFolders.RehookReason.v1";
+constexpr wchar_t propRehookTick[] = L"ShibaKit.QuickFolders.RehookTick.v1";
+constexpr wchar_t propMouseTick[] = L"ShibaKit.QuickFolders.MouseTick.v1";
+constexpr wchar_t propKeyboardTick[] = L"ShibaKit.QuickFolders.KeyboardTick.v1";
 constexpr wchar_t runKey[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
-constexpr wchar_t runName[] = L"FolderNote.QuickFolders";
+constexpr wchar_t runName[] = L"ShibaKit.QuickFolders";
 constexpr UINT showMessage = WM_APP + 0x511, foregroundMessage = WM_APP + 0x512, rehookMessage = WM_APP + 0x513,
                rehookLogMessage = WM_APP + 0x514;
 // A crashed helper is restarted at most this often; beyond it the supervisor
@@ -52,7 +52,7 @@ HWND receiver = nullptr;
 bool elevatedCompanion = false;
 DWORD readElevatedStopGeneration() noexcept {
   DWORD value = 0, bytes = sizeof(value);
-  RegGetValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", elevatedStopValue,
+  RegGetValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", elevatedStopValue,
                RRF_RT_REG_DWORD, nullptr, &value, &bytes);
   return value;
 }
@@ -130,12 +130,12 @@ bool localInputSurface(HWND window, HWND frame) {
   // Tab bands own their middle-button gestures (tab close), even under a Shell root.
   // Check only class names/parents here; never call Shell or UIA in the hook.
   for (HWND current = window; current && current != frame; current = GetParent(current))
-    if (classIs(current, L"FolderNote.ExplorerTabs.Band.v1")) return true;
+    if (classIs(current, L"ShibaKit.ExplorerTabs.Band.v1")) return true;
   return false;
 }
 bool desktopPanelSurface(HWND window, HWND frame) {
   for (HWND current = window; current && current != frame; current = GetParent(current))
-    if (classIs(current, L"FolderNote.DesktopGroups.Panel")) return true;
+    if (classIs(current, L"ShibaKit.DesktopGroups.Panel")) return true;
   return false;
 }
 DWORD integrity(DWORD pid) {
@@ -471,7 +471,7 @@ DWORD WINAPI menuThreadProc(void *ready) {
 }
 bool inProcessMenuAllowed() {
   DWORD value = 1, size = sizeof(value);
-  if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", inProcessMenuValue, RRF_RT_REG_DWORD, nullptr, &value, &size) != ERROR_SUCCESS)
+  if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", inProcessMenuValue, RRF_RT_REG_DWORD, nullptr, &value, &size) != ERROR_SUCCESS)
     value = 1;
   return value != 0;
 }
@@ -692,7 +692,7 @@ void configureStartup(const std::wstring &exe, bool enabled) {
       reinterpret_cast<const BYTE *>(command.c_str()), static_cast<DWORD>((command.size() + 1) * sizeof(wchar_t))); RegCloseKey(key); }
   if (error) fn::fail(lang::text(L"选项已保存，但无法启用快速定位启动项"), error);
 }
-constexpr wchar_t supervisorClass[] = L"FolderNote.QuickFolders.Supervisor.v1";
+constexpr wchar_t supervisorClass[] = L"ShibaKit.QuickFolders.Supervisor.v1";
 LRESULT CALLBACK supervisorProc(HWND window, UINT message, WPARAM w, LPARAM l) {
   if (message == WM_CLOSE) {
     if (const auto stopEvent = reinterpret_cast<HANDLE>(GetWindowLongPtrW(window, GWLP_USERDATA)))
@@ -727,13 +727,13 @@ bool stopHelper(bool removeStartup) {
   // GetMessage. Posting WM_CLOSE wakes old versions without killing Explorer
   // or a settings/note editor that might contain unsaved input.
   EnumWindows([](HWND window, LPARAM) -> BOOL {
-    if (!classIs(window, L"FolderNote.QuickFolders.Popup.v2") && !classIs(window, L"FolderNote.QuickMenu")) return TRUE;
+    if (!classIs(window, L"ShibaKit.QuickFolders.Popup.v2") && !classIs(window, L"ShibaKit.QuickMenu")) return TRUE;
     DWORD pid = 0; GetWindowThreadProcessId(window, &pid);
     HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
     if (process) {
       wchar_t image[32768]{}; DWORD size = ARRAYSIZE(image);
       BOOL valid = QueryFullProcessImageNameW(process, 0, image, &size); CloseHandle(process);
-      if (valid && !_wcsicmp(std::filesystem::path(image).filename().c_str(), L"FolderNote.exe")) PostMessageW(window, WM_CLOSE, 0, 0);
+      if (valid && !_wcsicmp(std::filesystem::path(image).filename().c_str(), L"ShibaKit.exe")) PostMessageW(window, WM_CLOSE, 0, 0);
     }
     return TRUE;
   }, 0);
@@ -761,7 +761,7 @@ bool stopHelper(bool removeStartup) {
 }
 void syncHelper(const std::wstring &exe) {
   if (!stopHelper(false))
-    throw fn::Error{lang::text(L"设置已保存，但旧的文件夹后台组件未能退出。请以管理员身份打开 FolderNote 设置并再次保存，或注销后重新登录。")};
+    throw fn::Error{lang::text(L"设置已保存，但旧的文件夹后台组件未能退出。请以管理员身份打开 ShibaKit 设置并再次保存，或注销后重新登录。")};
   if (!helperEnabled()) { configureStartup({}, false); return; }
   const auto context = desktop_groups::desktopLaunchContext();
   configureStartup(exe, true);
@@ -872,7 +872,7 @@ int helper(HINSTANCE instance, bool delegated, bool supervised) {
   }
   if (!supervised) return superviseHelper(instance);
   guard::installCrashHandler(L"helper");
-  HANDLE mutex = CreateMutexW(nullptr, FALSE, L"Local\\FolderNote.QuickFolders.Helper.v1");
+  HANDLE mutex = CreateMutexW(nullptr, FALSE, L"Local\\ShibaKit.QuickFolders.Helper.v1");
   if (!mutex) return 1;
   // A settings/upgrade restart may outlive stopHelper's short UI wait. Wait in
   // this new background process, so it can take over once the old owner exits.
@@ -927,7 +927,7 @@ int helper(HINSTANCE instance, bool delegated, bool supervised) {
 }
 void signalElevatedHelperStop() noexcept {
   const DWORD next = readElevatedStopGeneration() + 1;
-  RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", elevatedStopValue,
+  RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", elevatedStopValue,
                   REG_DWORD, &next, sizeof(next));
 }
 bool elevatedHelperRunning() noexcept {
@@ -1051,7 +1051,7 @@ int elevatedHelper(HINSTANCE instance, bool supervised) {
     startMenuThread();
     guard::log(std::wstring(L"管理员文件对话框后台组件就绪：菜单=") + (menuThread ? L"常驻线程" : L"独立进程"));
     HKEY configHandle = nullptr;
-    RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\FolderNote", 0, nullptr, 0,
+    RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\ShibaKit", 0, nullptr, 0,
                     KEY_NOTIFY | KEY_QUERY_VALUE, nullptr, &configHandle, nullptr);
     HANDLE regEvent = configHandle ? CreateEventW(nullptr, FALSE, FALSE, nullptr) : nullptr;
     if (configHandle && regEvent)

@@ -39,11 +39,11 @@ int main() {
   CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
   try {
     GUID guid{}; CoCreateGuid(&guid); wchar_t id[40]{}; StringFromGUID2(guid, id, ARRAYSIZE(id));
-    auto root = std::filesystem::temp_directory_path() / (std::wstring(L"FolderNote-IconTests-") + id);
+    auto root = std::filesystem::temp_directory_path() / (std::wstring(L"ShibaKit-IconTests-") + id);
     auto custom = root / L"自定义😀", plain = root / L"普通目录";
     std::filesystem::create_directories(custom); std::filesystem::create_directories(plain);
     auto iconFile = root / L"folder.ico";
-    std::filesystem::copy_file(std::filesystem::path(FOLDERNOTE_ICON_PATH), iconFile);
+    std::filesystem::copy_file(std::filesystem::path(SHIBAKIT_ICON_PATH), iconFile);
     std::wstring ini = L"[.ShellClassInfo]\r\nIconResource=" + iconFile.native() + L",0\r\n";
     {
       std::ofstream file(custom / L"desktop.ini", std::ios::binary);

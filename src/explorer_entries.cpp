@@ -16,7 +16,7 @@ namespace explorer_entries {
 namespace {
 constexpr wchar_t explorer[] = LR"(Software\Microsoft\Windows\CurrentVersion\Explorer\)";
 constexpr wchar_t classes[] = LR"(Software\Classes\CLSID\)";
-constexpr wchar_t changes[] = LR"(Software\FolderNote\ExplorerEntryChanges\)";
+constexpr wchar_t changes[] = LR"(Software\ShibaKit\ExplorerEntryChanges\)";
 constexpr wchar_t pinValue[] = L"System.IsPinnedToNameSpaceTree";
 constexpr wchar_t nonEnum[] = LR"(Software\Microsoft\Windows\CurrentVersion\Policies\NonEnum)";
 constexpr wchar_t computer[] = L"{20D04FE0-3AEA-1069-A2D8-08002B30309D}";
@@ -27,7 +27,7 @@ constexpr wchar_t gallery[] = L"{E88865EA-0E1C-4E20-9AA6-EDCD0212C87C}";
 constexpr wchar_t oneDrive[] = L"{018D5C66-4533-4307-9B53-224DE2ED1FE6}";
 constexpr std::array surfaces{Surface::ThisPc, Surface::Navigation, Surface::Desktop};
 constexpr std::array mounts{L"MyComputer\\NameSpace", L"MyComputer\\NameSpace_36354489"};
-constexpr wchar_t hiddenPrefix[] = L"FolderNote.Hidden.";
+constexpr wchar_t hiddenPrefix[] = L"ShibaKit.Hidden.";
 
 struct Key {
   HKEY handle = nullptr;
@@ -197,7 +197,7 @@ void writeOverride(HKEY key, const wchar_t *name, DWORD value) {
 }
 
 struct Lock {
-  HANDLE mutex = CreateMutexW(nullptr, FALSE, L"Local\\FolderNote.ExplorerEntryChanges.v1");
+  HANDLE mutex = CreateMutexW(nullptr, FALSE, L"Local\\ShibaKit.ExplorerEntryChanges.v1");
   Lock() {
     if (!mutex) fn::fail(L"无法锁定入口设置");
     const auto result = WaitForSingleObject(mutex, 5000);
@@ -307,7 +307,7 @@ void renameMount(unsigned slot, const std::wstring &from, const std::wstring &to
 void requireWritableMounts(unsigned mask) {
   for (unsigned slot = 0; slot < 2 * mounts.size(); ++slot)
     if ((mask & (1u << slot)) && !open(mountRoot(slot), mountPath(slot), KEY_READ | KEY_WRITE).handle)
-      throw fn::Error{lang::text(L"此入口由所有用户共享。请以管理员身份打开 FolderNote 后重试。")};
+      throw fn::Error{lang::text(L"此入口由所有用户共享。请以管理员身份打开 ShibaKit 后重试。")};
 }
 
 void restoreMounts(const std::wstring &id, unsigned mask) {

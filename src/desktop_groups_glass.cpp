@@ -30,7 +30,7 @@ bool DesktopGlass::update(HWND host, std::shared_ptr<const WallpaperFrame> image
   DesktopDpiScope dpi(host);
   if (!window) {
     WNDCLASSW cls{}; cls.lpfnWndProc = proc; cls.hInstance = GetModuleHandleW(nullptr);
-    cls.lpszClassName = L"FolderNote.DesktopGroups.Glass";
+    cls.lpszClassName = L"ShibaKit.DesktopGroups.Glass";
     RegisterClassW(&cls);
     if (!CreateWindowExW(WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
         // Keep pixels under the transparent WinUI siblings: WS_CLIPSIBLINGS

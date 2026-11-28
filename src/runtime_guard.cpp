@@ -13,7 +13,7 @@
 namespace guard {
 namespace {
 namespace fs = std::filesystem;
-constexpr wchar_t logMutexName[] = L"Local\\FolderNote.Log.v1";
+constexpr wchar_t logMutexName[] = L"Local\\ShibaKit.Log.v1";
 constexpr uintmax_t logLimit = 1024 * 1024;
 constexpr size_t keptDumps = 5;
 wchar_t crashRole[32] = L"app";
@@ -30,7 +30,7 @@ struct PendingCrash {
 fs::path root(const wchar_t *child) {
   PWSTR base = nullptr;
   if (FAILED(SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_DONT_VERIFY, nullptr, &base)) || !base) return {};
-  fs::path result = fs::path(base) / L"Programs" / L"FolderNote" / child;
+  fs::path result = fs::path(base) / L"Programs" / L"ShibaKit" / child;
   CoTaskMemFree(base);
   std::error_code error;
   fs::create_directories(result, error);
@@ -127,7 +127,7 @@ DWORD WINAPI dumpThreadProc(void *) {
   const wchar_t *dumpFile = nullptr;
   if (precomputedCrashDir[0]) {
     SYSTEMTIME now{}; GetLocalTime(&now);
-    _snwprintf_s(dumpPath, ARRAYSIZE(dumpPath), _TRUNCATE, L"%s\\FolderNote-%s-%s-%04u%02u%02u-%02u%02u%02u-%lu.dmp",
+    _snwprintf_s(dumpPath, ARRAYSIZE(dumpPath), _TRUNCATE, L"%s\\ShibaKit-%s-%s-%04u%02u%02u-%02u%02u%02u-%lu.dmp",
                  precomputedCrashDir, crashRole, app::version,
                  now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond, GetCurrentProcessId());
     HANDLE file = CreateFileW(dumpPath, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -177,7 +177,7 @@ void log(const std::wstring &message) noexcept {
   try {
     const auto folder = root(L"Logs");
     if (folder.empty()) return;
-    const auto path = folder / L"FolderNote.log";
+    const auto path = folder / L"ShibaKit.log";
     wchar_t prefix[96]{};
     swprintf_s(prefix, L" [%lu %s] ", GetCurrentProcessId(), crashRole);
     const auto line = utf8(timestamp(false) + prefix + message) + "\r\n";
@@ -185,9 +185,9 @@ void log(const std::wstring &message) noexcept {
     if (!lock.owned) return;
     std::error_code error;
     if (fs::exists(path, error) && fs::file_size(path, error) > logLimit) {
-      fs::remove(folder / L"FolderNote.2.log", error);
-      fs::rename(folder / L"FolderNote.1.log", folder / L"FolderNote.2.log", error);
-      fs::rename(path, folder / L"FolderNote.1.log", error);
+      fs::remove(folder / L"ShibaKit.2.log", error);
+      fs::rename(folder / L"ShibaKit.1.log", folder / L"ShibaKit.2.log", error);
+      fs::rename(path, folder / L"ShibaKit.1.log", error);
     }
     HANDLE file = CreateFileW(path.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                               nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -218,7 +218,7 @@ std::wstring recentLog(size_t lines) noexcept {
     const auto folder = root(L"Logs");
     if (folder.empty()) return {};
     std::deque<std::string> tail;
-    for (const auto *name : {L"FolderNote.1.log", L"FolderNote.log"}) {
+    for (const auto *name : {L"ShibaKit.1.log", L"ShibaKit.log"}) {
       HANDLE file = CreateFileW((folder / name).c_str(), GENERIC_READ,
                                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                                 nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);

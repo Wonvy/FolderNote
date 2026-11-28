@@ -25,8 +25,8 @@ inline const wchar_t *ids[] = {L"{7BA54C64-5E92-4C99-AD47-06DD67193401}",
                                L"{7BA54C64-5E92-4C99-AD47-06DD67193402}",
                                L"{7BA54C64-5E92-4C99-AD47-06DD67193403}"};
 inline constexpr wchar_t settingsId[] = L"{7BA54C64-5E92-4C99-AD47-06DD67193404}";
-inline const wchar_t *verbs[] = {L"FolderNote.Edit", L"FolderNote.Clear",
-                                 L"FolderNote.Repair"};
+inline const wchar_t *verbs[] = {L"ShibaKit.Edit", L"ShibaKit.Clear",
+                                 L"ShibaKit.Repair"};
 inline const wchar_t *titles[] = {L"添加/编辑备注", L"清除备注",
                                   L"修复文件夹备注"};
 } // namespace fn

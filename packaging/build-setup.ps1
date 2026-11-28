@@ -8,8 +8,8 @@ $root = Split-Path $PSScriptRoot -Parent
 $edition = if ($Win11) { 'win11' } else { 'standard' }
 $stage = Join-Path $root "build/installer-payload/$edition"
 New-Item -ItemType Directory -Force -Path $stage | Out-Null
-$files = 'Install.exe','Uninstall.exe','FolderNote.exe','FolderNoteShell.dll','FolderNoteNavigation.dll'
-if ($Win11) { $files += 'Install-Win11.exe','FolderNote.msix' }
+$files = 'Install.exe','Uninstall.exe','ShibaKit.exe','ShibaKitShell.dll','ShibaKitNavigation.dll'
+if ($Win11) { $files += 'Install-Win11.exe','ShibaKit.msix' }
 if (Test-Path -LiteralPath (Join-Path $Source 'Microsoft.WindowsAppRuntime.Bootstrap.dll')) {
     $files += 'Microsoft.WindowsAppRuntime.Bootstrap.dll'
 }
@@ -47,7 +47,7 @@ Copy-Item -LiteralPath "$root/build/Release/Setup-$edition.exe" -Destination $De
 
 # Verify the exact shipped EXE in a fresh directory with no sibling payload files.
 # This only unpacks and compares bytes and icons; it never installs into the host.
-$verification = Join-Path ([IO.Path]::GetTempPath()) ("FolderNote-PackageCheck-" + [guid]::NewGuid())
+$verification = Join-Path ([IO.Path]::GetTempPath()) ("ShibaKit-PackageCheck-" + [guid]::NewGuid())
 New-Item -ItemType Directory -Path $verification | Out-Null
 try {
     $probe = Join-Path $verification 'SetupPackageTests.exe'

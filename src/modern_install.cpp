@@ -41,9 +41,9 @@ static int installPackage(const std::wstring &originalSid) {
   // rather than silently installing the package for the administrator account.
   if (!navreg::validSid(originalSid) || navreg::currentUserSid() != originalSid)
     return 4;
-  auto package = fn::modulePath().parent_path() / L"FolderNote.msix";
+  auto package = fn::modulePath().parent_path() / L"ShibaKit.msix";
   if (GetFileAttributesW(package.c_str()) == INVALID_FILE_ATTRIBUTES)
-    throw fn::Error{lang::text(L"未找到 FolderNote.msix。")};
+    throw fn::Error{lang::text(L"未找到 ShibaKit.msix。")};
   std::wstring escaped;
   for (auto character : package.native()) {
     escaped += character;
@@ -82,12 +82,12 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
       if (process) {
         const auto wait = WaitForSingleObject(process, 15000);
         CloseHandle(process);
-        if (wait != WAIT_OBJECT_0) throw fn::Error{lang::text(L"请关闭 FolderNote 设置后再安装更新。")};
+        if (wait != WAIT_OBJECT_0) throw fn::Error{lang::text(L"请关闭 ShibaKit 设置后再安装更新。")};
       }
     }
     auto source = fn::modulePath().parent_path();
-    for (auto name : {L"FolderNote.msix", L"Install.exe", L"FolderNote.exe",
-                      L"FolderNoteShell.dll", L"FolderNoteNavigation.dll", L"Uninstall.exe"})
+    for (auto name : {L"ShibaKit.msix", L"Install.exe", L"ShibaKit.exe",
+                      L"ShibaKitShell.dll", L"ShibaKitNavigation.dll", L"Uninstall.exe"})
       if (GetFileAttributesW((source / name).c_str()) == INVALID_FILE_ATTRIBUTES)
         throw fn::Error{lang::text(L"请完整解压 Win11 安装包，并保持所有程序文件在同一文件夹。")};
     sid = navreg::currentUserSid();
@@ -102,16 +102,16 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
     if (run(source / L"Install.exe", L"--navigation-only --quiet", false))
       throw fn::Error{lang::text(L"Win11 菜单包已安装，但双击导航组件安装未完成。请重新运行安装器。")};
     MessageBoxW(nullptr,
-                lang::text(L"FolderNote 系统工具已安装，备注、双击导航和中键快速定位可独立开启或关闭；支持浅色、深色和跟随系统。\n\n"
+                lang::text(L"ShibaKit 系统工具已安装，备注、双击导航和中键快速定位可独立开启或关闭；支持浅色、深色和跟随系统。\n\n"
                 L"无需注销；关闭并重新打开文件夹窗口后，导航扩展会自动加载。"
-                L"在开始菜单搜索“FolderNote 设置”。首次安装默认开启双击返回上一级，备注和中键快速定位默认关闭；开启备注后才显示相关右键菜单。\n\n"
+                L"在开始菜单搜索“ShibaKit 设置”。首次安装默认开启双击返回上一级，备注和中键快速定位默认关闭；开启备注后才显示相关右键菜单。\n\n"
                 L"覆盖升级保留已有选择。若旧版开启后仍无反应，请重新保存一次双击导航设置。\n\n"
                 L"菜单排序由 Windows 决定。"),
-                L"FolderNote", MB_OK);
+                L"ShibaKit", MB_OK);
     return 0;
   } catch (const fn::Error &error) {
     if (!worker)
-      MessageBoxW(nullptr, error.message.c_str(), lang::text(L"FolderNote 安装未完成"), MB_OK | MB_ICONERROR);
+      MessageBoxW(nullptr, error.message.c_str(), lang::text(L"ShibaKit 安装未完成"), MB_OK | MB_ICONERROR);
     return 1;
   } catch (...) {
     return 1;

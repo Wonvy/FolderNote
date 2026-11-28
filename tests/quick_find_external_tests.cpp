@@ -9,7 +9,7 @@
 
 namespace {
 using Microsoft::WRL::ComPtr;
-constexpr auto title = L"FolderNote quick-find isolated picker test";
+constexpr auto title = L"ShibaKit quick-find isolated picker test";
 void require(bool condition, const char *message) { if (!condition) throw std::runtime_error(message); }
 ComPtr<IUIAutomationElement> byType(IUIAutomation *ui, IUIAutomationElement *root, CONTROLTYPEID type) {
   VARIANT value{}; value.vt = VT_I4; value.lVal = type;
@@ -80,7 +80,7 @@ int main(int count, char **arguments) {
   const bool folders = count > 1 && std::string_view(arguments[1]) == "--folders";
   CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
   const auto directory = std::filesystem::temp_directory_path() /
-      (L"FolderNote-FindTest-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
+      (L"ShibaKit-FindTest-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
   int result = 1;
   try {
     if (count > 1 && std::string_view(arguments[1]) == "--shell-only") {
@@ -280,7 +280,7 @@ int main(int count, char **arguments) {
     }
   } catch (const std::exception &error) { std::cerr << error.what() << '\n'; }
   // Only the uniquely created fixture directory is ever removed.
-  if (directory.parent_path() == std::filesystem::temp_directory_path() && directory.filename().native().starts_with(L"FolderNote-FindTest-")) {
+  if (directory.parent_path() == std::filesystem::temp_directory_path() && directory.filename().native().starts_with(L"ShibaKit-FindTest-")) {
     std::error_code error; std::filesystem::remove_all(directory, error);
   }
   CoUninitialize();

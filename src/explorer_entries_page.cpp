@@ -35,9 +35,9 @@ struct DisplayRow {
   Group group = Group::Folders;
   int iconIndex = -1;
 };
-constexpr wchar_t className[] = L"FolderNote.Settings.ExplorerEntries";
+constexpr wchar_t className[] = L"ShibaKit.Settings.ExplorerEntries";
 constexpr wchar_t title[] = L"文件夹入口管理";
-constexpr wchar_t settingsKey[] = L"Software\\FolderNote";
+constexpr wchar_t settingsKey[] = L"Software\\ShibaKit";
 constexpr wchar_t viewPreference[] = L"EntryIconView";
 constexpr std::array surfaces{Surface::ThisPc, Surface::Navigation, Surface::Desktop};
 constexpr std::array locations{L"此电脑", L"左侧导航栏", L"桌面"};
@@ -66,7 +66,7 @@ const wchar_t *status(const Row &row) {
 
 const wchar_t *source(const Row &row) {
   const auto *link = std::get_if<Link>(&row);
-  return lang::text(std::holds_alternative<CustomEntry>(row) ? L"FolderNote" :
+  return lang::text(std::holds_alternative<CustomEntry>(row) ? L"ShibaKit" :
       link ? (link->shared ? L"共享桌面快捷方式" : L"桌面快捷方式") : L"系统或其他软件");
 }
 

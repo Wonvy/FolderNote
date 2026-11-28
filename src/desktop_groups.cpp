@@ -523,13 +523,13 @@ void Desktop::setAllBoxesHidden(bool hidden) {
       panel->finishTitleEdit(true);
       panel->finishItemEdit(true);
       if (panel->gestureEdge) panel->finishGesture(false);
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
       if (panel->hasSurface()) panel->surface->show(false);
 #endif
       ShowWindow(panel->window, SW_HIDE);
       panel->updateShadow();
     } else {
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
       if (!panel->dockHidden && panel->hasSurface()) panel->surface->show(true);
 #endif
       panel->updateShadow();
@@ -565,7 +565,7 @@ void Desktop::exportBackup(HWND owner) {
   const COMDLG_FILTERSPEC filters[]{{L"JSON (*.json)", L"*.json"}};
   dialog->SetFileTypes(ARRAYSIZE(filters), filters);
   dialog->SetDefaultExtension(L"json");
-  dialog->SetFileName(L"FolderNote-Backup.json");
+  dialog->SetFileName(L"ShibaKit-Backup.json");
   dialog->SetTitle(lang::text(L"导出备份"));
   Microsoft::WRL::ComPtr<IShellItem> result;
   PWSTR raw = nullptr;
@@ -717,7 +717,7 @@ void Desktop::tickHeader() {
       panel->updateHeaderActions(cursor);
       panel->tickFolderHover(cursor, inside, now);
       const bool actionsActive =
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
           panel->hasSurface() ? panel->headerActions :
 #endif
           (panel->viewButtons[0] && IsWindowVisible(panel->viewButtons[0]) != FALSE);
@@ -960,7 +960,7 @@ void restoreAppearance() {
 
 bool enabled() {
   DWORD value = 0, bytes = sizeof(value);
-  return RegGetValueW(HKEY_CURRENT_USER, L"Software\\FolderNote", L"DesktopGroupsEnabled", RRF_RT_REG_DWORD,
+  return RegGetValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit", L"DesktopGroupsEnabled", RRF_RT_REG_DWORD,
                       nullptr, &value, &bytes) == ERROR_SUCCESS && value == 1;
 }
 
@@ -1068,11 +1068,11 @@ int run(HINSTANCE instance, bool manage, bool create, bool delegated) {
         manager.lpszClassName = receiverClass;
         panel.style = CS_DBLCLKS;
         if (!RegisterClassW(&panel) || !RegisterClassW(&manager)) throw 0;
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
         winui::Runtime xaml;
 #endif
         Desktop desktop(instance);
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
         desktop.useWinui = xaml.available();
 #endif
         if (!CreateWindowExW(WS_EX_TOOLWINDOW, receiverClass, L"", WS_POPUP, 0, 0, 0, 0,
@@ -1092,7 +1092,7 @@ int run(HINSTANCE instance, bool manage, bool create, bool delegated) {
                                  static_cast<WPARAM>(static_cast<INT_PTR>(creationPoint.x)), creationPoint.y);
         MSG message{};
         while (GetMessageW(&message, nullptr, 0, 0) > 0) {
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
           if (xaml.preTranslate(message)) continue;
 #endif
           TranslateMessage(&message);

@@ -15,7 +15,7 @@
 #include <wrl/implements.h>
 
 namespace {
-constexpr wchar_t settings[] = L"Software\\FolderNote";
+constexpr wchar_t settings[] = L"Software\\ShibaKit";
 constexpr wchar_t value[] = L"DesktopGroups";
 
 void check(bool condition, const char *message) {
@@ -113,7 +113,7 @@ void exerciseThumbnailMask() {
 
 struct TemporaryFiles {
   fn::fs::path root = fn::fs::temp_directory_path() /
-      (L"FolderNoteDesktopGroups-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
+      (L"ShibaKitDesktopGroups-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
 
   TemporaryFiles() { check(fn::fs::create_directory(root), "create temporary files directory"); }
   ~TemporaryFiles() {
@@ -868,15 +868,15 @@ void exerciseNewBoxEnhancements(const fn::fs::path &root) {
   check(RegSetKeyValueW(HKEY_CURRENT_USER, settings, L"DesktopGroupsRadius", REG_DWORD,
                         &customRadius, sizeof(customRadius)) == ERROR_SUCCESS, "seed radius setting");
   const wchar_t pinsMulti[] = L"C:\\Work\0D:\\Docs\0";
-  check(RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\FolderNote\\QuickFolders", L"Pins", REG_MULTI_SZ,
+  check(RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit\\QuickFolders", L"Pins", REG_MULTI_SZ,
                         pinsMulti, sizeof(pinsMulti)) == ERROR_SUCCESS, "seed QuickFolders Pins");
-  const auto backupFile = root / L"FolderNote-Backup.json";
+  const auto backupFile = root / L"ShibaKit-Backup.json";
   exportDesktopBackup(backupFile, layoutFile);
   check(fn::fs::exists(backupFile), "write backup JSON file");
 
   const DWORD zeroRadius = 0;
   RegSetKeyValueW(HKEY_CURRENT_USER, settings, L"DesktopGroupsRadius", REG_DWORD, &zeroRadius, sizeof(zeroRadius));
-  RegDeleteTreeW(HKEY_CURRENT_USER, L"Software\\FolderNote\\QuickFolders");
+  RegDeleteTreeW(HKEY_CURRENT_USER, L"Software\\ShibaKit\\QuickFolders");
   const auto restoredLayoutFile = root / L"restored.json";
   const auto imported = importDesktopBackup(backupFile, restoredLayoutFile);
   DWORD restoredRadius = 0, radiusBytes = sizeof(restoredRadius);
@@ -886,7 +886,7 @@ void exerciseNewBoxEnhancements(const fn::fs::path &root) {
         "import backup restores layout and DWORD settings");
   wchar_t restoredPins[64]{};
   DWORD pinsBytes = sizeof(restoredPins);
-  check(RegGetValueW(HKEY_CURRENT_USER, L"Software\\FolderNote\\QuickFolders", L"Pins", RRF_RT_REG_MULTI_SZ,
+  check(RegGetValueW(HKEY_CURRENT_USER, L"Software\\ShibaKit\\QuickFolders", L"Pins", RRF_RT_REG_MULTI_SZ,
                      nullptr, restoredPins, &pinsBytes) == ERROR_SUCCESS &&
         std::memcmp(restoredPins, pinsMulti, sizeof(pinsMulti)) == 0,
         "import backup restores QuickFolders multi-string pins");
@@ -1010,7 +1010,7 @@ void exercisePanelAndDesktopFlows(const fn::fs::path &root) {
   } hostScope{host};
 
   Desktop desktop(instance, layoutFile, std::vector<std::wstring>{personal.native()});
-#ifdef FOLDERNOTE_WINUI
+#ifdef SHIBAKIT_WINUI
   desktop.useWinui = false;
 #endif
   desktop.host = host;

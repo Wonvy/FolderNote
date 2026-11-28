@@ -32,7 +32,7 @@ void create(HKEY root, const std::wstring &path, Key &key) {
 }
 
 struct IsolatedRegistry {
-  std::wstring path = L"Software\\FolderNoteExplorerEntriesTest-" + std::to_wstring(GetCurrentProcessId());
+  std::wstring path = L"Software\\ShibaKitExplorerEntriesTest-" + std::to_wstring(GetCurrentProcessId());
   Key root, user, machine, real;
   IsolatedRegistry() {
     require(!RegOpenKeyExW(HKEY_CURRENT_USER, L"", 0, KEY_ALL_ACCESS, &real.handle), "open real test parent");
@@ -113,14 +113,14 @@ int main() {
     markRemoved(Surface::ThisPc, cloud, false);
     markRemoved(Surface::ThisPc, cloud, false);
     require(!isRemoved(Surface::ThisPc, cloud), "restoring an entry clears its removal marker");
-    constexpr wchar_t settings[] = LR"(Software\FolderNote)";
+    constexpr wchar_t settings[] = LR"(Software\ShibaKit)";
     writeDword(HKEY_CURRENT_USER, settings, L"UnrelatedPreference", 42);
     markRemoved(Surface::Navigation, cloud, true);
     markRemoved(Surface::Desktop, L"C:\\Users\\Test\\Desktop\\Test.lnk", true);
     clearRemoved();
     require(!isRemoved(Surface::Navigation, cloud) && !isRemoved(Surface::Desktop, L"C:\\Users\\Test\\Desktop\\Test.lnk") &&
             readDword(HKEY_CURRENT_USER, settings, L"UnrelatedPreference") == 42u,
-            "cleanup removes only FolderNote removal markers");
+            "cleanup removes only ShibaKit removal markers");
     const auto thisPc = branch(L"MyComputer\\NameSpace\\") + cloud;
     const auto desktop = branch(L"Desktop\\NameSpace\\") + cloud;
     const auto hideComputer = branch(L"HideMyComputerIcons");
@@ -177,7 +177,7 @@ int main() {
     require(restricted.hidden && !restricted.canChange, "respect an existing administrative restriction");
 
     const auto appMount = branch(L"MyComputer\\NameSpace\\") + application;
-    const auto hiddenAppMount = branch(L"MyComputer\\NameSpace\\FolderNote.Hidden.") + application;
+    const auto hiddenAppMount = branch(L"MyComputer\\NameSpace\\ShibaKit.Hidden.") + application;
     writeText(HKEY_CURRENT_USER, appMount, nullptr, L"User app junction");
     writeText(HKEY_LOCAL_MACHINE, appMount, nullptr, L"Machine app junction");
     writeDword(HKEY_CURRENT_USER, appMount + L"\\Metadata", L"Flags", 42);

@@ -8,7 +8,7 @@
 
 namespace desktop_folder_links {
 namespace {
-constexpr wchar_t journalPath[] = L"Software\\FolderNote\\DesktopFolderLinkChanges";
+constexpr wchar_t journalPath[] = L"Software\\ShibaKit\\DesktopFolderLinkChanges";
 constexpr wchar_t readError[] = L"无法读取桌面快捷方式记录";
 constexpr wchar_t writeError[] = L"无法更改桌面快捷方式";
 constexpr DWORD invalidLinkAttributes = FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_OFFLINE;
@@ -40,7 +40,7 @@ struct Key {
 };
 
 struct Lock {
-  HANDLE handle = CreateMutexW(nullptr, FALSE, L"Local\\FolderNote.DesktopFolderLinks");
+  HANDLE handle = CreateMutexW(nullptr, FALSE, L"Local\\ShibaKit.DesktopFolderLinks");
   Lock() {
     if (!handle) fn::fail(writeError);
     const auto result = WaitForSingleObject(handle, 5000);

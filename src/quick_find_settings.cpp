@@ -2,7 +2,7 @@
 
 namespace quick_find {
 namespace {
-constexpr auto key = L"Software\\FolderNote";
+constexpr auto key = L"Software\\ShibaKit";
 constexpr auto name = L"QuickFindOptions";
 constexpr DWORD version = 0x10000000;
 }

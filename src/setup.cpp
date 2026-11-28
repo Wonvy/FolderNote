@@ -3,7 +3,7 @@
 #include <string>
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
-#ifdef FOLDERNOTE_MODERN_SETUP
+#ifdef SHIBAKIT_MODERN_SETUP
   constexpr bool modern = true;
 #else
   constexpr bool modern = false;
@@ -54,7 +54,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
       const bool chinese = PRIMARYLANGID(GetUserDefaultUILanguage()) == LANG_CHINESE;
       MessageBoxW(nullptr, chinese ? L"无法解包或启动安装。请重新下载安装包，并检查临时文件夹是否可写。"
                                  : L"Could not unpack or start setup. Download the installer again and check that your temporary folder is writable.",
-                  L"FolderNote", MB_OK | MB_ICONERROR);
+                  L"ShibaKit", MB_OK | MB_ICONERROR);
     }
     return 1;
   }

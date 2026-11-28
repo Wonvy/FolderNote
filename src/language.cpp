@@ -14,7 +14,7 @@ namespace lang {
 namespace {
 using Microsoft::WRL::ComPtr;
 using namespace std::literals;
-constexpr auto registry = L"Software\\FolderNote";
+constexpr auto registry = L"Software\\ShibaKit";
 constexpr DWORD sizeLimit = 1024 * 1024;
 constexpr std::pair<const wchar_t *, const wchar_t *> translations[] = {
 #include "language_settings.inc"
@@ -80,7 +80,7 @@ Pack parse(const std::string &xml) {
     UINT depth = 0;
     if (FAILED(reader->GetDepth(&depth))) invalid();
     if (node == XmlNodeType_Element) {
-      if (!root && depth == 0 && nodeName(reader.Get()) == L"foldernote-language"sv) {
+      if (!root && depth == 0 && nodeName(reader.Get()) == L"shibakit-language"sv) {
         root = true;
         if (attribute(reader.Get(), L"version") != L"1") invalid();
         pack.name = attribute(reader.Get(), L"name");
@@ -100,7 +100,7 @@ Pack parse(const std::string &xml) {
       if (nodeName(reader.Get()) == L"message"sv && !id.empty()) {
         if (value.size() > 4096 || !pack.messages.emplace(std::move(id), std::move(value)).second) invalid();
         id.clear(); value.clear();
-      } else if (nodeName(reader.Get()) == L"foldernote-language"sv && root && !closed && id.empty()) closed = true;
+      } else if (nodeName(reader.Get()) == L"shibakit-language"sv && root && !closed && id.empty()) closed = true;
       else invalid();
     } else if (node != XmlNodeType_XmlDeclaration && node != XmlNodeType_Comment) invalid();
   }
@@ -214,10 +214,10 @@ void importFile(const std::filesystem::path &path) {
 }
 void exportFile(const std::filesystem::path &path) {
   std::wstring xml = L"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-      L"<foldernote-language version=\"1\" name=\"My language\">\n";
+      L"<shibakit-language version=\"1\" name=\"My language\">\n";
   for (const auto &[source, english] : catalog())
     xml += L"  <message id=\"" + key(source) + L"\">" + escaped(english) + L"</message>\n";
-  xml += L"</foldernote-language>\n";
+  xml += L"</shibakit-language>\n";
   auto size = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, xml.data(), static_cast<int>(xml.size()), nullptr, 0, nullptr, nullptr);
   if (size <= 0) throw std::runtime_error("Could not encode language template");
   std::string bytes(size, '\0');

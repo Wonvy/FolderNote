@@ -21,7 +21,7 @@ int main() {
   int result = 0;
   try {
     const auto make = [&](HWND parent = nullptr) {
-      auto window = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, L"STATIC", L"FolderNote desktop-layer test",
+      auto window = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, L"STATIC", L"ShibaKit desktop-layer test",
           (parent ? WS_CHILD : WS_POPUP) | WS_VISIBLE | WS_CLIPSIBLINGS,
           parent ? 0 : -32000, parent ? 0 : -32000, 800, 600, parent, nullptr, GetModuleHandleW(nullptr), nullptr);
       check(window != nullptr, "create off-screen fixture"); owned.push_back(window); return window;
