@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(ShibaKit VERSION 1.9.21 LANGUAGES CXX RC)
+project(ShibaKit VERSION 1.9.22 LANGUAGES CXX RC)
 set(SHIBAKIT_UPDATE_REPOSITORY "" CACHE STRING "Public GitHub repository for updates (owner/repo)")
 option(SHIBAKIT_WINUI "Build the WinUI 3 desktop-group interface" ON)
 if(SHIBAKIT_UPDATE_REPOSITORY AND NOT SHIBAKIT_UPDATE_REPOSITORY MATCHES "^[A-Za-z0-9-]+/[A-Za-z0-9_.-]+$")
